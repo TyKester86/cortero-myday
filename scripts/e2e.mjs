@@ -1658,7 +1658,7 @@ async function uiGate() {
     eq('one demo picture per exercise card', [shown > 0, shown === cards], [true, true]);
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus'];
     const notFound = [];
     for (const p of pages) {
       await page.goto(BASE + p);
@@ -1705,6 +1705,45 @@ async function uiGate() {
     await ep.reload();
     await ep.waitForLoadState('networkidle');
     eq('…and not again after dismissing', await ep.getByTestId('first-run-kid').count(), 0);
+    section('add-on 4. staging bug fixes from the Oct 2 walkthrough');
+    // (a) Lectures section
+    await kp.goto(`${BASE}/lectures`);
+    await kp.getByTestId('lecture-list').waitFor();
+    check('(a) /lectures lists the kid’s recordings', (await kp.getByTestId('lecture-list').locator('li').count()) >= 3);
+    await kp.getByRole('button', { name: 'Menu' }).click();
+    eq('(a) Lectures is in the menu', await kp.getByRole('link', { name: /Lectures/ }).count(), 1);
+    await kp.getByRole('button', { name: 'Menu' }).click();
+    await kp.getByLabel('Class').selectOption({ label: 'Biology' });
+    await kp.getByTestId('lecture-upload').setInputFiles({ name: 'class.m4a', mimeType: 'audio/mp4', buffer: Buffer.from(`STUB-TRANSCRIPT: ${'Mitosis is how a cell divides. '.repeat(5)}`) });
+    await kp.waitForURL(/\/lectures\/\d+$/);
+    check('(a) uploading an audio file opens the new lecture', /\/lectures\/\d+$/.test(kp.url()));
+    // (b) Focus timer for everyone
+    await page.goto(`${BASE}/focus`);
+    eq('(b) /focus renders for a grown-up too', await page.getByTestId('focus-clock').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    // (c) Hana answer shown once
+    Object.assign(process.env, serverEnv());
+    const ai = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'ai.js')).href);
+    const para = 'Start with the two-minute task. Then take a short walk.';
+    eq('(c) duplicated reply blocks collapse to one', ai.cleanReply([para, para]), para);
+    eq('(c) …and a doubled paragraph inside one block', ai.cleanReply([`${para}
+
+${para}`]), para);
+    eq('(c) …and the same text twice in a row', ai.cleanReply([`${para}${para}`]), para);
+    eq('(c) normal multi-paragraph answers are untouched', ai.cleanReply(['One.', 'Two.']), 'One.\n\nTwo.');
+    await page.goto(`${BASE}/hana`);
+    await page.getByPlaceholder('What’s on your mind?').fill('What should I do first today?');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.waitForResponse((r) => r.url().endsWith('/api/chat/companion') && r.request().method() === 'POST');
+    const bubbles = await page.locator('.bubble.hana').allInnerTexts();
+    const last = bubbles[bubbles.length - 1] ?? '';
+    eq('(c) the answer appears once in the chat', bubbles.filter((b) => b === last).length, 1);
+    // (e) dead links
+    await page.goto(`${BASE}/plan`);
+    await page.waitForURL('**/weekly');
+    check('(e) /plan goes to the weekly calendar', page.url().endsWith('/weekly'));
+    await page.goto(`${BASE}/command`);
+    eq('(e) /command opens the command center (not a redirect)', [await page.locator('[data-testid^=command-]').first().waitFor({ timeout: 10000 }).then(() => true, () => false), page.url().endsWith('/command')], [true, true]);
+
     if (process.env.E2E_SHOTS) {
       for (const [ctx, pg, name, url] of [[tyCtx, page, 'ty-today', '/'], [tyCtx, page, 'ty-health', '/health'], [tyCtx, page, 'ty-household', '/household'], [kid, kp, 'avery-today', '/']]) {
         void ctx;

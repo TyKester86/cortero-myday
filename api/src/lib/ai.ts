@@ -39,6 +39,32 @@ export interface ChatModel {
   act(system: string, messages: ChatTurn[], kit: ToolKit, maxTokens: number): Promise<string>;
 }
 
+/**
+ * One clean answer. A response can carry the same text more than once (e.g. a
+ * fallback model's answer alongside the first attempt's, or text re-emitted
+ * around tool calls); show it once. Drops repeated text blocks, a paragraph
+ * repeated back-to-back, and an answer that is the same text twice.
+ */
+export function cleanReply(blocks: string[]): string {
+  const seen = new Set<string>();
+  const uniq = blocks.map((b) => b.trim()).filter((b) => b && !seen.has(b) && seen.add(b));
+  const paras: string[] = [];
+  for (const p of uniq.join('\n\n').split(/\n{2,}/)) {
+    const t = p.trim();
+    if (t && t !== paras[paras.length - 1]) paras.push(t);
+  }
+  let text = paras.join('\n\n');
+  const half = Math.floor(text.length / 2);
+  for (const cut of [half, half + 1, half - 1]) {
+    const a = text.slice(0, cut).trim();
+    if (a && a === text.slice(cut).trim()) {
+      text = a;
+      break;
+    }
+  }
+  return text;
+}
+
 const REFUSAL = "I can't help with that one. Want to try asking a different way, or ask a grown-up?";
 const MAX_TOOL_ROUNDS = 5;
 
@@ -77,10 +103,7 @@ class ClaudeModel implements ChatModel {
         fallbacks: 'default',
       });
       if (res.stop_reason === 'refusal') return REFUSAL;
-      const text = res.content
-        .map((b) => (b.type === 'text' ? b.text : ''))
-        .join('')
-        .trim();
+      const text = cleanReply(res.content.map((b) => (b.type === 'text' ? b.text : '')));
       if (!text) throw new HttpError(502, 'Hana had nothing to say — try again');
       return text;
     } catch (e) {
@@ -104,10 +127,7 @@ class ClaudeModel implements ChatModel {
           fallbacks: 'default',
         });
         if (res.stop_reason === 'refusal') return REFUSAL;
-        const text = res.content
-          .map((b) => (b.type === 'text' ? b.text : ''))
-          .join('')
-          .trim();
+        const text = cleanReply(res.content.map((b) => (b.type === 'text' ? b.text : '')));
         const uses = res.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use');
         if (res.stop_reason !== 'tool_use' || uses.length === 0) {
           if (!text) throw new HttpError(502, 'Hana had nothing to say — try again');

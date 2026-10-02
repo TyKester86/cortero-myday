@@ -22,6 +22,8 @@ import Chat from './chat/Chat';
 import School from './school/School';
 import Recorder from './school/Recorder';
 import Lecture from './school/Lecture';
+import Lectures from './school/Lectures';
+import { Navigate } from 'react-router';
 import Study from './school/Study';
 import ClassroomMode from './school/ClassroomMode';
 import Identity from './identity/Identity';
@@ -76,19 +78,22 @@ export const MODULES: ModuleRoute[] = [
   { path: '/meals/grocery', element: <Grocery />, audience: 'all' },
   { path: '/meals/:id', element: <MealDetail />, audience: 'all' },
   { path: '/weekly', element: <WeeklyPlan />, audience: 'all', nav: { label: 'Weekly plan', icon: '🗓' } },
+  // Old/guessed link: the weekly calendar lives at /weekly.
+  { path: '/plan', element: <Navigate to="/weekly" replace />, audience: 'all' },
   { path: '/dump', element: <BrainDump />, audience: 'all', nav: { label: 'Brain dump', icon: '🧠' } },
   { path: '/battles', element: <Battles />, audience: 'adult', nav: { label: 'Boss battles', icon: '⚔️' } },
   { path: '/red-alert', element: <RedAlert />, audience: 'adult', nav: { label: 'Red Alert', icon: '🚨' } },
   { path: '/chores/manage', element: <ManageChores />, audience: 'adult', nav: { label: 'Manage chores', icon: '🧹' } },
   { path: '/household', element: <Household />, audience: 'adult', nav: { label: 'Household', icon: '🏠' } },
   { path: '/school', element: <School />, audience: 'all', nav: { label: 'School', icon: '🎒' } },
+  { path: '/lectures', element: <Lectures />, audience: 'all', nav: { label: 'Lectures', icon: '🎙' } },
   { path: '/record', element: <Recorder />, audience: 'all' },
   { path: '/lectures/:id', element: <Lecture />, audience: 'all' },
   { path: '/study/:classId', element: <Study />, audience: 'all' },
   { path: '/classroom-mode', element: <ClassroomMode />, audience: 'all' },
   { path: '/wins', element: <Wins />, audience: 'all', nav: { label: 'Family wins', icon: '🏆' } },
   { path: '/my-money', element: <KidMoney />, audience: 'all', nav: { label: 'Kid money', icon: '🐷' } },
-  { path: '/focus', element: <Focus />, audience: 'kid', nav: { label: 'Focus timer', icon: '⏱' } },
+  { path: '/focus', element: <Focus />, audience: 'all', nav: { label: 'Focus timer', icon: '⏱' } },
   { path: '/private', element: <Private />, audience: 'kid', nav: { label: 'My space', icon: '🔒' } },
   { path: '/bills', element: <Bills />, audience: 'adult', nav: { label: 'Bills & income', icon: '🧾' } },
   { path: '/identity', element: <Identity />, audience: 'adult', nav: { label: 'Identity', icon: '🪞' } },
