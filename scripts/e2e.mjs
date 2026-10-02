@@ -1176,6 +1176,28 @@ async function bigBuild() {
   }
   eq('events cannot be deleted (append-only, even by the DB owner)', blocked, true);
 
+  section('1. paper/ink theme, role icons, apple-touch-icon, Retired life-stage');
+  const html = await (await fetch(`${BASE}/`)).text();
+  const cssHref = html.match(/href="(\/assets\/[^"]+\.css)"/)?.[1];
+  const css = cssHref ? await (await fetch(BASE + cssHref)).text() : '';
+  eq('deployed CSS carries the paper/ink tokens', ['#f4f0e6', '#11130f', '#1b1e19', '#ff5a1f', '#c8f04a'].filter((t) => !css.toLowerCase().includes(t)), []);
+  const icons = ['leader', 'heart', 'kid', 'college', 'solo', 'couple'];
+  const bad = [];
+  for (const n of icons) {
+    const r = await fetch(`${BASE}/roles/${n}.png`);
+    if (r.status !== 200 || r.headers.get('content-type') !== 'image/png') bad.push(n);
+  }
+  eq('6 role icons served', bad, []);
+  const ati = await fetch(`${BASE}/apple-touch-icon.png`);
+  const atiBuf = Buffer.from(await ati.arrayBuffer());
+  eq('apple-touch-icon.png at the root, 180×180 PNG', [ati.status, atiBuf.readUInt32BE(16), atiBuf.readUInt32BE(20)], [200, 180, 180]);
+  check('index.html links it and keeps the M Peaks logo', html.includes('apple-touch-icon') && html.includes('myday-mark.svg'));
+  eq('shared map: empty nesters and retired share the couple art; solo is the traveler', [shared.HOUSEHOLD_TYPE_ICON.empty_nesters, shared.HOUSEHOLD_TYPE_ICON.retired, shared.HOUSEHOLD_TYPE_ICON.solo], ['/roles/couple.png', '/roles/couple.png', '/roles/solo.png']);
+  const ret = new Client('ret');
+  await ret.get(`/dev-login?token=${DEV_TOKEN}&email=retired@example.com`);
+  eq('Retired is a distinct signup life-stage', (await ret.post('/api/households', { householdName: 'Second act', type: 'retired', yourName: 'Pat' })).status, 201);
+  eq('…stored as retired', (await ret.get('/api/me')).data.household.type, 'retired');
+
   section('L. new pages serve');
   for (const p of ['/school', '/record', '/lectures/1', '/study/1', '/classroom-mode', '/wins', '/my-money', '/focus', '/private', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/chores', '/sw.js', '/meals/_placeholder.svg']) {
     const r = await fetch(BASE + p);
@@ -1334,6 +1356,18 @@ async function uiGate() {
     await ep.reload();
     await ep.waitForLoadState('networkidle');
     eq('…and not again after dismissing', await ep.getByTestId('first-run-kid').count(), 0);
+    if (process.env.E2E_SHOTS) {
+      for (const [ctx, pg, name, url] of [[tyCtx, page, 'ty-today', '/'], [tyCtx, page, 'ty-health', '/health'], [tyCtx, page, 'ty-household', '/household'], [kid, kp, 'avery-today', '/']]) {
+        void ctx;
+        await pg.goto(BASE + url);
+        await pg.waitForLoadState('networkidle');
+        await pg.screenshot({ path: path.join(process.env.E2E_SHOTS, `${name}.png`) });
+      }
+      const sp = await (await browser.newContext(phone)).newPage();
+      await sp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=shots@example.com`);
+      await sp.waitForLoadState('networkidle');
+      await sp.screenshot({ path: path.join(process.env.E2E_SHOTS, 'signup.png'), fullPage: true });
+    }
     eq('no uncaught page errors', errors, []);
   } finally {
     await browser.close();

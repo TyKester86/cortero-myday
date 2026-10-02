@@ -13,6 +13,7 @@ import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 import KidAccess from '../kids/KidAccess';
 import { useConfirm } from '../../components/Confirm';
+import RoleArt, { roleIcon } from '../../components/RoleArt';
 
 const TRACK_LABEL: Record<XpTrack, string> = {
   leader: 'Family Leader',
@@ -27,6 +28,7 @@ function MemberRow({ m, onSave, onArchive, onRestore }: {
   onArchive: () => void;
   onRestore: () => void;
 }) {
+  const { me } = useSession();
   const [edit, setEdit] = useState(false);
   const [f, setF] = useState<MemberFields>({ name: m.name, kind: m.kind, age: m.age, xpTrack: m.xpTrack, email: m.email });
   if (m.archived) {
@@ -44,7 +46,8 @@ function MemberRow({ m, onSave, onArchive, onRestore }: {
   if (!edit) {
     return (
       <li>
-        <span>
+        <RoleArt src={roleIcon(m.kind, m.xpTrack, me.household?.type)} />
+        <span className="grow">
           <b>{m.name}</b>
           {m.isYou && <span className="tag">YOU</span>}
           <small className="muted">

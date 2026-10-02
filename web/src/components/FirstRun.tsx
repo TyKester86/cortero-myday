@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { useSession } from '../session';
+import RoleArt, { roleIcon } from './RoleArt';
 
 type Role = 'kid' | 'teen' | 'student' | 'solo' | 'adult';
 
@@ -78,6 +79,7 @@ export default function FirstRun() {
   return (
     <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="firstrun-title" data-testid={`first-run-${role}`}>
       <div className="firstrun">
+        <RoleArt src={roleIcon(me.member.kind, me.xpTrack, me.household?.type)} size="lg" />
         <h2 id="firstrun-title">{c.title}</h2>
         <ol>
           {c.steps.map((s) => (

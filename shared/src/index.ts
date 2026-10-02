@@ -42,7 +42,7 @@ export interface Me {
 
 /* ---------- households (multi-household signup) ---------- */
 
-export const HOUSEHOLD_TYPES = ['family', 'couple', 'solo', 'empty_nesters', 'college'] as const;
+export const HOUSEHOLD_TYPES = ['family', 'couple', 'solo', 'empty_nesters', 'retired', 'college'] as const;
 export type HouseholdType = (typeof HOUSEHOLD_TYPES)[number];
 
 export const HOUSEHOLD_TYPE_INFO: Record<HouseholdType, { label: string; blurb: string }> = {
@@ -50,7 +50,27 @@ export const HOUSEHOLD_TYPE_INFO: Record<HouseholdType, { label: string; blurb: 
   couple: { label: 'Couple', blurb: 'Two grown-ups, no kids at home: your days, money, meals and each other.' },
   solo: { label: 'Just me', blurb: 'A single-player day: check-in, tasks, health, money, Hana.' },
   empty_nesters: { label: 'Empty nesters', blurb: 'The kids have flown: your days, health, money and each other — no kid modules.' },
+  retired: { label: 'Retired', blurb: 'Your second act: days with purpose, health, money and the people you love.' },
   college: { label: 'College student', blurb: 'Classes, lectures, study library, tutor, money and your day.' },
+};
+
+/** Role art (web/public/roles): one picture per grown-up role or household life-stage. */
+export const ROLE_ICONS = {
+  leader: '/roles/leader.png', // Atlas — Family Leader
+  woman: '/roles/heart.png', // Hestia — Heart of the Home
+  kid: '/roles/kid.png', // Hermes — kids
+  student: '/roles/college.png', // young philosopher — college
+  solo: '/roles/solo.png', // lone traveler — one gender-neutral solo type
+  couple: '/roles/couple.png', // second-act couple — empty nesters AND retired
+} as const;
+
+export const HOUSEHOLD_TYPE_ICON: Record<HouseholdType, string> = {
+  family: ROLE_ICONS.leader,
+  couple: ROLE_ICONS.couple,
+  solo: ROLE_ICONS.solo,
+  empty_nesters: ROLE_ICONS.couple,
+  retired: ROLE_ICONS.couple,
+  college: ROLE_ICONS.student,
 };
 
 /** Feature areas a household type turns on or off. */
@@ -63,7 +83,7 @@ export interface HouseholdFeatures {
 export function featuresFor(type: HouseholdType): HouseholdFeatures {
   return {
     kids: type === 'family',
-    partner: type === 'family' || type === 'couple' || type === 'empty_nesters',
+    partner: type === 'family' || type === 'couple' || type === 'empty_nesters' || type === 'retired',
     student: type === 'college' || type === 'family',
   };
 }

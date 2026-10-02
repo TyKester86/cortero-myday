@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import {
   BUILD_INFO,
   BUILDS,
+  HOUSEHOLD_TYPE_ICON,
   HOUSEHOLD_TYPE_INFO,
   HOUSEHOLD_TYPES,
   featuresFor,
@@ -17,6 +18,7 @@ import {
 import { api } from './api';
 import QR from './components/QR';
 import { useSession } from './session';
+import RoleArt from './components/RoleArt';
 
 /** Step 1 (signed in, no household yet): pick the household type and create it — the 30-day trial starts. */
 export function CreateHousehold() {
@@ -51,6 +53,7 @@ export function CreateHousehold() {
       <div className="buildgrid">
         {HOUSEHOLD_TYPES.map((t) => (
           <button key={t} type="button" className={type === t ? 'buildopt on' : 'buildopt'} onClick={() => setType(t)} aria-pressed={type === t}>
+            <RoleArt src={HOUSEHOLD_TYPE_ICON[t]} />
             <b>{HOUSEHOLD_TYPE_INFO[t].label}</b>
             <small>{HOUSEHOLD_TYPE_INFO[t].blurb}</small>
           </button>

@@ -5,7 +5,7 @@ import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
 
 export const ACCENTS: Array<[string, string]> = [
-  ['navy', '#2e4b8f'],
+  ['navy', '#c2410c'], // default ember (key kept for saved prefs)
   ['teal', '#1f7f86'],
   ['purple', '#6a4bc4'],
   ['rose', '#c0466b'],
