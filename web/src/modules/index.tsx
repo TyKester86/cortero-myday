@@ -39,6 +39,7 @@ import Billing from './billing/Billing';
 import Admin from './billing/Admin';
 import Invest from './invest/Invest';
 import Circles, { Circle, Moderation } from './circles/Circles';
+import Care from './care/Care';
 
 /** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
 export type Audience = 'all' | 'adult' | 'kid' | 'tutor' | 'admin';
@@ -98,6 +99,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/circles', element: <Circles />, audience: 'all', minKidAge: 13, nav: { label: 'Circles', icon: '🫂' } },
   { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },
   { path: '/circles/:id', element: <Circle />, audience: 'all', minKidAge: 13 },
+  { path: '/care', element: <Care />, audience: 'adult', nav: { label: 'Care team', icon: '🩺' } },
   { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: '💳' } },
   { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: '🛠' } },
   { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️' } },

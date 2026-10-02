@@ -1794,3 +1794,77 @@ export interface ModerationQueue {
 export interface TeenActivity {
   items: Array<{ teen: string; circle: string; type: 'post' | 'comment' | 'reaction'; body: string; status: CircleStatus | 'visible'; at: string }>;
 }
+
+/* ================= care team (tutors, coaches, mental-health providers) ================= */
+
+export const CARE_KINDS = ['tutor', 'coach', 'mental_health'] as const;
+export type CareKind = (typeof CARE_KINDS)[number];
+export const CARE_KIND_LABEL: Record<CareKind, string> = { tutor: 'Tutor', coach: 'Coach', mental_health: 'Mental-health provider' };
+export const CARE_SCOPES = ['homework', 'school', 'health', 'day', 'checkins'] as const;
+export type CareScope = (typeof CARE_SCOPES)[number];
+export const CARE_SCOPE_LABEL: Record<CareScope, string> = {
+  homework: 'Homework',
+  school: 'Classes & assignments',
+  health: 'Workouts & habits',
+  day: 'Daily tasks',
+  checkins: 'Morning check-ins',
+};
+/** Mental-health grants may only include these. */
+export const MH_SCOPES: CareScope[] = ['checkins', 'day'];
+
+export interface CareGrant {
+  id: number;
+  kind: CareKind;
+  subject: string;
+  subjectKey: string;
+  scopes: CareScope[];
+  status: 'invited' | 'active' | 'revoked';
+  pro: string | null;
+  label: string;
+  createdAt: string;
+  /** Only returned once, when the invite is created. */
+  inviteLink?: string;
+  /** Whether you (this family member) may read notes + log (MH: only the consenting adult). */
+  canSeeNotes: boolean;
+}
+
+export interface CareNote {
+  id: number;
+  author: string;
+  fromPro: boolean;
+  body: string;
+  at: string;
+}
+
+export interface CareLogEntry {
+  at: string;
+  actor: 'pro' | 'family';
+  who: string;
+  action: string;
+  scope: string;
+}
+
+export interface CareGrantDetail {
+  grant: CareGrant;
+  notes: CareNote[];
+  log: CareLogEntry[];
+}
+
+export interface ProProfile {
+  displayName: string;
+  kind: CareKind;
+  credentials: string;
+}
+
+export interface ProClient {
+  grantId: number;
+  kind: CareKind;
+  household: string;
+  subject: string;
+  scopes: CareScope[];
+}
+
+export interface ProScopeData {
+  scope: CareScope;
+  items: Array<{ title: string; detail: string; date: string | null }>;
+}

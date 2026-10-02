@@ -49,6 +49,9 @@ export function CreateHousehold() {
       </div>
       <h1>Set up your household</h1>
       <p className="muted">Your free 30-day trial starts now. No card needed.</p>
+      <p className="small">
+        Tutor, coach or provider invited by a family? <a href="/pro">Go to the professional portal →</a>
+      </p>
       <h2>Who's it for?</h2>
       <div className="buildgrid">
         {HOUSEHOLD_TYPES.map((t) => (

@@ -6,6 +6,7 @@ import Shortcuts from './components/Shortcuts';
 import { CreateHousehold } from './Onboarding';
 import Admin from './modules/billing/Admin';
 import { Moderation } from './modules/circles/Circles';
+import { ProPortal } from './modules/care/Care';
 import { useWide } from './modules/desk/Home';
 import { applyLook } from './modules/settings/Settings';
 import { ConfirmProvider } from './components/Confirm';
@@ -112,6 +113,8 @@ function Shell() {
 /** Signed in with no household yet → create one (signup funnel). */
 function Gate() {
   const { me } = useSession();
+  // Professionals (tutors, coaches, providers) use their portal with or without a household.
+  if (window.location.pathname === '/pro') return <ProPortal />;
   // Staff can open the admin dashboard without a household of their own.
   if (!me.household && me.isAdmin && (window.location.pathname === '/admin' || window.location.pathname === '/circles/moderation')) {
     return <main className="page">{window.location.pathname === '/admin' ? <Admin /> : <Moderation />}</main>;

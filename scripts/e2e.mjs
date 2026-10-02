@@ -1379,6 +1379,86 @@ async function circles() {
   eq('…but not someone else’s', (await ty.del(`/api/circles/posts/${teenPost.id}`)).status, 404);
 }
 
+async function careTeam() {
+  section('6. Care Team: explicit, scoped, revocable access; every access logged');
+  const tutor = new Client('tutor');
+  await tutor.get(`/dev-login?token=${DEV_TOKEN}&email=tutor@example.com`);
+  eq('kids can’t manage the care team', (await avery.get('/api/care')).status, 403);
+  eq('a scope outside the list is dropped; none left → 400', (await ty.post('/api/care/grants', { kind: 'tutor', subject: 'avery', scopes: ['bank'] })).status, 400);
+  const g = (await ty.post('/api/care/grants', { kind: 'tutor', subject: 'avery', scopes: ['homework', 'school'], label: 'Math tutor' })).data;
+  const token = new URL(g.inviteLink).searchParams.get('invite');
+  eq('grant created as an invite (link shown once)', [g.status, g.scopes, !!token], ['invited', ['homework', 'school'], true]);
+  eq('the invite isn’t stored in plain text', (await sql('SELECT COUNT(*)::int AS n FROM care_grants WHERE invite_hash = $1', [token]))[0].n, 0);
+  eq('a professional has no profile yet', (await tutor.get('/api/pro/me')).data.profile, null);
+  eq('…and must set one up before accepting', (await tutor.post('/api/pro/accept', { token })).status, 409);
+  await tutor.put('/api/pro/profile', { displayName: 'Ms. Rivera', kind: 'tutor', credentials: 'M.Ed.' });
+  const acc = (await tutor.post('/api/pro/accept', { token })).data;
+  eq('pro accepts → sees Avery (no household of their own needed)', acc.clients.map((c) => [c.subject, c.household, c.scopes]), [['Avery', 'Our family', ['homework', 'school']]]);
+  eq('the invite works once', (await new Client('x').post('/api/pro/accept', { token })).status, 401);
+  eq('…even for the same pro', (await tutor.post('/api/pro/accept', { token })).status, 404);
+  const hw = (await tutor.get(`/api/pro/clients/${g.id}/data/homework`)).data;
+  check('pro reads homework in scope', Array.isArray(hw.items) && hw.items.length > 0, `${hw.items.length} items`);
+  eq('…but not health (outside the grant) → 403', (await tutor.get(`/api/pro/clients/${g.id}/data/health`)).status, 403);
+  eq('…and not check-ins → 403', (await tutor.get(`/api/pro/clients/${g.id}/data/checkins`)).status, 403);
+  await tutor.post(`/api/pro/clients/${g.id}/notes`, { body: 'Great focus on fractions today.' });
+  let d = (await ty.get(`/api/care/grants/${g.id}`)).data;
+  eq('family sees the pro’s note', d.notes.map((n) => [n.author, n.body]), [['Ms. Rivera', 'Great focus on fractions today.']]);
+  eq('…and every access in the log', d.log.map((l) => `${l.who} ${l.action} ${l.scope}`.trim()).reverse(), ['Ty granted homework,school', 'Ms. Rivera accepted', 'Ms. Rivera read homework', 'Ms. Rivera note']);
+  eq('Kayla (other parent) sees the tutor grant too', (await kayla.get('/api/care')).data.grants.some((x) => x.id === g.id), true);
+  const other = new Client('tutor2');
+  await other.get(`/dev-login?token=${DEV_TOKEN}&email=tutor2@example.com`);
+  await other.put('/api/pro/profile', { displayName: 'Mr. Nobody', kind: 'tutor' });
+  eq('another pro can’t read this family', (await other.get(`/api/pro/clients/${g.id}/data/homework`)).status, 403);
+  await ty.post(`/api/care/grants/${g.id}/revoke`);
+  eq('revoked → access ends on the very next call', (await tutor.get(`/api/pro/clients/${g.id}/data/homework`)).status, 403);
+  eq('…and the family list says revoked', (await ty.get('/api/care')).data.grants.find((x) => x.id === g.id).status, 'revoked');
+
+  section('6. mental-health variant: only the consenting adult, only for themselves; private notes + log');
+  eq('can’t add one for someone else (Avery)', (await kayla.post('/api/care/grants', { kind: 'mental_health', subject: 'avery', scopes: ['checkins'] })).status, 403);
+  eq('limited to check-ins + daily tasks', (await kayla.post('/api/care/grants', { kind: 'mental_health', subject: 'kayla', scopes: ['school'] })).status, 400);
+  const mh = (await kayla.post('/api/care/grants', { kind: 'mental_health', subject: 'kayla', scopes: ['checkins', 'day'] })).data;
+  const mhToken = new URL(mh.inviteLink).searchParams.get('invite');
+  const tg = (await ty.post('/api/care/grants', { kind: 'tutor', subject: 'evan', scopes: ['homework'] })).data;
+  const therapist = new Client('therapist');
+  await therapist.get(`/dev-login?token=${DEV_TOKEN}&email=therapist@example.com`);
+  await therapist.put('/api/pro/profile', { displayName: 'Dr. Lee', kind: 'mental_health', credentials: 'LCSW' });
+  eq('a provider can’t accept an invite of another kind', (await therapist.post('/api/pro/accept', { token: new URL(tg.inviteLink).searchParams.get('invite') })).status, 409);
+  await therapist.post('/api/pro/accept', { token: mhToken });
+  await kayla.put('/api/day/checkin', { nervous: 'Buzzing', sleep: 'OK', fuel: 'toast', grateful: 'sun' });
+  check('provider reads Kayla’s check-ins', (await therapist.get(`/api/pro/clients/${mh.id}/data/checkins`)).data.items.length > 0);
+  await therapist.post(`/api/pro/clients/${mh.id}/notes`, { body: 'Session 1: sleep routine.' });
+  eq('the other adult (Ty) doesn’t even see that it exists', (await ty.get('/api/care')).data.grants.some((x) => x.id === mh.id), false);
+  eq('…its notes/log → 404 for Ty', (await ty.get(`/api/care/grants/${mh.id}`)).status, 404);
+  eq('…nor can Ty revoke it', (await ty.post(`/api/care/grants/${mh.id}/revoke`)).status, 404);
+  d = (await kayla.get(`/api/care/grants/${mh.id}`)).data;
+  eq('Kayla sees the provider’s note and the access log', [d.notes.map((n) => n.body), d.log.some((l) => l.action === 'read' && l.scope === 'checkins')], [['Session 1: sleep routine.'], true]);
+
+  section('6. the access log is append-only (even for the DB owner)');
+  let blocked = 0;
+  for (const q of ["UPDATE care_access_log SET action = 'nothing'", 'DELETE FROM care_access_log']) {
+    try {
+      await sql(q);
+    } catch {
+      blocked++;
+    }
+  }
+  eq('UPDATE and DELETE refused', blocked, 2);
+  const zc = new Client('zzz-care');
+  await zc.get(`/dev-login?token=${DEV_TOKEN}&email=zzzcare@example.com`);
+  await zc.post('/api/households', { householdName: 'ZZZ Care', type: 'solo', yourName: 'Zc' });
+  const zg = (await zc.post('/api/care/grants', { kind: 'coach', subject: (await zc.get('/api/me')).data.member.key, scopes: ['day'] })).data;
+  const coach = new Client('coach');
+  await coach.get(`/dev-login?token=${DEV_TOKEN}&email=coach@example.com`);
+  await coach.put('/api/pro/profile', { displayName: 'Coach K', kind: 'coach' });
+  await coach.post('/api/pro/accept', { token: new URL(zg.inviteLink).searchParams.get('invite') });
+  await coach.get(`/api/pro/clients/${zg.id}/data/day`);
+  const adm = new Client('admin-care');
+  await adm.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  const zid = (await zc.get('/api/me')).data.household.id;
+  eq('…yet deleting a whole household (with a care log) still works', (await adm.del(`/api/admin/households/${zid}?confirm=${encodeURIComponent('ZZZ Care')}`)).status, 200);
+  eq('…and the pro loses that client', (await coach.get('/api/pro/clients')).data.clients.length, 0);
+}
+
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
 async function uiGate() {
@@ -1505,7 +1585,7 @@ async function uiGate() {
     eq('billing page renders for a grown-up', await page.getByTestId('billing-status').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro'];
     const notFound = [];
     for (const p of pages) {
       await page.goto(BASE + p);
@@ -1581,6 +1661,7 @@ try {
   await billingAdmin();
   await investments();
   await circles();
+  await careTeam();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);
