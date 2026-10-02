@@ -882,9 +882,8 @@ async function bigBuild() {
   const lib = (await ty.get('/api/meals')).data;
   eq('233 meals', lib.meals.length, 233);
   const photos = lib.meals.filter((m) => m.imageUrl.endsWith('.webp'));
-  eq('all 120 rendered photos are used, once each', [photos.length, new Set(photos.map((m) => m.imageUrl)).size], [120, 120]);
-  eq('…the 7 dishes already in the library got their photo (no duplicate recipes)', [1, 5, 7, 11, 33, 44, 58].map((id) => lib.meals.find((m) => m.id === id).imageUrl.endsWith('.webp')), [true, true, true, true, true, true, true]);
-  check('every other meal keeps its drawn illustration (no placeholders)', lib.meals.filter((m) => !m.imageUrl.endsWith('.webp')).every((m) => m.imageUrl === `/meals/${shared.mealSlug(m.title)}.svg`));
+  eq('every meal has its own picture (no illustrations, no placeholders), none shared', [photos.length, new Set(photos.map((m) => m.imageUrl)).size], [233, 233]);
+  check('the original 120 recipes use their renders (named for the dish)', lib.meals.filter((m) => m.id <= 120).every((m) => m.imageUrl === `/meals/${shared.mealSlug(m.title)}.webp`));
   eq('every list row carries nutrition (incl. Chicken Caesar wraps + Steak salad)', lib.meals.filter((m) => m.calories === null || m.protein === null).map((m) => m.title), []);
   eq('…those two specifically', lib.meals.filter((m) => [16, 106].includes(m.id)).map((m) => [m.title, m.calories, m.protein]), [['Chicken Caesar wraps', 520, 44], ['Steak salad with blue cheese', 520, 44]]);
   let broken = 0;
