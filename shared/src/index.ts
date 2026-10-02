@@ -540,7 +540,10 @@ export interface CompleteDayResponse {
 export interface MealSummary {
   id: number;
   title: string;
+  /** Country of origin (e.g. Mexican, Japanese, Argentinian). */
   cuisine: string;
+  /** Region of origin within it, when there is one (Basque Country, Sichuan, Louisiana…). */
+  region: string;
   calories: number | null;
   protein: number | null;
   /** Always set: every library meal has a picture. */
@@ -583,6 +586,8 @@ export interface MealDetail extends MealSummary {
 export interface MealListResponse {
   meals: MealSummary[];
   cuisines: string[];
+  /** Browse by country of origin, with the regions inside each (counts across the whole library). */
+  countries: Array<{ name: string; count: number; regions: Array<{ name: string; count: number }> }>;
   /** The viewer's current program phase, when they have one (meals can be filtered to it). */
   phase: NutritionMode | null;
 }

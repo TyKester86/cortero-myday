@@ -34,11 +34,13 @@ export default function Meals() {
   const { viewing } = useSession();
   const [params, setParams] = useSearchParams();
   const phase = params.get('phase') ?? '';
-  const [cuisine, setCuisine] = useState('');
+  const [cuisine, setCuisine] = useState(params.get('country') ?? '');
+  const [region, setRegion] = useState('');
   const [day, setDay] = useState<Weekday | ''>('');
   const [slot, setSlot] = useState<MealSlot | ''>('');
   const q = new URLSearchParams();
   if (cuisine) q.set('cuisine', cuisine);
+  if (region) q.set('region', region);
   if (phase) q.set('phase', phase);
   const libPath = `/api/meals${q.size ? `?${q.toString()}` : ''}`;
   const library = useLoad<MealListResponse>(viewing ? withMember(libPath, viewing.key) : libPath);
@@ -81,15 +83,40 @@ export default function Meals() {
         ))}
       </div>
       {library.data && (
-        <div className="chips">
-          <button className={cuisine === '' ? 'chip on' : 'chip'} onClick={() => setCuisine('')}>
-            All cuisines
-          </button>
-          {library.data.cuisines.map((c) => (
-            <button key={c} className={cuisine === c ? 'chip on' : 'chip'} onClick={() => setCuisine(c)}>
-              {c}
-            </button>
-          ))}
+        <div className="form wide" data-testid="country-filter">
+          <label>
+            Country of origin
+            <select
+              value={cuisine}
+              onChange={(e) => {
+                setCuisine(e.target.value);
+                setRegion('');
+              }}
+              aria-label="Country of origin"
+            >
+              <option value="">All countries ({library.data.countries.reduce((s, c) => s + c.count, 0)})</option>
+              {library.data.countries.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name} ({c.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          {(library.data.countries.find((c) => c.name === cuisine)?.regions.length ?? 0) > 0 && (
+            <label>
+              Region
+              <select value={region} onChange={(e) => setRegion(e.target.value)} aria-label="Region of origin">
+                <option value="">All of {cuisine}</option>
+                {library.data.countries
+                  .find((c) => c.name === cuisine)
+                  ?.regions.map((r) => (
+                    <option key={r.name} value={r.name}>
+                      {r.name} ({r.count})
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
         </div>
       )}
       <label className="inline-label">
@@ -123,9 +150,12 @@ export default function Meals() {
               <Link to={`/meals/${m.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
                 <b>{m.title}</b>
               </Link>
-              <small>
+              <small data-testid="meal-origin">
                 {m.cuisine}
-                {m.calories !== null && ` · ${m.calories} cal`}
+                {m.region && ` · ${m.region}`}
+              </small>
+              <small data-testid="meal-nutrition">
+                {m.calories !== null && `${m.calories} cal`}
                 {m.protein !== null && ` · ${m.protein}g protein`}
               </small>
               {count(m.id) > 0 && <small>in plan ×{count(m.id)}</small>}

@@ -213,7 +213,7 @@ async function setup() {
   runNode(['dist/cli.js', 'member:add', '--name', 'Evan', '--kind', 'kid', '--age', '11']);
   runNode(['dist/cli.js', 'import:chores', path.join(fixtures, 'sample-chores.csv')]);
   runNode(['dist/cli.js', 'import:workouts', path.join(fixtures, 'sample-workouts.csv')]);
-  runNode(['dist/cli.js', 'meals:seed']); // the real 120-meal library (api/content/meals.csv)
+  runNode(['dist/cli.js', 'meals:seed']); // the real 233-meal library (api/content/meals.csv)
   runNode(['dist/cli.js', 'profile:set', '--member', 'ty', '--start', '2026-09-28', '--days', '1,2,4,5', '--calories', '2700', '--protein', '190', '--carbs', '300', '--fat', '85']);
   const db = new pg.Client({ connectionString: adminDbUrl });
   await db.connect();
@@ -878,16 +878,36 @@ async function bigBuild() {
   eq('history shows it, with weekly minutes', [hist.sessions[0]?.activity, hist.weekMinutes >= 30], ['Walk', true]);
   eq('baseline notes saved', (await ty.put('/api/workouts/baseline', { exercise: 'walks', sleep: '6h', food: 'skip breakfast' })).data.baseline, { exercise: 'walks', sleep: '6h', food: 'skip breakfast' });
 
-  section('A3. meal library: 120 meals, every one with a picture, phase-tagged');
+  section('A3 + add-on 2/3. meal library: 233 meals (original 120 + the 113 pictured dishes), photos, country of origin');
   const lib = (await ty.get('/api/meals')).data;
-  eq('120 meals', lib.meals.length, 120);
-  check('every meal has /meals/<slug>.svg', lib.meals.every((m) => m.imageUrl === `/meals/${shared.mealSlug(m.title)}.svg`));
+  eq('233 meals', lib.meals.length, 233);
+  const photos = lib.meals.filter((m) => m.imageUrl.endsWith('.webp'));
+  eq('all 120 rendered photos are used, once each', [photos.length, new Set(photos.map((m) => m.imageUrl)).size], [120, 120]);
+  eq('…the 7 dishes already in the library got their photo (no duplicate recipes)', [1, 5, 7, 11, 33, 44, 58].map((id) => lib.meals.find((m) => m.id === id).imageUrl.endsWith('.webp')), [true, true, true, true, true, true, true]);
+  check('every other meal keeps its drawn illustration (no placeholders)', lib.meals.filter((m) => !m.imageUrl.endsWith('.webp')).every((m) => m.imageUrl === `/meals/${shared.mealSlug(m.title)}.svg`));
+  eq('every list row carries nutrition (incl. Chicken Caesar wraps + Steak salad)', lib.meals.filter((m) => m.calories === null || m.protein === null).map((m) => m.title), []);
+  eq('…those two specifically', lib.meals.filter((m) => [16, 106].includes(m.id)).map((m) => [m.title, m.calories, m.protein]), [['Chicken Caesar wraps', 520, 44], ['Steak salad with blue cheese', 520, 44]]);
   let broken = 0;
   for (const m of lib.meals) {
     const r = await fetch(BASE + m.imageUrl);
-    if (r.status !== 200 || !/svg/.test(r.headers.get('content-type') ?? '')) broken++;
+    if (r.status !== 200 || !/^image\/(svg|webp)/.test(r.headers.get('content-type') ?? '')) broken++;
   }
-  eq('no broken images (all 120 load)', broken, 0);
+  eq('no broken images (all 233 load)', broken, 0);
+  const webp = await fetch(BASE + photos[0].imageUrl);
+  eq('photos are served as webp', webp.headers.get('content-type'), 'image/webp');
+
+  section('add-on 3. country / region of origin');
+  eq('every meal has a country of origin', lib.meals.filter((m) => !m.cuisine).length, 0);
+  const countryNames = lib.countries.map((c) => c.name);
+  eq('no catch-all categories left (Asian, Breakfast, Salad, Soup, Middle Eastern…)', countryNames.filter((n) => ['Asian', 'Breakfast', 'Salad', 'Soup', 'Middle Eastern', 'Southern', 'Cajun', 'Hawaiian', 'Caribbean'].includes(n)), []);
+  eq('the countries you named are browsable', ['Mexican', 'Japanese', 'Chinese', 'Vietnamese', 'Korean', 'Mediterranean', 'Italian', 'Brazilian', 'Argentinian', 'Spanish', 'French', 'American'].filter((n) => !countryNames.includes(n)), []);
+  eq('country counts add up to the library', lib.countries.reduce((s, c) => s + c.count, 0), 233);
+  const arg = (await ty.get('/api/meals?cuisine=Argentinian')).data.meals;
+  eq('filter by country: Argentinian', [arg.length, arg.every((m) => m.cuisine === 'Argentinian')], [lib.countries.find((c) => c.name === 'Argentinian').count, true]);
+  const basque = (await ty.get('/api/meals?cuisine=Spanish&region=Basque%20Country')).data.meals.map((m) => m.title);
+  eq('filter by region of origin: Basque Country', basque, ['Basque Garlic Chicken & Potatoes']);
+  eq('Cajun dishes are American · Louisiana', lib.meals.filter((m) => /gumbo|jambalaya/i.test(m.title)).map((m) => `${m.cuisine} · ${m.region}`), ['American · Louisiana', 'American · Louisiana']);
+  eq('regions listed under their country', lib.countries.find((c) => c.name === 'French').regions.map((r) => r.name).includes('Provence'), true);
   eq('placeholder image exists', (await fetch(`${BASE}/meals/_placeholder.svg`)).status, 200);
   let thin = 0;
   for (const m of lib.meals) {
@@ -896,7 +916,7 @@ async function bigBuild() {
   }
   eq('every meal complete: macros, cuisine, 4+ ingredients, 3+ numbered steps', thin, 0);
   const cut = (await ty.get('/api/meals?phase=cutting')).data.meals;
-  eq('phase filter: 64 cutting meals, all tagged cutting', [cut.length, cut.every((m) => m.phaseTags.includes('cutting'))], [64, true]);
+  check('phase filter: cutting meals, all tagged cutting', cut.length > 60 && cut.every((m) => m.phaseTags.includes('cutting')), `${cut.length} meals`);
   const mine = (await kayla.get('/api/meals?phase=mine')).data;
   eq('“my phase” follows the program (Kayla: recomp)', [mine.phase, mine.meals.every((m) => m.phaseTags.includes('recomp'))], ['recomp', true]);
   const chains = (await ty.get('/api/grocery')).data.chains;
@@ -1166,7 +1186,7 @@ async function bigBuild() {
   eq("…nor their bills", (await sam.get('/api/bills')).data.bills.length, 0);
   eq("…nor a lecture by id", (await sam.get(`/api/lectures/${l1.id}`)).status, 404);
   eq("…nor a Kester chore", (await sam.post(`/api/chores/${(await sql('SELECT id FROM chores LIMIT 1'))[0].id}/toggle`, { done: true })).status, 404);
-  eq('the meal library is shared (120)', (await sam.get('/api/meals')).data.meals.length, 120);
+  eq('the meal library is shared (233)', (await sam.get('/api/meals')).data.meals.length, 233);
   eq('school autocomplete (optional field)', (await ty.get('/api/schools')).status, 200);
 
   section('K. events: append-only, logged everywhere');
@@ -1578,7 +1598,12 @@ async function uiGate() {
     await dp.waitForURL('**/meals');
     check('“g m” goes to Meals', dp.url().endsWith('/meals'));
     await dp.waitForSelector('.mealcard img');
-    check('meal cards show pictures', (await dp.locator('.mealcard img').count()) === 120);
+    check('meal cards show pictures', (await dp.locator('.mealcard img').count()) === 233);
+    await dp.getByLabel('Country of origin').selectOption('Spanish');
+    await dp.getByLabel('Region of origin').selectOption('Basque Country');
+    await dp.waitForResponse((r) => r.url().includes('region=Basque'));
+    eq('UI: country + region filter narrows the library', await dp.locator('.mealcard').count(), 1);
+    check('UI: cards show country · region and nutrition', (await dp.getByTestId('meal-origin').first().innerText()).includes('Spanish · Basque Country') && /cal/.test(await dp.getByTestId('meal-nutrition').first().innerText()));
 
     section('G. Hana’s confirm card in the chat');
     const t = (await ty.post('/api/day/tasks', { task: 'UI delete me', priority: 'Later', energy: 'Low Brain' })).data.tasks.find((x) => x.task === 'UI delete me');

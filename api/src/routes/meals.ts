@@ -39,6 +39,7 @@ interface MealRow {
   id: number;
   title: string;
   cuisine: string;
+  region: string;
   calories: number | null;
   protein: number | null;
   carbs: number | null;
@@ -58,6 +59,7 @@ const toSummary = (r: MealRow): MealSummary => ({
   id: r.id,
   title: r.title,
   cuisine: r.cuisine,
+  region: r.region,
   calories: r.calories,
   protein: r.protein,
   imageUrl: picture(r.image_url),
@@ -71,21 +73,27 @@ const toSummary = (r: MealRow): MealSummary => ({
  */
 mealsRouter.get('/api/meals', async (req, res) => {
   const cuisine = typeof req.query.cuisine === 'string' ? req.query.cuisine : '';
+  const region = typeof req.query.region === 'string' ? req.query.region : '';
   const { rows } = await pool.query<MealRow>(
-    'SELECT id, title, cuisine, calories, protein, image_url, prep_min, phase_tags FROM meals ORDER BY id',
+    'SELECT id, title, cuisine, region, calories, protein, image_url, prep_min, phase_tags FROM meals ORDER BY id',
   );
   const cuisines = [...new Set(rows.map((r) => r.cuisine))].sort();
+  const countries = cuisines.map((name) => {
+    const mine = rows.filter((r) => r.cuisine === name);
+    const regions = [...new Set(mine.map((r) => r.region).filter(Boolean))].sort();
+    return { name, count: mine.length, regions: regions.map((rg) => ({ name: rg, count: mine.filter((r) => r.region === rg).length })) };
+  });
   const me = req.member ? await programStatus(req.member.id) : null;
   const myPhase: NutritionMode | null = me?.phase.nutrition ?? null;
   const q = typeof req.query.phase === 'string' ? req.query.phase : '';
   const phase = q === 'mine' ? myPhase : (['gaining', 'cutting', 'recomp', 'maintenance'] as const).find((p) => p === q) ?? null;
-  let list = rows.filter((r) => !cuisine || r.cuisine === cuisine);
+  let list = rows.filter((r) => (!cuisine || r.cuisine === cuisine) && (!region || r.region === region));
   if (phase) {
     list = list
       .filter((r) => r.phase_tags.includes(phase))
       .sort((a, b) => (b.protein ?? 0) / (b.calories || 1) - (a.protein ?? 0) / (a.calories || 1));
   }
-  const out: MealListResponse = { meals: list.map(toSummary), cuisines, phase: myPhase };
+  const out: MealListResponse = { meals: list.map(toSummary), cuisines, countries, phase: myPhase };
   res.json(out);
 });
 

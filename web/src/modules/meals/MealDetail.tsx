@@ -38,6 +38,7 @@ export default function MealDetail() {
       <h1>{data.title}</h1>
       <p className="muted">
         {data.cuisine}
+        {data.region && ` · ${data.region}`}
         {data.calories !== null && ` · ${data.calories} cal`}
         {data.protein !== null && ` · ${data.protein}g protein`}
         {data.carbs !== null && ` · ${data.carbs}g carbs`}
