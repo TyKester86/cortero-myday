@@ -1512,7 +1512,8 @@ async function exercisePictures() {
     const r = await fetch(BASE + url);
     if (r.status !== 200 || r.headers.get('content-type') !== 'image/webp') broken.push(n);
   }
-  eq('real demo pictures: 19 of the 29 program exercises wired, every one loads as webp', [Object.keys(real).length, broken], [19, []]);
+  eq('real demo renders: all 29 program exercises wired, every one loads as webp', [Object.keys(real).length, broken], [29, []]);
+  eq('…each exercise shows its own render (named for it)', Object.entries(real).filter(([n, u]) => u !== `/exercises/${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.webp`), []);
   eq('…each mapped to an exercise the programs actually use', Object.keys(real).filter((n) => !names.has(n)), []);
 }
 
