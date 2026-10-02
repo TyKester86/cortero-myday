@@ -13,7 +13,8 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,6 +74,7 @@ const serverEnv = (fakeNow) => ({
   PUSH_STUB: '1',
   CLASSROOM_PROVIDER: 'fake',
   SCHEDULERS: 'off',
+  EXERCISE_IMAGES: path.join(root, 'scripts', 'fixtures', 'exercise-images.e2e.json'),
   ADMIN_EMAILS: 'admin@example.com',
   BILLING_PROVIDER: 'stub',
   ...(fakeNow ? { FAKE_NOW: fakeNow } : {}),
@@ -1459,6 +1461,42 @@ async function careTeam() {
   eq('…and the pro loses that client', (await coach.get('/api/pro/clients')).data.clients.length, 0);
 }
 
+async function exercisePictures() {
+  section('add-on 1. exercise demo pictures wired into the 9 programs (fixture map: every exercise → a test picture)');
+  const { matchPictures } = await import(pathToFileURL(path.join(root, 'scripts', 'lib', 'match-pictures.mjs')).href);
+  const prog = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'program.js')).href);
+  const shared = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
+  const names = new Set();
+  for (const b of shared.BUILDS) for (const l of ['beginner', 'experienced']) for (const r of prog.programRows(b, prog.buildPhases(b, l))) names.add(r.exercise);
+  // 37 demo files named the way an export usually names them (prefixes, underscores, gear words, extras).
+  const files = [...names].map((n, i) => `${String(i + 1).padStart(2, '0')}_${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}${i % 3 === 0 ? '-demo' : ''}.webp`)
+    .concat(['30_box-jump.webp', '31_kettlebell-swing.webp', '32_farmer-carry.webp', '33_face-pull.webp', '34_dips.webp', '35_step-up.webp', '36_mountain-climber.webp', '37_burpee.webp']);
+  const tmp = path.join(os.tmpdir(), `myday-ex-${Date.now()}`);
+  mkdirSync(tmp, { recursive: true });
+  for (const f of files) writeFileSync(path.join(tmp, f), '');
+  const m = matchPictures([...names], tmp);
+  rmSync(tmp, { recursive: true, force: true });
+  eq(`matcher: all ${names.size} program exercises get a picture from 37 files, extras reported unused`, [m.missing, Object.keys(m.map).length, m.unused.length], [[], names.size, 8]);
+  eq('…and never maps a squat to a split squat', m.map['Back squat'].includes('split'), false);
+
+  // A real planned session: move Kayla's Monday workout to today and read it.
+  await kayla.post('/api/workouts/move', { from: DAY.Mon, to: DAY.Sun });
+  const today = (await kayla.get('/api/workouts/today')).data;
+  check('today shows a program session', !!today.session, today.session?.dayName ?? 'none');
+  eq('every exercise in it carries its demo picture', today.session.exercises.filter((x) => !x.image).map((x) => x.exercise), []);
+  eq('the picture loads', (await fetch(BASE + today.session.exercises[0].image)).status, 200);
+
+  // The real wiring shipped in api/content/exercise-images.json (the 37 demo pictures).
+  const real = JSON.parse(readFileSync(path.join(apiDir, 'content', 'exercise-images.json'), 'utf8'));
+  const broken = [];
+  for (const [n, url] of Object.entries(real)) {
+    const r = await fetch(BASE + url);
+    if (r.status !== 200 || r.headers.get('content-type') !== 'image/webp') broken.push(n);
+  }
+  eq('real demo pictures: 19 of the 29 program exercises wired, every one loads as webp', [Object.keys(real).length, broken], [19, []]);
+  eq('…each mapped to an exercise the programs actually use', Object.keys(real).filter((n) => !names.has(n)), []);
+}
+
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
 async function uiGate() {
@@ -1584,6 +1622,16 @@ async function uiGate() {
     await page.goto(`${BASE}/billing`);
     eq('billing page renders for a grown-up', await page.getByTestId('billing-status').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
 
+    section('add-on 1. demo pictures show in the workout detail view');
+    const kc = await browser.newContext(phone);
+    const kpg = await kc.newPage();
+    await kpg.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=kayla`);
+    await kpg.goto(`${BASE}/health`);
+    await kpg.getByTestId('session-name').waitFor({ timeout: 10000 });
+    const shown = await kpg.getByTestId('exercise-demo').count();
+    const cards = await kpg.locator('.card.exercise').count();
+    eq('one demo picture per exercise card', [shown > 0, shown === cards], [true, true]);
+
     section('every page renders for a grown-up (no crashes, no “not found”)');
     const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro'];
     const notFound = [];
@@ -1662,6 +1710,7 @@ try {
   await investments();
   await circles();
   await careTeam();
+  await exercisePictures();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);

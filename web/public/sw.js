@@ -72,7 +72,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(fetch(req).catch(async () => (await caches.match('/index.html')) || (await caches.match('/'))));
     return;
   }
-  if (p.startsWith('/assets/') || p.startsWith('/icons/') || p.startsWith('/meals/')) {
+  if (p.startsWith('/assets/') || p.startsWith('/icons/') || p.startsWith('/meals/') || p.startsWith('/exercises/') || p.startsWith('/roles/')) {
     event.respondWith(cacheFirst(req));
   }
 });

@@ -32,8 +32,25 @@ import { bool, HttpError, int, str } from '../lib/http.js';
 import { targetMember } from '../lib/members.js';
 import { awardXpOnce, withEarn, XP_ACTIONS } from '../lib/xp.js';
 import { phasesFor, programStatus, weekNum } from './program.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 export const healthRouter = Router();
+
+/**
+ * Exercise demo pictures: name → /exercises/<file>, written by
+ * scripts/exercise-pictures.mjs (EXERCISE_IMAGES overrides the file, for tests).
+ */
+const EXERCISE_IMAGES: Record<string, string> = (() => {
+  const file = process.env.EXERCISE_IMAGES || fileURLToPath(new URL('../../content/exercise-images.json', import.meta.url));
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+})();
+const IMAGE_KEYS = new Map(Object.keys(EXERCISE_IMAGES).map((k) => [k.toLowerCase(), EXERCISE_IMAGES[k] ?? '']));
+export const exerciseImage = (name: string): string | null => IMAGE_KEYS.get(name.trim().toLowerCase()) || null;
 
 interface ProfileRow {
   plan_start: DateStr;
@@ -110,7 +127,7 @@ export async function plannedSession(
     phaseName = r.phase_name;
     focus = r.focus;
     const d = days.get(r.day_num) ?? { name: r.day_name, ex: [] };
-    d.ex.push({ exercise: r.exercise, sets: r.sets, reps: r.reps, rest: r.rest, equipment: r.equipment, cues: r.cues, subs: r.subs });
+    d.ex.push({ exercise: r.exercise, sets: r.sets, reps: r.reps, rest: r.rest, equipment: r.equipment, cues: r.cues, subs: r.subs, image: exerciseImage(r.exercise) });
     days.set(r.day_num, d);
   }
   // Training weekdays map in order to plan days 1..n (e.g. Mon,Tue,Thu,Fri -> 1..4).

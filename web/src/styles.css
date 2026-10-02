@@ -386,3 +386,4 @@ h3 { text-transform: uppercase; }
 :root[data-theme='dark'] .role-art { filter: invert(1) brightness(0.9) contrast(1.2); mix-blend-mode: screen; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .role-art { filter: invert(1); mix-blend-mode: screen; } }
 .buildopt .role-art { width: 56px; height: 56px; float: right; margin-left: 6px; }
+.exdemo { width: 100%; max-height: 220px; object-fit: contain; background: #fff; border: 1px solid var(--line); margin-bottom: 8px; display: block; }

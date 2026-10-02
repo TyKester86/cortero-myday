@@ -387,6 +387,8 @@ export interface WorkoutExercise {
   equipment: string;
   cues: string;
   subs: string;
+  /** Demo picture, when one is wired for this exercise (api/content/exercise-images.json). */
+  image: string | null;
 }
 
 export interface WorkoutSession {

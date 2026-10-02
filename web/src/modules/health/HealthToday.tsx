@@ -239,6 +239,7 @@ export default function HealthToday() {
             const last = data.last[ex.exercise];
             return (
               <div className="card exercise" key={ex.exercise}>
+                {ex.image && <img className="exdemo" src={ex.image} alt={`${ex.exercise} demonstration`} loading="lazy" data-testid="exercise-demo" />}
                 <div className="ex-head">
                   <b>{ex.exercise}</b>
                   <span>
