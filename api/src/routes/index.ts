@@ -3,6 +3,7 @@
  * list is the only place they're registered.
  */
 import type { Router } from 'express';
+import { adminRouter, billingRouter } from './billing.js';
 import { billsRouter } from './bills.js';
 import { engagementRouter } from './engagement.js';
 import { identityRouter } from './identity.js';
@@ -14,7 +15,10 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter];
+  notificationsRouter, recordsRouter, billingRouter];
+
+/** Routes that work before the household gate (staff/admin, no household of their own needed). */
+export const preHouseholdRouters: Router[] = [adminRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
 export const uploadRoutes: Router[] = [lectureUploadRouter];

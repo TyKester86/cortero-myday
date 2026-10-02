@@ -24,6 +24,13 @@ export const config = {
     .filter(Boolean),
   /** New Google accounts may sign up and create a household (SIGNUP_OPEN=false: roster emails only). */
   signupOpen: opt('SIGNUP_OPEN', 'true') !== 'false',
+  /** MyDay staff who may open the admin dashboard (comma-separated emails). */
+  adminEmails: opt('ADMIN_EMAILS', '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+  /** Payment provider: none (default — payments not live) | stub (test card, never charges). */
+  billingProvider: (opt('BILLING_PROVIDER', 'none') === 'stub' ? 'stub' : 'none') as 'none' | 'stub',
   /** TEMPORARY verification backdoor. Empty = disabled (the default). */
   devLoginToken: opt('DEV_LOGIN_TOKEN'),
 };

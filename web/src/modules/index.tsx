@@ -35,9 +35,11 @@ import Records from './records/Records';
 import CommandCenter from './desk/CommandCenter';
 import Setup from '../Onboarding';
 import Home from './desk/Home';
+import Billing from './billing/Billing';
+import Admin from './billing/Admin';
 
 /** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
-export type Audience = 'all' | 'adult' | 'kid' | 'tutor';
+export type Audience = 'all' | 'adult' | 'kid' | 'tutor' | 'admin';
 
 /**
  * Module registry: one entry per route. Each module owns a folder under
@@ -88,6 +90,8 @@ export const MODULES: ModuleRoute[] = [
   { path: '/records', element: <Records />, audience: 'adult', nav: { label: 'Records', icon: '🗂' } },
   { path: '/command', element: <CommandCenter />, audience: 'adult', nav: { label: 'Command center', icon: '🖥' } },
   { path: '/setup', element: <Setup />, audience: 'adult' },
+  { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: '💳' } },
+  { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: '🛠' } },
   { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️' } },
   // Old link from build 2; kid PINs now live on the Household page.
   { path: '/kids', element: <Household />, audience: 'adult' },

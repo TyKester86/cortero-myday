@@ -28,7 +28,9 @@ export type EventName =
   | 'quest_claimed'
   | 'hana_action_confirmed'
   | 'notification_sent'
-  | 'quick_note';
+  | 'quick_note'
+  | 'billing_change'
+  | 'household_deleted';
 
 export async function logEvent(
   name: EventName,

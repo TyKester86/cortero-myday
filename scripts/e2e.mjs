@@ -73,6 +73,8 @@ const serverEnv = (fakeNow) => ({
   PUSH_STUB: '1',
   CLASSROOM_PROVIDER: 'fake',
   SCHEDULERS: 'off',
+  ADMIN_EMAILS: 'admin@example.com',
+  BILLING_PROVIDER: 'stub',
   ...(fakeNow ? { FAKE_NOW: fakeNow } : {}),
 });
 
@@ -787,6 +789,7 @@ async function mealSlots() {
 /* ======================= THE BIG BUILD ======================= */
 
 const sam = new Client('sam');
+const ret = new Client('ret');
 const upload = (client, classId, body = randomBytes(2048), headers = {}) =>
   client.req('POST', `/api/lectures/upload?classId=${classId}&durationS=1800`, body, {
     json: false,
@@ -1193,7 +1196,6 @@ async function bigBuild() {
   eq('apple-touch-icon.png at the root, 180×180 PNG', [ati.status, atiBuf.readUInt32BE(16), atiBuf.readUInt32BE(20)], [200, 180, 180]);
   check('index.html links it and keeps the M Peaks logo', html.includes('apple-touch-icon') && html.includes('myday-mark.svg'));
   eq('shared map: empty nesters and retired share the couple art; solo is the traveler', [shared.HOUSEHOLD_TYPE_ICON.empty_nesters, shared.HOUSEHOLD_TYPE_ICON.retired, shared.HOUSEHOLD_TYPE_ICON.solo], ['/roles/couple.png', '/roles/couple.png', '/roles/solo.png']);
-  const ret = new Client('ret');
   await ret.get(`/dev-login?token=${DEV_TOKEN}&email=retired@example.com`);
   eq('Retired is a distinct signup life-stage', (await ret.post('/api/households', { householdName: 'Second act', type: 'retired', yourName: 'Pat' })).status, 201);
   eq('…stored as retired', (await ret.get('/api/me')).data.household.type, 'retired');
@@ -1203,6 +1205,64 @@ async function bigBuild() {
     const r = await fetch(BASE + p);
     check(`GET ${p}`, r.status === 200, `${r.status}`);
   }
+}
+
+/* ======================= next build: billing + admin ======================= */
+
+async function billingAdmin() {
+  section('3. billing: flat household plan, configurable price, 30-day trial, stub payments (BILLING_PROVIDER=stub: never charges)');
+  eq('the founding household (operator-created) is complimentary', (await ty.get('/api/billing')).data.status, 'comped');
+  eq('kids can’t open billing', (await avery.get('/api/billing')).status, 403);
+  let sb = (await sam.get('/api/billing')).data;
+  // (the DB clock sets the 30-day trial; the test server runs on a fake Sunday clock, so allow ±2 days)
+  check('a signup gets the default plan, price not set, 30-day trial', sb.plan.name === 'Household' && sb.plan.priceCents === null && sb.status === 'trialing' && sb.trialDaysLeft >= 28 && sb.trialDaysLeft <= 30, `${sb.trialDaysLeft} days left`);
+  eq('can’t start the paid plan without a payment method', (await sam.post('/api/billing/subscribe')).status, 409);
+  sb = (await sam.post('/api/billing/payment-method', { last4: '4242' })).data;
+  eq('stub payment method recorded as a test card', [sb.paymentMethod?.brand, sb.paymentMethod?.last4, sb.paymentMethod?.test], ['Test card', '4242', true]);
+  eq('…and no price yet → can’t subscribe (409)', (await sam.post('/api/billing/subscribe')).status, 409);
+
+  section('3. admin dashboard (ADMIN_EMAILS)');
+  eq('non-admins get 403', (await ty.get('/api/admin/dashboard')).status, 403);
+  const adm = new Client('admin');
+  await adm.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  eq('/api/me says admin (no household needed)', [(await adm.get('/api/me')).data.isAdmin, (await adm.get('/api/me')).data.household], [true, null]);
+  let d = (await adm.get('/api/admin/dashboard')).data;
+  const hhCount = (await sql('SELECT COUNT(*)::int AS n FROM households'))[0].n;
+  eq('every household listed, with members and status', [d.totals.households, d.households.every((h) => h.status && h.members >= 0)], [hhCount, true]);
+  eq('MRR is $0 while nobody pays', d.totals.mrrCents, 0);
+  const plan = d.plans.find((p) => p.isDefault);
+  d = (await adm.patch(`/api/admin/plans/${plan.id}`, { priceCents: 1299, interval: 'month' })).data;
+  eq('admin sets the price (not hardcoded)', d.plans.find((p) => p.id === plan.id).priceCents, 1299);
+  eq('bad price → 400', (await adm.patch(`/api/admin/plans/${plan.id}`, { interval: 'week' })).status, 400);
+  sb = (await sam.post('/api/billing/subscribe')).data;
+  eq('Sam starts the paid plan (stub, no charge)', sb.status, 'active');
+  d = (await adm.get('/api/admin/dashboard')).data;
+  eq('MRR counts it: $12.99', [d.totals.mrrCents, d.totals.active], [1299, 1]);
+  d = (await adm.post('/api/admin/plans', { code: 'household-yearly', name: 'Household (yearly)', priceCents: 12000, interval: 'year' })).data;
+  const yearly = d.plans.find((p) => p.code === 'household-yearly');
+  const samId = (await sam.get('/api/me')).data.household.id;
+  d = (await adm.patch(`/api/admin/households/${samId}`, { planId: yearly.id })).data;
+  eq('yearly plan counts as ÷12 in MRR', d.totals.mrrCents, 1000);
+  eq('duplicate plan code → 409', (await adm.post('/api/admin/plans', { code: 'household-yearly', name: 'x' })).status, 409);
+  sb = (await sam.post('/api/billing/cancel')).data;
+  eq('cancel', [sb.status, (await adm.get('/api/admin/dashboard')).data.totals.mrrCents], ['canceled', 0]);
+  await sql("UPDATE households SET trial_ends_at = now() - interval '1 day' WHERE id = (SELECT household_id FROM household_members WHERE name = 'Pat')");
+  eq('a lapsed trial shows as trial_ended (app keeps working)', [(await ret.get('/api/billing')).data.status, (await ret.get('/api/day')).status], ['trial_ended', 200]);
+
+  section('0e. purge test households (admin, exact-name confirmation)');
+  const zzz = new Client('zzz');
+  await zzz.get(`/dev-login?token=${DEV_TOKEN}&email=zzz@example.com`);
+  await zzz.post('/api/households', { householdName: 'ZZZ Test', type: 'solo', yourName: 'Zed' });
+  await zzz.post('/api/dump', { note: 'test data' });
+  d = (await adm.get('/api/admin/dashboard')).data;
+  const z = d.households.find((h) => h.name === 'ZZZ Test');
+  eq('wrong confirmation name → 409, nothing deleted', (await adm.del(`/api/admin/households/${z.id}?confirm=ZZZ`)).status, 409);
+  eq('non-admin can’t delete', (await ty.del(`/api/admin/households/${z.id}?confirm=ZZZ%20Test`)).status, 403);
+  const evBefore = (await sql('SELECT COUNT(*)::int AS n FROM events WHERE household_id = $1', [z.id]))[0].n;
+  d = (await adm.del(`/api/admin/households/${z.id}?confirm=${encodeURIComponent('ZZZ Test')}`)).data;
+  eq('deleted with everything in it', [d.households.some((h) => h.id === z.id), (await sql('SELECT COUNT(*)::int AS n FROM dump_items WHERE household_id = $1', [z.id]))[0].n, (await sql('SELECT COUNT(*)::int AS n FROM household_members WHERE household_id = $1', [z.id]))[0].n], [false, 0, 0]);
+  eq('…the append-only events log keeps its rows, unlinked', (await sql('SELECT COUNT(*)::int AS n FROM events WHERE household_id IS NULL AND name = $1', ['household_created']))[0].n >= 1 && evBefore > 0, true);
+  eq('the ZZZ member’s session now has no household (back to signup)', (await zzz.get('/api/me')).data.household, null);
 }
 
 /* ======================= UI gate (Playwright, real browser) ======================= */
@@ -1310,6 +1370,26 @@ async function uiGate() {
     await page.getByRole('link', { name: /Health/ }).click();
     eq('…and again after another hop', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
 
+    section('3 + 0e. admin page: delete a test household through the in-page confirm');
+    const zui = new Client('zui');
+    await zui.get(`/dev-login?token=${DEV_TOKEN}&email=zui@example.com`);
+    await zui.post('/api/households', { householdName: 'ZZZ UI Test', type: 'solo', yourName: 'Zui' });
+    const adCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const ap = await adCtx.newPage();
+    watch(ap);
+    await ap.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+    await ap.goto(`${BASE}/admin`);
+    await ap.getByTestId('admin-totals').waitFor();
+    await ap.getByRole('button', { name: 'Delete ZZZ UI Test' }).click();
+    await ap.getByTestId('confirm').waitFor();
+    await ap.getByTestId('confirm-ok').click();
+    await ap.waitForResponse((r) => r.request().method() === 'DELETE' && /\/api\/admin\/households\//.test(r.url()));
+    await ap.reload();
+    await ap.getByTestId('admin-households').waitFor();
+    eq('test household deleted via the modal, gone after reload', await ap.getByRole('button', { name: 'Delete ZZZ UI Test' }).count(), 0);
+    await page.goto(`${BASE}/billing`);
+    eq('billing page renders for a grown-up', await page.getByTestId('billing-status').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+
     section('every page renders for a grown-up (no crashes, no “not found”)');
     const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings'];
     const notFound = [];
@@ -1352,7 +1432,9 @@ async function uiGate() {
     await ep.goto(`${BASE}/`);
     await ep.getByTestId('first-run-kid').waitFor();
     check('age-specific first run (kid) shows once', true);
+    const saved = ep.waitForResponse((r) => r.url().endsWith('/api/me/prefs'));
     await ep.getByRole('button', { name: 'Let’s go' }).click();
+    await saved;
     await ep.reload();
     await ep.waitForLoadState('networkidle');
     eq('…and not again after dismissing', await ep.getByTestId('first-run-kid').count(), 0);
@@ -1382,6 +1464,7 @@ try {
   await mealsAndGrocery();
   await pinRotation();
   await bigBuild();
+  await billingAdmin();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);

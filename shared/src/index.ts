@@ -36,6 +36,8 @@ export interface Me {
   xpTrack: XpTrack | null;
   /** null = signed in but no household yet (onboarding). */
   household: HouseholdInfo | null;
+  /** MyDay staff (ADMIN_EMAILS): may open the admin dashboard. */
+  isAdmin: boolean;
   /** Per-person look + first-run state (null until linked to a member). */
   prefs: { theme: 'system' | 'light' | 'dark'; accent: string; firstRunDone: boolean } | null;
 }
@@ -1583,4 +1585,64 @@ export interface ChatTurnResult {
   history: ChatMessage[];
   /** Things Hana did this turn, and anything waiting for your OK. */
   actions: HanaAction[];
+}
+/* ================= billing + admin ================= */
+
+export type BillingStatus = 'trialing' | 'active' | 'past_due' | 'canceled' | 'comped';
+/** What the household sees: a lapsed trial shows as trial_ended (the app keeps working). */
+export type BillingDisplayStatus = BillingStatus | 'trial_ended';
+
+export interface BillingPlan {
+  id: number;
+  code: string;
+  name: string;
+  /** null = price not decided yet. */
+  priceCents: number | null;
+  currency: string;
+  interval: 'month' | 'year';
+  active: boolean;
+  isDefault: boolean;
+}
+
+export interface BillingResponse {
+  plan: BillingPlan | null;
+  status: BillingDisplayStatus;
+  trialEndsAt: string | null;
+  trialDaysLeft: number | null;
+  paymentMethod: { brand: string; last4: string; test: boolean } | null;
+  /** none = payments not live; stub = test card only, never charges. */
+  provider: 'none' | 'stub';
+  canManage: boolean;
+}
+
+export interface AdminHousehold {
+  id: number;
+  name: string;
+  type: HouseholdType;
+  members: number;
+  createdAt: string;
+  plan: string | null;
+  status: BillingDisplayStatus;
+  trialEndsAt: string | null;
+  monthlyCents: number;
+}
+
+export interface AdminDashboard {
+  households: AdminHousehold[];
+  plans: BillingPlan[];
+  totals: {
+    households: number;
+    trialing: number;
+    trialEnded: number;
+    active: number;
+    pastDue: number;
+    canceled: number;
+    comped: number;
+    trialsEndingThisWeek: number;
+    /** Monthly recurring revenue from active households (yearly ÷ 12), in cents. */
+    mrrCents: number;
+    /** Active households whose plan has no price yet. */
+    unpriced: number;
+  };
+  provider: 'none' | 'stub';
 }

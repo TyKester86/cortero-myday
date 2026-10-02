@@ -4,6 +4,7 @@ import { api, useOffline } from './api';
 import FirstRun from './components/FirstRun';
 import Shortcuts from './components/Shortcuts';
 import { CreateHousehold } from './Onboarding';
+import Admin from './modules/billing/Admin';
 import { useWide } from './modules/desk/Home';
 import { applyLook } from './modules/settings/Settings';
 import { ConfirmProvider } from './components/Confirm';
@@ -34,7 +35,8 @@ function Shell() {
   const visible = (m: ModuleRoute): boolean =>
     m.audience === 'all' ||
     m.audience === who ||
-    (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student'));
+    (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student')) ||
+    (m.audience === 'admin' && me.isAdmin);
   const routes = MODULES.filter(visible);
   const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who));
   const menuItems = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who));
@@ -107,6 +109,14 @@ function Shell() {
 /** Signed in with no household yet → create one (signup funnel). */
 function Gate() {
   const { me } = useSession();
+  // Staff can open the admin dashboard without a household of their own.
+  if (!me.household && me.isAdmin && window.location.pathname === '/admin') {
+    return (
+      <main className="page">
+        <Admin />
+      </main>
+    );
+  }
   if (!me.household) return <CreateHousehold />;
   return <Shell />;
 }

@@ -25,7 +25,7 @@ import { householdRouter } from './routes/household.js';
 import { householdsRouter } from './routes/households.js';
 import { chatRouter } from './routes/chat.js';
 import { moneyRouter } from './routes/money.js';
-import { extraRouters, uploadRoutes } from './routes/index.js';
+import { extraRouters, preHouseholdRouters, uploadRoutes } from './routes/index.js';
 import { startSchedulers } from './lib/schedulers.js';
 
 if (!config.sessionSecret || config.sessionSecret.length < 32) {
@@ -87,6 +87,8 @@ app.use('/api', requireAuth);
 app.use('/api', idempotency);
 // Signup + onboarding work before you belong to a household.
 app.use(householdsRouter);
+// Staff/admin routes work without a household of your own.
+for (const r of preHouseholdRouters) app.use(r);
 app.use('/api', requireHousehold);
 app.use('/api', moduleUsed);
 

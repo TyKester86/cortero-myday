@@ -326,7 +326,7 @@ async function resolveHousehold(flags: Flags): Promise<number> {
     if (rows[0]) return rows[0].id;
     const code = Array.from(randomBytes(6), (b) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[b % 31]).join('');
     const { rows: made } = await pool.query<{ id: number }>(
-      "INSERT INTO households (name, type, code) VALUES ($1, 'family', $2) RETURNING id",
+      "INSERT INTO households (name, type, code, billing_status) VALUES ($1, 'family', $2, 'comped') RETURNING id", // operator-created: complimentary
       [flags['household-name'] ?? 'Our family', code],
     );
     const id = made[0]?.id;

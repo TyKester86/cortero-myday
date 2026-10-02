@@ -610,6 +610,7 @@ export async function meHandler(req: Request, res: Response<Me>): Promise<void> 
     xpTrack: r?.xp_track ?? null,
     household: req.householdId ? await householdInfo(req.householdId) : null,
     prefs: r ? { theme: r.theme, accent: r.accent, firstRunDone: r.first_run_done } : null,
+    isAdmin: config.adminEmails.includes(req.user.email.toLowerCase()),
   });
 }
 
