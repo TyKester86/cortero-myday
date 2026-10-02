@@ -1276,6 +1276,18 @@ async function uiGate() {
     await page.getByTestId('hana-pending').waitFor({ state: 'detached' });
     eq('confirmed in the chat → task deleted', (await ty.get('/api/day')).data.tasks.some((x) => x.id === t.id), false);
 
+    section('Oct 2 staging bugs: Health after menu navigation; Focus timer stays put');
+    await page.goto(`${BASE}/hana`);
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('link', { name: /Health/ }).click();
+    eq('Ask Hana → menu → Health renders (no blank page)', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('link', { name: /Meals/ }).click();
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('link', { name: /Health/ }).click();
+    eq('…and again after another hop', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+
     section('every page renders for a grown-up (no crashes, no “not found”)');
     const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings'];
     const notFound = [];
@@ -1301,6 +1313,17 @@ async function uiGate() {
       if (await kp.getByText('Page not found.').count()) notFound.push(`kid ${p}`);
     }
     eq('kid pages render', notFound, []);
+    await kp.goto(`${BASE}/focus`);
+    await kp.getByRole('button', { name: 'Start' }).click();
+    let seen = 0;
+    for (let i = 0; i < 10; i++) {
+      if (await kp.getByTestId('focus-clock').isVisible()) seen++;
+      await kp.waitForTimeout(300);
+    }
+    eq('focus timer stays on screen while running (10/10 samples)', seen, 10);
+    await kp.getByRole('button', { name: 'Menu' }).click();
+    eq('Focus timer in the kid menu', await kp.getByRole('link', { name: /Focus timer/ }).count(), 1);
+    await kp.getByRole('button', { name: 'Menu' }).click();
     const ev = await browser.newContext(phone);
     const ep = await ev.newPage();
     await ep.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=evan`);
