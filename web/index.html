@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>MyDay</title>
+    <meta name="theme-color" content="#1B1B44" />
+    <meta name="description" content="One app for the whole family's day." />
+
+    <link rel="icon" href="/icons/myday-favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+    <link rel="icon" type="image/svg+xml" href="/icons/myday-mark.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- iOS home-screen launch -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="MyDay" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- iPhone 12–16 class (390x844 @3x) -->
+    <link
+      rel="apple-touch-startup-image"
+      href="/icons/splash-1170x2532.png"
+      media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    />
+    <!-- iPad Pro 12.9" (1024x1366 @2x) -->
+    <link
+      rel="apple-touch-startup-image"
+      href="/icons/splash-2048x2732.png"
+      media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

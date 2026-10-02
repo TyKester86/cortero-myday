@@ -1,0 +1,16 @@
+{
+  "name": "MyDay",
+  "short_name": "MyDay",
+  "description": "One app for the whole family's day.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1B1B44",
+  "theme_color": "#1B1B44",
+  "icons": [
+    { "src": "/icons/myday-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/myday-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/myday-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

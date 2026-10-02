@@ -1,0 +1,9 @@
+# Paste into opsentra-suite-local/deploy/Caddyfile (Opsentra's Caddy owns ports
+# 80/443 on the droplet). myday-api joins Opsentra's deploy_default network, so
+# Caddy reaches it by container name. Needs Opsentra's deploy (or
+# `docker compose restart caddy`) to pick it up. Touches nothing else.
+
+staging.conquermyday.app {
+	encode zstd gzip
+	reverse_proxy myday-api:4000
+}

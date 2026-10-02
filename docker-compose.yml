@@ -1,0 +1,25 @@
+# MyDay on the shared droplet. Its own compose project ("myday"), joined to
+# Opsentra's network so (a) Opsentra's Caddy can proxy to it and (b) it can
+# reach the shared Postgres server — with its OWN role + database (myday).
+name: myday
+
+services:
+  myday-api:
+    build: .
+    container_name: myday-api
+    restart: unless-stopped
+    mem_limit: 256m
+    env_file: .env # /opt/myday/.env on the droplet — never in git
+    networks:
+      - opsentra
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:4000/api/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  opsentra:
+    external: true
+    name: deploy_default

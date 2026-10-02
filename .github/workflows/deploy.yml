@@ -1,0 +1,91 @@
+# MyDay staging deploy — mirrors opsentra-suite-local/.github/workflows/deploy.yml.
+# Push to main = rsync source to the droplet, rebuild + restart the container,
+# health-check staging. The droplet keeps no git clone. /opt/myday/.env is
+# NEVER touched by this pipeline.
+
+name: Deploy to staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: myday-staging-deploy
+  cancel-in-progress: false
+
+env:
+  DROPLET: 159.223.163.99
+  REMOTE_DIR: /opt/myday
+  STAGING_URL: https://staging.conquermyday.app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Typecheck (shared, api, web)
+        timeout-minutes: 45
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DROPLET" >> ~/.ssh/known_hosts
+
+      - name: Snapshot current release (rollback point)
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes "root@$DROPLET" \
+            "mkdir -p $REMOTE_DIR /opt/myday-snapshots && cp -al $REMOTE_DIR /opt/myday-snapshots/\$(date +%Y%m%d-%H%M%S) && ls -dt /opt/myday-snapshots/*/ | tail -n +6 | xargs -r rm -rf && echo snapshot-ok"
+
+      - name: Rsync source to droplet
+        run: |
+          rsync -avz \
+            --exclude "node_modules/" \
+            --exclude "dist/" \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude ".env" \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+            ./ "root@$DROPLET:$REMOTE_DIR/"
+
+      # Install + build happen inside one sequential docker build (Dockerfile
+      # RUN steps run one at a time). Never parallel: the droplet is small.
+      - name: Build image
+        timeout-minutes: 45
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes "root@$DROPLET" \
+            "set -euo pipefail; cd $REMOTE_DIR && test -f .env && docker compose build myday-api"
+
+      # Recreate = restart on every deploy; migrations run as the container starts.
+      - name: Restart (runs migrations)
+        timeout-minutes: 45
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes "root@$DROPLET" \
+            "set -euo pipefail; cd $REMOTE_DIR && docker compose up -d --force-recreate myday-api"
+
+      - name: Health check staging
+        run: |
+          for i in $(seq 1 12); do
+            BODY=$(curl -s --max-time 10 "$STAGING_URL/api/health" || true)
+            if [ "$BODY" = '{"ok":true}' ]; then echo "OK   $STAGING_URL/api/health -> $BODY"; exit 0; fi
+            echo "waiting ($i): ${BODY:-no response}"; sleep 10
+          done
+          echo "::error::Staging failed its health check. Restore from /opt/myday-snapshots if needed."
+          exit 1
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes "root@$DROPLET" \
+            "docker logs myday-api --tail 120 2>&1; echo '=== STATUS ==='; docker inspect myday-api --format '{{.State.Status}} restarts={{.RestartCount}}' || true"

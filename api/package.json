@@ -1,0 +1,29 @@
+{
+  "name": "@myday/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --env-file-if-exists=.env --watch dist/server.js",
+    "start": "node dist/migrate.js && node dist/server.js",
+    "migrate": "node --env-file-if-exists=.env dist/migrate.js",
+    "cli": "node --env-file-if-exists=.env dist/cli.js"
+  },
+  "dependencies": {
+    "@myday/shared": "*",
+    "connect-pg-simple": "^10.0.0",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/connect-pg-simple": "^7.0.3",
+    "@types/express": "^5.0.6",
+    "@types/express-session": "^1.19.0",
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}

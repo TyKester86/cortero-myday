@@ -1,0 +1,20 @@
+{
+  "name": "cortero-myday",
+  "private": true,
+  "description": "MyDay v2 — the family app (React + TypeScript + PostgreSQL).",
+  "workspaces": [
+    "shared",
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build -w shared && npm run build -w api && npm run build -w web",
+    "typecheck": "npm run build -w shared && npm run typecheck -w shared && npm run typecheck -w api && npm run typecheck -w web",
+    "dev:api": "npm run dev -w api",
+    "dev:web": "npm run dev -w web",
+    "migrate": "npm run migrate -w api"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
