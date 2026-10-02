@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import type { EngagementResponse, HouseholdInfo, NotificationsResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
+import { InviteGrownUp, MergeDuplicate } from './HouseholdTools';
 
 export const ACCENTS: Array<[string, string]> = [
   ['navy', '#c2410c'], // default ember (key kept for saved prefs)
@@ -186,6 +187,8 @@ export default function Settings() {
           <Link to="/household">Roster, invites and kid PINs →</Link>
         </div>
       )}
+      {isAdult && hh && <InviteGrownUp />}
+      {isAdult && hh && me.isAdmin && <MergeDuplicate />}
     </section>
   );
 }

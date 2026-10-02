@@ -4,6 +4,7 @@ import { api, useOffline } from './api';
 import FirstRun from './components/FirstRun';
 import Shortcuts from './components/Shortcuts';
 import { CreateHousehold } from './Onboarding';
+import { PendingInvitePrompt } from './components/JoinFlow';
 import Admin from './modules/billing/Admin';
 import { Moderation } from './modules/circles/Circles';
 import { ProPortal } from './modules/care/Care';
@@ -120,14 +121,25 @@ function Gate() {
     return <main className="page">{window.location.pathname === '/admin' ? <Admin /> : <Moderation />}</main>;
   }
   if (!me.household) return <CreateHousehold />;
-  return <Shell />;
+  return (
+    <>
+      <Shell />
+      {me.pendingInvite && <PendingInvitePrompt household={me.pendingInvite.household} />}
+    </>
+  );
 }
 
 export default function App() {
   const path = window.location.pathname;
   // Invite links work signed out.
   const join = path.match(/^\/join\/([^/]+)$/);
-  if (join?.[1]) return <Join token={join[1]} />;
+  if (join?.[1]) {
+    return (
+      <ConfirmProvider>
+        <Join token={join[1]} />
+      </ConfirmProvider>
+    );
+  }
   return (
     <BrowserRouter>
       <ConfirmProvider>

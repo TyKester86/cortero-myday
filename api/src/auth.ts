@@ -45,6 +45,8 @@ declare module 'express-session' {
     pinVersion: number;
     /** Invite token carried through Google sign-in (joins that household). */
     inviteToken: string;
+    /** An invite to ANOTHER household, held until the person says "leave mine and join". */
+    pendingInvite: string;
   }
 }
 
@@ -86,13 +88,39 @@ async function startSession(req: Request, userId: number): Promise<void> {
  * in as that member. Anyone else may sign up (they'll create a household)
  * unless SIGNUP_OPEN=false, in which case only roster emails get in.
  */
-async function upsertUser(p: GoogleProfile, inviteToken: string | undefined): Promise<number> {
+/** A still-valid invite's member + household, without claiming it. */
+export async function peekInvite(token: string): Promise<{ memberId: number; householdId: number; household: string; name: string } | null> {
+  const { rows } = await asSystem(() =>
+    pool.query<{ member_id: number; household_id: number; household: string; name: string }>(
+      `SELECT i.member_id, i.household_id, h.name AS household, m.name FROM invites i
+         JOIN household_members m ON m.id = i.member_id JOIN households h ON h.id = i.household_id
+        WHERE i.token_hash = $1 AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now() AND m.archived_at IS NULL`,
+      [hashToken(token)],
+    ),
+  );
+  const r = rows[0];
+  return r ? { memberId: r.member_id, householdId: r.household_id, household: r.household, name: r.name } : null;
+}
+
+async function upsertUser(p: GoogleProfile, inviteToken: string | undefined): Promise<{ userId: number; pendingInvite: string | null }> {
   const email = p.email.toLowerCase();
   return asSystem(async () => {
     let memberId: number | null = null;
+    let pendingInvite: string | null = null;
     // Accepting an invite link links this Google account to the invited member,
-    // even if they signed in with a different address than the one invited.
-    if (inviteToken) memberId = await claimInvite(inviteToken, email);
+    // even if they signed in with a different address than the one invited —
+    // unless they already belong to ANOTHER household: then nothing moves until
+    // they confirm "leave mine and join" in the app.
+    if (inviteToken) {
+      const inv = await peekInvite(inviteToken);
+      const { rows: cur } = await pool.query<{ household_id: number | null }>(
+        'SELECT m.household_id FROM users u JOIN household_members m ON m.id = u.member_id WHERE u.google_sub = $1 AND m.archived_at IS NULL',
+        [p.sub],
+      );
+      const mine = cur[0]?.household_id ?? null;
+      if (inv && mine !== null && mine !== inv.householdId) pendingInvite = inviteToken;
+      else memberId = await claimInvite(inviteToken, email);
+    }
     if (memberId === null) {
       const { rows: mem } = await pool.query<{ id: number }>(
         'SELECT id FROM household_members WHERE lower(email) = $1 AND archived_at IS NULL ORDER BY id LIMIT 1',
@@ -117,7 +145,7 @@ async function upsertUser(p: GoogleProfile, inviteToken: string | undefined): Pr
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('user upsert returned nothing');
     if (!existing.rowCount) await logEvent('signup', { via: 'google', invited: memberId !== null }, memberId, null);
-    return id;
+    return { userId: id, pendingInvite };
   });
 }
 
@@ -134,6 +162,17 @@ async function claimInvite(token: string, email: string): Promise<number | null>
   const taken = await pool.query('SELECT 1 FROM household_members WHERE lower(email) = $1 AND id <> $2', [email, memberId]);
   if (!taken.rowCount) await pool.query('UPDATE household_members SET email = $2 WHERE id = $1', [memberId, email]);
   return memberId;
+}
+
+/** Claim an invite for a signed-in user: link the account to the invited member. */
+export async function claimAndLink(token: string, userId: number, email: string): Promise<number> {
+  return asSystem(async () => {
+    const memberId = await claimInvite(token, email.toLowerCase());
+    if (memberId === null) throw new HttpError(404, 'That invite is no longer valid');
+    await pool.query('UPDATE users SET member_id = $2 WHERE id = $1', [userId, memberId]);
+    await markInviteAccepted(memberId);
+    return memberId;
+  });
 }
 
 export async function markInviteAccepted(memberId: number): Promise<void> {
@@ -206,9 +245,10 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
     return;
   }
   try {
-    const userId = await upsertUser(info, req.session.inviteToken);
+    const { userId, pendingInvite } = await upsertUser(info, req.session.inviteToken);
     await startSession(req, userId);
     delete req.session.inviteToken;
+    if (pendingInvite) req.session.pendingInvite = pendingInvite;
   } catch (e) {
     if (e instanceof HttpError && e.status === 403) {
       res.redirect('/login?error=roster');
@@ -255,6 +295,17 @@ authRouter.get('/dev-login', async (req, res) => {
     });
     if (id === undefined) throw new Error('dev user upsert returned nothing');
     await startSession(req, id);
+    // &invite=<token>: the same handling as Google sign-in through an invite link.
+    const invite = typeof req.query.invite === 'string' ? req.query.invite : '';
+    if (invite) {
+      const inv = await peekInvite(invite);
+      const { rows: cur } = await asSystem(() =>
+        pool.query<{ household_id: number }>('SELECT m.household_id FROM users u JOIN household_members m ON m.id = u.member_id WHERE u.id = $1 AND m.archived_at IS NULL', [id]),
+      );
+      const mine = cur[0]?.household_id ?? null;
+      if (inv && mine !== null && mine !== inv.householdId) req.session.pendingInvite = invite;
+      else if (inv) await claimAndLink(invite, id, email);
+    }
     req.session.save(() => res.redirect('/'));
     return;
   }
@@ -611,6 +662,7 @@ export async function meHandler(req: Request, res: Response<Me>): Promise<void> 
     household: req.householdId ? await householdInfo(req.householdId) : null,
     prefs: r ? { theme: r.theme, accent: r.accent, firstRunDone: r.first_run_done } : null,
     isAdmin: config.adminEmails.includes(req.user.email.toLowerCase()),
+    pendingInvite: req.session.pendingInvite ? await peekInvite(req.session.pendingInvite).then((i) => (i ? { household: i.household } : null)) : null,
   });
 }
 

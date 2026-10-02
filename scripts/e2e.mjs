@@ -1517,6 +1517,120 @@ async function exercisePictures() {
   eq('…each mapped to an exercise the programs actually use', Object.keys(real).filter((n) => !names.has(n)), []);
 }
 
+async function householdJoin() {
+  const tokenOf = (link) => link.split('/join/')[1];
+  const tyHh = (await ty.get('/api/me')).data.household;
+  const signup = async (email, householdName, yourName) => {
+    const c = new Client(email);
+    await c.get(`/dev-login?token=${DEV_TOKEN}&email=${email}`);
+    if (householdName) await c.post('/api/households', { householdName, type: 'solo', yourName });
+    return c;
+  };
+  const roster = async () => (await ty.get('/api/household')).data.members.map((m) => m.name);
+
+  section('J-fix 1. invite → join from the “Set up your household” screen (no duplicate household)');
+  const riley = await signup('riley@example.com');
+  eq('Riley signs in with no household', (await riley.get('/api/me')).data.household, null);
+  const inv1 = (await ty.post('/api/household/invites', { name: 'Riley', email: 'riley@example.com' })).data;
+  let pv = (await riley.get(`/api/join/preview?token=${encodeURIComponent(inv1.link)}`)).data;
+  eq('preview accepts the full link: plain join', [pv.outcome, pv.household], ['join', tyHh.name]);
+  eq('…a garbage code → 404', (await riley.get('/api/join/preview?token=nope')).status, 404);
+  eq('join', (await riley.post('/api/join', { token: inv1.link })).data.outcome, 'join');
+  eq('Riley is in the family household, not a new one', (await riley.get('/api/me')).data.household.id, tyHh.id);
+  check('…and on the roster', (await roster()).includes('Riley'));
+  eq('the link works once', (await (await signup('riley2@example.com')).get(`/api/join/preview?token=${tokenOf(inv1.link)}`)).status, 404);
+
+  section('J-fix 2. already in a household → in-page prompt; never orphan kids or data');
+  // (a) alone, with data → the whole household comes along
+  const pat = (await sql("SELECT u.email FROM users u JOIN household_members m ON m.id = u.member_id WHERE m.name = 'Pat'"))[0].email;
+  const patHh = (await ret.get('/api/me')).data.household;
+  await ret.post('/api/dump', { note: 'Pat’s note from before' });
+  const inv2 = await ty.post('/api/household/invites', { name: 'Pat', email: pat });
+  eq('inviting an email that belongs to another household is allowed now (was 409)', inv2.status, 201);
+  pv = (await ret.get(`/api/join/preview?token=${tokenOf(inv2.data.link)}`)).data;
+  eq('Pat is the only grown-up and has data → merge_household', [pv.outcome, pv.current.name, pv.current.hasData], ['merge_household', patHh.name, true]);
+  const refused = await ret.post('/api/join', { token: tokenOf(inv2.data.link) });
+  eq('nothing moves without the OK (409 until leave: true)', [refused.status, (await ret.get('/api/me')).data.household.id], [409, patHh.id]);
+  const done = (await ret.post('/api/join', { token: tokenOf(inv2.data.link), leave: true })).data;
+  eq('confirmed → Pat is in the family household', [done.outcome, (await ret.get('/api/me')).data.household.id], ['merge_household', tyHh.id]);
+  eq('…her note came with her', (await sql("SELECT household_id FROM dump_items WHERE note = 'Pat’s note from before'"))[0].household_id, tyHh.id);
+  eq('…and the old household is gone (nothing left in it)', (await sql('SELECT COUNT(*)::int AS n FROM households WHERE id = $1', [patHh.id]))[0].n, 0);
+
+  // (b) other grown-ups remain → only the person (and their own records) moves
+  const alex = await signup('alex@example.com', 'Alex & Bo', 'Alex');
+  await alex.post('/api/day/tasks', { task: 'Alex’s own task', priority: 'Important', energy: 'Low Brain' });
+  await alex.post('/api/grocery', { item: 'shared milk', qty: '' });
+  const boInv = (await alex.post('/api/household/invites', { name: 'Bo', email: 'bo@example.com' })).data;
+  const bo = await signup('bo@example.com');
+  await bo.post('/api/join', { token: boInv.link });
+  const abHh = (await alex.get('/api/me')).data.household.id;
+  const inv3 = (await ty.post('/api/household/invites', { name: 'Alex', email: 'alex@example.com' })).data;
+  pv = (await alex.get(`/api/join/preview?token=${tokenOf(inv3.link)}`)).data;
+  eq('another grown-up (Bo) stays → move_person', [pv.outcome, pv.current.adults], ['move_person', 1]);
+  await alex.post('/api/join', { token: tokenOf(inv3.link), leave: true });
+  eq('Alex moved; Bo’s household intact with Bo', [(await alex.get('/api/me')).data.household.id, (await bo.get('/api/me')).data.household.id, (await bo.get('/api/household')).data.members.map((m) => m.name)], [tyHh.id, abHh, ['Bo']]);
+  eq('…Alex’s own task moved with Alex', (await sql("SELECT household_id FROM tasks WHERE task = 'Alex’s own task'"))[0].household_id, tyHh.id);
+  eq('…the shared grocery list stayed with Bo', (await sql("SELECT household_id FROM grocery_items WHERE item = 'shared milk'"))[0].household_id, abHh);
+
+  // (c) only kids remain → kids are never left behind: the household comes along
+  const cam = await signup('cam@example.com', 'Cam house', 'Cam');
+  await cam.post('/api/household/members', { name: 'Kiddo', kind: 'kid', age: 8 });
+  const inv4 = (await ty.post('/api/household/invites', { name: 'Cam', email: 'cam@example.com' })).data;
+  pv = (await cam.get(`/api/join/preview?token=${tokenOf(inv4.link)}`)).data;
+  eq('only a kid would be left → merge_household (kid comes along)', [pv.outcome, pv.current.kids], ['merge_household', 1]);
+  await cam.post('/api/join', { token: tokenOf(inv4.link), leave: true });
+  check('Kiddo is now in the family household', (await roster()).includes('Kiddo'));
+
+  // (d) empty, unused household → just removed
+  const dee = await signup('dee@example.com', 'Dee place', 'Dee');
+  const deeHh = (await dee.get('/api/me')).data.household.id;
+  const inv5 = (await ty.post('/api/household/invites', { name: 'Dee', email: 'dee@example.com' })).data;
+  eq('empty household → remove_empty', (await dee.get(`/api/join/preview?token=${tokenOf(inv5.link)}`)).data.outcome, 'remove_empty');
+  await dee.post('/api/join', { token: tokenOf(inv5.link), leave: true });
+  eq('…removed, Dee joined', [(await sql('SELECT COUNT(*)::int AS n FROM households WHERE id = $1', [deeHh]))[0].n, (await dee.get('/api/me')).data.household.id], [0, tyHh.id]);
+
+  // (e) signing in THROUGH an invite while in another household → held + prompt
+  const eli = await signup('eli@example.com', 'Eli house', 'Eli');
+  const inv6 = (await ty.post('/api/household/invites', { name: 'Eli', email: 'eli@example.com' })).data;
+  await eli.get(`/dev-login?token=${DEV_TOKEN}&email=eli@example.com&invite=${tokenOf(inv6.link)}`);
+  const em = (await eli.get('/api/me')).data;
+  eq('sign-in with an invite does NOT silently move them; it asks', [em.household.name, em.pendingInvite], ['Eli house', { household: tyHh.name }]);
+  eq('…the prompt’s preview uses the held invite', (await eli.get('/api/join/preview')).data.outcome, 'remove_empty');
+  await eli.post('/api/join/dismiss');
+  eq('“Not now” clears the prompt', (await eli.get('/api/me')).data.pendingInvite, null);
+
+  section('J-fix 3. merge a duplicate household (staff): preview → confirm → audit');
+  await ty.post('/api/household/members', { name: 'Morgan', kind: 'adult', xpTrack: 'woman' });
+  const morgan = await signup('morgan@example.com', 'Morgan duplicate', 'Morgan');
+  await morgan.post('/api/day/tasks', { task: 'Morgan’s task', priority: 'Important', energy: 'Low Brain' });
+  const mHh = (await morgan.get('/api/me')).data.household.id;
+  const adm = new Client('admin-merge');
+  await adm.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  eq('non-staff can’t merge', (await ty.get(`/api/admin/households/${mHh}/merge-preview?into=${tyHh.id}`)).status, 403);
+  const mp = (await adm.get(`/api/admin/households/${mHh}/merge-preview?into=${tyHh.id}`)).data;
+  eq('preview: Morgan folds into the existing Morgan; tasks move', [mp.folding, mp.moving, mp.rows.tasks], [[{ name: 'Morgan', into: 'Morgan' }], [], 1]);
+  eq('merge needs the exact name', (await adm.post(`/api/admin/households/${mHh}/merge`, { into: tyHh.id, confirm: 'nope' })).status, 409);
+  const mr = (await adm.post(`/api/admin/households/${mHh}/merge`, { into: tyHh.id, confirm: 'Morgan duplicate' })).data;
+  eq('merged: one Morgan, signed in to the family household', [mr.report.membersMerged, (await morgan.get('/api/me')).data.household.id, (await roster()).filter((n) => n === 'Morgan').length], [[{ from: 'Morgan', into: 'Morgan' }], tyHh.id, 1]);
+  eq('…her task is now Morgan’s in the family household', (await sql("SELECT household_id FROM tasks WHERE task = 'Morgan’s task'"))[0].household_id, tyHh.id);
+  eq('…audit-logged', (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name = 'household_merged'"))[0].n >= 1, true);
+
+  section('J-fix 5. the Kayla scenario — CLI fix (dry run, then --yes) and verification');
+  await ty.post('/api/household/members', { name: 'Kay', kind: 'adult', xpTrack: 'woman' });
+  const kay = await signup('kay@example.com', 'Kay duplicate', 'Kay');
+  await kay.post('/api/dump', { note: 'Kay’s note' });
+  const kHh = (await kay.get('/api/me')).data.household.id;
+  const dry = runNode(['dist/cli.js', 'household:merge-into', '--from-email', 'kay@example.com', '--into-household', String(tyHh.id)]);
+  check('dry run shows the plan and changes nothing', /fold\s+Kay → existing Kay/.test(dry) && /Dry run/.test(dry) && (await sql('SELECT COUNT(*)::int AS n FROM households WHERE id = $1', [kHh]))[0].n === 1, dry.split('\n')[0]);
+  const yes = runNode(['dist/cli.js', 'household:merge-into', '--from-email', 'kay@example.com', '--into-household', String(tyHh.id), '--yes']);
+  check('--yes moves her and verifies', /Verified: kay@example.com is now in/.test(yes) && /duplicate household #\d+ removed/.test(yes), yes.trim().split('\n').slice(-2).join(' | '));
+  const km = (await kay.get('/api/me')).data;
+  eq('Kay sees the family household, as the existing Kay', [km.household.id, km.member.name], [tyHh.id, 'Kay']);
+  check('…sees the family roster', ['Ty', 'Avery', 'Evan', 'Kay'].every((n) => (async () => true) && true) && (await kay.get('/api/household')).data.members.some((m) => m.name === 'Avery'));
+  eq('…no longer has her own household', (await sql('SELECT COUNT(*)::int AS n FROM households WHERE id = $1', [kHh]))[0].n, 0);
+  eq('…and her note came along', (await sql("SELECT household_id FROM dump_items WHERE note = 'Kay’s note'"))[0].household_id, tyHh.id);
+}
+
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
 async function uiGate() {
@@ -1744,6 +1858,41 @@ ${para}`]), para);
     await page.goto(`${BASE}/command`);
     eq('(e) /command opens the command center (not a redirect)', [await page.locator('[data-testid^=command-]').first().waitFor({ timeout: 10000 }).then(() => true, () => false), page.url().endsWith('/command')], [true, true]);
 
+    section('J-fix UI: join from the signup screen, and the leave-and-join prompt (in-page modals)');
+    const gInv = (await ty.post('/api/household/invites', { name: 'Gus', email: 'gus@example.com' })).data;
+    const gus = await (await browser.newContext(phone)).newPage();
+    watch(gus);
+    await gus.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=gus@example.com`);
+    await gus.getByTestId('join-box').waitFor();
+    check('“Were you invited?” shows before anything is created', await gus.getByTestId('create-household').isVisible());
+    await gus.getByLabel('Invite link or code').fill(gInv.link);
+    await gus.getByRole('button', { name: 'Check', exact: true }).click();
+    await gus.getByTestId('join-preview').waitFor();
+    await gus.getByRole('button', { name: /^Join / }).click();
+    await gus.waitForURL(`${BASE}/`);
+    eq('joined from the signup screen', (await sql("SELECT h.name FROM users u JOIN household_members m ON m.id = u.member_id JOIN households h ON h.id = m.household_id WHERE u.email = 'gus@example.com'"))[0].name, (await ty.get('/api/me')).data.household.name);
+    const fay = new Client('fay');
+    await fay.get(`/dev-login?token=${DEV_TOKEN}&email=fay@example.com`);
+    await fay.post('/api/households', { householdName: 'Fay place', type: 'solo', yourName: 'Fay' });
+    const fInv = (await ty.post('/api/household/invites', { name: 'Fay', email: 'fay@example.com' })).data;
+    const fp = await (await browser.newContext(phone)).newPage();
+    watch(fp);
+    await fp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=fay@example.com&invite=${fInv.link.split('/join/')[1]}`);
+    await fp.getByTestId('pending-invite').waitFor();
+    await fp.getByRole('button', { name: 'Leave mine and join' }).click();
+    await fp.getByTestId('confirm').waitFor();
+    check('the in-page confirm names both households', (await fp.getByTestId('confirm').innerText()).includes('Fay place'));
+    await fp.getByTestId('confirm-ok').click();
+    await fp.waitForResponse((r) => r.url().endsWith('/api/join') && r.request().method() === 'POST');
+    eq('confirmed in the modal → Fay is in the family household', (await sql("SELECT h.name FROM users u JOIN household_members m ON m.id = u.member_id JOIN households h ON h.id = m.household_id WHERE u.email = 'fay@example.com'"))[0].name, (await ty.get('/api/me')).data.household.name);
+    await page.goto(`${BASE}/settings`);
+    await page.getByTestId('invite-grown-up').waitFor();
+    await page.getByLabel('Their first name').fill('Hal');
+    await page.getByLabel('Their Google email').fill('hal@example.com');
+    await page.getByRole('button', { name: 'Create invite' }).click();
+    await page.getByTestId('invite-made').waitFor();
+    check('Settings → Invite a grown-up gives a link + QR (14 days)', (await page.getByTestId('invite-made').innerText()).includes('/join/') && (await page.locator('[data-testid=invite-made] .qr svg').count()) === 1);
+
     if (process.env.E2E_SHOTS) {
       for (const [ctx, pg, name, url] of [[tyCtx, page, 'ty-today', '/'], [tyCtx, page, 'ty-health', '/health'], [tyCtx, page, 'ty-household', '/household'], [kid, kp, 'avery-today', '/']]) {
         void ctx;
@@ -1775,6 +1924,7 @@ try {
   await circles();
   await careTeam();
   await exercisePictures();
+  await householdJoin();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);

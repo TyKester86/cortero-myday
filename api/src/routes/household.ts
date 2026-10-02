@@ -209,19 +209,28 @@ householdRouter.post('/api/household/members/:id/restore', async (req, res) => {
 householdRouter.post('/api/household/invites', async (req, res) => {
   const me = requireAdult(req);
   const b = req.body as Record<string, unknown>;
-  const name = str(b.name, 'name', 40, true);
+  // Inviting someone already on the roster (e.g. added by name) links them, no duplicate.
+  const rosterId = b.memberId === undefined || b.memberId === null || b.memberId === '' ? null : idParam(b.memberId);
+  const rosterName = rosterId ? (await pool.query<{ name: string }>('SELECT name FROM household_members WHERE id = $1', [rosterId])).rows[0]?.name : undefined;
+  if (rosterId && !rosterName) throw new HttpError(404, 'No such household member');
+  const name = rosterName ?? str(b.name, 'name', 40, true);
   const email = parseEmail(b.email);
   if (!email) throw new HttpError(400, 'An email is required to invite someone');
   const track = parseTrack(b.xpTrack, 'adult');
   if (track === 'kid') throw new HttpError(400, 'Invites are for grown-ups; kids use a PIN');
 
   const { rows: existing } = await pool.query<{ id: number; kind: MemberKind; archived: boolean }>(
-    'SELECT id, kind, (archived_at IS NOT NULL) AS archived FROM household_members WHERE lower(email) = $1',
-    [email],
+    rosterId
+      ? 'SELECT id, kind, (archived_at IS NOT NULL) AS archived FROM household_members WHERE id = $2 AND ($1::text IS NOT NULL)'
+      : 'SELECT id, kind, (archived_at IS NOT NULL) AS archived FROM household_members WHERE lower(email) = $1',
+    rosterId ? [email, rosterId] : [email],
   );
   let memberId: number;
   const ex = existing[0];
-  if (!ex && (await emailTaken(email, null))) throw new HttpError(409, 'That email already belongs to another household');
+  // Someone who already belongs to another household can still be invited: accepting asks
+  // them to confirm leaving theirs. Their email stays on the invite (not on a second member
+  // row) so signing in normally can't land them in the wrong household.
+  const elsewhere = !ex && (await emailTaken(email, null));
   if (ex) {
     if (ex.kind !== 'adult' || ex.archived) throw new HttpError(409, 'That email belongs to someone who can’t be invited');
     memberId = ex.id;
@@ -230,7 +239,7 @@ householdRouter.post('/api/household/invites', async (req, res) => {
     const { rows } = await pool.query<{ id: number }>(
       `INSERT INTO household_members (key, name, kind, email, xp_track, sort_order)
        VALUES ($1, $2, 'adult', $3, $4, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM household_members)) RETURNING id`,
-      [await freeKey(name), name, email, track],
+      [await freeKey(name), name, elsewhere ? null : email, track],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('member insert returned nothing');

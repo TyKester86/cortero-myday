@@ -9,6 +9,7 @@ import { careRouter, proRouter } from './care.js';
 import { circlesRouter, circlesStaffRouter } from './circles.js';
 import { engagementRouter } from './engagement.js';
 import { identityRouter } from './identity.js';
+import { joinRouter } from './join.js';
 import { investRouter } from './invest.js';
 import { kidMoneyRouter } from './kidmoney.js';
 import { lecturesRouter, lectureUploadRouter } from './lectures.js';
@@ -21,7 +22,7 @@ export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRout
   notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
-export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, proRouter];
+export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, proRouter, joinRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
 export const uploadRoutes: Router[] = [lectureUploadRouter];

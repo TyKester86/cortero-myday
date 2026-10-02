@@ -38,6 +38,8 @@ export interface Me {
   household: HouseholdInfo | null;
   /** MyDay staff (ADMIN_EMAILS): may open the admin dashboard. */
   isAdmin: boolean;
+  /** Signed in through an invite to ANOTHER household: held until they confirm leaving theirs. */
+  pendingInvite: { household: string } | null;
   /** Per-person look + first-run state (null until linked to a member). */
   prefs: { theme: 'system' | 'light' | 'dark'; accent: string; firstRunDone: boolean } | null;
 }
@@ -1874,4 +1876,32 @@ export interface ProClient {
 export interface ProScopeData {
   scope: CareScope;
   items: Array<{ title: string; detail: string; date: string | null }>;
+}
+
+/* ================= joining a household / merging duplicates ================= */
+
+export interface JoinPreview {
+  /** The household you'd join, and who you'd be in it. */
+  household: string;
+  as: string;
+  /** Your current household, when you have one. */
+  current: { name: string; adults: number; kids: number; hasData: boolean } | null;
+  /**
+   * join — no household yet; move_person — others stay, you (and your own records) move;
+   * merge_household — you're its only grown-up, so everything moves with you;
+   * remove_empty — your unused household is removed; already_member.
+   */
+  outcome: 'join' | 'move_person' | 'merge_household' | 'remove_empty' | 'already_member';
+  explanation: string;
+}
+
+export interface MergePreview {
+  from: { id: number; name: string };
+  into: { id: number; name: string };
+  /** People who move in as they are. */
+  moving: Array<{ name: string; kind: string }>;
+  /** People folded into someone already in the target (same name + kind). */
+  folding: Array<{ name: string; into: string }>;
+  /** Rows per area that move. */
+  rows: Record<string, number>;
 }

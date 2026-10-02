@@ -23,6 +23,7 @@ import type {
 import { config } from '../config.js';
 import { asSystem, pool } from '../db.js';
 import { logEvent } from '../lib/events.js';
+import { mergeHouseholds, planMerge as mergePlan } from '../lib/householdMove.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { requireAdult } from '../lib/members.js';
 
@@ -316,4 +317,26 @@ adminRouter.delete('/api/admin/households/:id', async (req, res) => {
   });
   await asSystem(() => logEvent('household_deleted', { id }, null, null));
   res.json(await dashboard());
+});
+
+/* ---------- merge a duplicate household (staff) ---------- */
+
+adminRouter.get('/api/admin/households/:id/merge-preview', async (req, res) => {
+  requireAdmin(req);
+  res.json((await mergePlan(idParam(req.params.id), idParam(req.query.into))).preview);
+});
+
+/** Move a duplicate household (and everyone + everything in it) into another, then delete it. */
+adminRouter.post('/api/admin/households/:id/merge', async (req, res) => {
+  requireAdmin(req);
+  const from = idParam(req.params.id);
+  const b = req.body as { into?: unknown; confirm?: unknown };
+  const into = idParam(b.into);
+  const { preview, map } = await mergePlan(from, into);
+  if (b.confirm !== preview.from.name) throw new HttpError(409, 'Confirm with the duplicate household’s exact name');
+  const report = await mergeHouseholds(from, into, map);
+  await asSystem(() =>
+    logEvent('household_merged', { from, into, by: req.user?.email ?? '', moved: report.membersMoved.length, folded: report.membersMerged.length, dropped: Object.values(report.dropped).reduce((s, n) => s + n, 0) }, null, into),
+  );
+  res.json({ report, dashboard: await dashboard() });
 });

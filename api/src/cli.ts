@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { BUILDS, mealPhaseTags, mealSlug } from '@myday/shared';
 import { asSystem, inHousehold, pool, tx } from './db.js';
 import { loadBuildPlan, loadCsvPlan } from './lib/planload.js';
+import { logEvent } from './lib/events.js';
+import { mergeHouseholds, planMerge } from './lib/householdMove.js';
 
 type Flags = Record<string, string>;
 
@@ -347,9 +349,50 @@ async function main(): Promise<void> {
     });
     return;
   }
+  // Moving someone out of a duplicate household (e.g. a partner who signed up without the
+  // invite) into the right one. Dry run unless --yes.
+  //   household:merge-into --from-email partner@x.com --into-email you@x.com [--yes]
+  if (cmd === 'household:merge-into') {
+    await asSystem(async () => {
+      const hhOf = async (email: string): Promise<number> => {
+        const { rows } = await pool.query<{ household_id: number }>(
+          `SELECT m.household_id FROM users u JOIN household_members m ON m.id = u.member_id WHERE lower(u.email) = $1
+           UNION ALL SELECT household_id FROM household_members WHERE lower(email) = $1 AND archived_at IS NULL LIMIT 1`,
+          [email.toLowerCase()],
+        );
+        const id = rows[0]?.household_id;
+        if (id === undefined) throw new Error(`no household found for ${email}`);
+        return id;
+      };
+      const from = await hhOf(need(flags, 'from-email'));
+      const into = flags['into-household'] ? Number(flags['into-household']) : await hhOf(need(flags, 'into-email'));
+      const { preview, map } = await planMerge(from, into);
+      console.log(`From:  ${preview.from.name} (#${preview.from.id})`);
+      console.log(`Into:  ${preview.into.name} (#${preview.into.id})`);
+      for (const m of preview.folding) console.log(`  fold  ${m.name} → existing ${m.into}`);
+      for (const m of preview.moving) console.log(`  move  ${m.name} (${m.kind})`);
+      for (const [t, n] of Object.entries(preview.rows)) console.log(`  rows  ${t}: ${n}`);
+      if (flags.yes === undefined) {
+        console.log('\nDry run — nothing changed. Add --yes to do it.');
+        return;
+      }
+      const report = await mergeHouseholds(from, into, map);
+      await logEvent('household_merged', { from, into, by: 'cli', moved: report.membersMoved.length, folded: report.membersMerged.length }, null, into);
+      console.log(`
+Done. Moved ${report.membersMoved.length}, folded ${report.membersMerged.length}; dropped duplicates: ${JSON.stringify(report.dropped)}`);
+      const check = await pool.query<{ email: string; household: string }>(
+        'SELECT u.email, h.name AS household FROM users u JOIN household_members m ON m.id = u.member_id JOIN households h ON h.id = m.household_id WHERE lower(u.email) = $1',
+        [need(flags, 'from-email').toLowerCase()],
+      );
+      console.log(check.rows.length ? `Verified: ${check.rows[0]?.email} is now in ${check.rows[0]?.household}` : 'Note: that email has no signed-in account yet');
+      const gone = await pool.query('SELECT 1 FROM households WHERE id = $1', [from]);
+      console.log(gone.rowCount ? 'WARNING: the duplicate household still exists' : `Verified: duplicate household #${from} removed`);
+    });
+    return;
+  }
   const fn = commands[cmd];
   if (!fn) {
-    console.log(`commands: household:list, ${Object.keys(commands).join(', ')}`);
+    console.log(`commands: household:list, household:merge-into, ${Object.keys(commands).join(', ')}`);
     return;
   }
   // The meal library is shared content; it needs no household.
