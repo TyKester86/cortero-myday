@@ -11,34 +11,52 @@ import MealPlan from './meals/MealPlan';
 import MealDetail from './meals/MealDetail';
 import Grocery from './meals/Grocery';
 import WeeklyPlan from './weekly/WeeklyPlan';
-import KidAccess from './kids/KidAccess';
+import MyDay from './day/MyDay';
+import Money from './money/Money';
+import Battles from './battles/Battles';
+import RedAlert from './battles/RedAlert';
+import BrainDump from './dump/BrainDump';
+import Family from './family/Family';
+import Household from './household/Household';
+import Chat from './chat/Chat';
+
+/** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
+export type Audience = 'all' | 'adult' | 'kid' | 'tutor';
 
 /**
- * Module registry: one entry per route. Later builds (Money, Battles, Brain
- * Dump, Family, Household, Ask Hana, Red Alert, Kids' School, the kid app)
- * each add their own folder under modules/ and their routes here — nothing
- * else in the shell changes.
+ * Module registry: one entry per route. Each module owns a folder under
+ * modules/ and its rows here; the shell (App.tsx) needs no changes.
  */
 export interface ModuleRoute {
   path: string;
   element: ReactNode;
-  /** 'tab' = bottom bar, 'menu' = header menu. Omit for sub-pages. */
-  nav?: { label: string; icon: string; place: 'tab' | 'menu' };
-  adultOnly?: boolean;
+  audience: Audience;
+  /** Shown in navigation when set: in the bottom bar for the listed audiences, otherwise in the ☰ menu. */
+  nav?: { label: string; icon: string; tabFor?: Array<'kid' | 'adult'> };
 }
 
 export const MODULES: ModuleRoute[] = [
-  { path: '/', element: <HomeChores />, nav: { label: 'Today', icon: '✅', place: 'tab' } },
-  { path: '/homework', element: <Homework />, nav: { label: 'Homework', icon: '📚', place: 'tab' } },
-  { path: '/rewards', element: <Rewards />, nav: { label: 'Rewards', icon: '🎁', place: 'tab' } },
-  { path: '/score', element: <Score />, nav: { label: 'Score', icon: '⭐', place: 'tab' } },
-  { path: '/health', element: <HealthToday />, nav: { label: 'Health', icon: '💪', place: 'tab' } },
-  { path: '/health/plan', element: <HealthPlan /> },
-  { path: '/meals', element: <Meals />, nav: { label: 'Meals', icon: '🍽', place: 'tab' } },
-  { path: '/meals/plan', element: <MealPlan /> },
-  { path: '/meals/grocery', element: <Grocery /> },
-  { path: '/meals/:id', element: <MealDetail /> },
-  { path: '/weekly', element: <WeeklyPlan />, nav: { label: 'Weekly plan', icon: '🗓', place: 'menu' } },
-  { path: '/chores/manage', element: <ManageChores />, nav: { label: 'Manage chores', icon: '🧹', place: 'menu' }, adultOnly: true },
-  { path: '/kids', element: <KidAccess />, nav: { label: 'Kid sign-in', icon: '🔑', place: 'menu' }, adultOnly: true },
+  { path: '/', element: <HomeChores />, audience: 'all', nav: { label: 'Today', icon: '✅', tabFor: ['kid', 'adult'] } },
+  { path: '/day', element: <MyDay />, audience: 'adult', nav: { label: 'My day', icon: '🌅', tabFor: ['adult'] } },
+  { path: '/family', element: <Family />, audience: 'adult', nav: { label: 'Family', icon: '💛', tabFor: ['adult'] } },
+  { path: '/money', element: <Money />, audience: 'adult', nav: { label: 'Money', icon: '💵', tabFor: ['adult'] } },
+  { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', nav: { label: 'Ask Hana', icon: '💬', tabFor: ['adult'] } },
+  { path: '/homework', element: <Homework />, audience: 'all', nav: { label: 'Homework', icon: '📚', tabFor: ['kid'] } },
+  { path: '/tutor', element: <Chat mode="tutor" />, audience: 'tutor', nav: { label: 'Helper', icon: '🧑‍🏫', tabFor: ['kid'] } },
+  { path: '/rewards', element: <Rewards />, audience: 'all', nav: { label: 'Rewards', icon: '🎁', tabFor: ['kid'] } },
+  { path: '/score', element: <Score />, audience: 'all', nav: { label: 'Score', icon: '⭐', tabFor: ['kid'] } },
+  { path: '/health', element: <HealthToday />, audience: 'all', nav: { label: 'Health', icon: '💪' } },
+  { path: '/health/plan', element: <HealthPlan />, audience: 'all' },
+  { path: '/meals', element: <Meals />, audience: 'all', nav: { label: 'Meals', icon: '🍽' } },
+  { path: '/meals/plan', element: <MealPlan />, audience: 'all' },
+  { path: '/meals/grocery', element: <Grocery />, audience: 'all' },
+  { path: '/meals/:id', element: <MealDetail />, audience: 'all' },
+  { path: '/weekly', element: <WeeklyPlan />, audience: 'all', nav: { label: 'Weekly plan', icon: '🗓' } },
+  { path: '/dump', element: <BrainDump />, audience: 'all', nav: { label: 'Brain dump', icon: '🧠' } },
+  { path: '/battles', element: <Battles />, audience: 'adult', nav: { label: 'Boss battles', icon: '⚔️' } },
+  { path: '/red-alert', element: <RedAlert />, audience: 'adult', nav: { label: 'Red Alert', icon: '🚨' } },
+  { path: '/chores/manage', element: <ManageChores />, audience: 'adult', nav: { label: 'Manage chores', icon: '🧹' } },
+  { path: '/household', element: <Household />, audience: 'adult', nav: { label: 'Household', icon: '🏠' } },
+  // Old link from build 2; kid PINs now live on the Household page.
+  { path: '/kids', element: <Household />, audience: 'adult' },
 ];

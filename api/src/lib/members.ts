@@ -18,7 +18,9 @@ function toMember(r: MemberRow): HouseholdMember {
 }
 
 export async function listMembers(db: Db = pool): Promise<HouseholdMember[]> {
-  const { rows } = await db.query<MemberRow>(`SELECT ${COLS} FROM household_members ORDER BY sort_order, id`);
+  const { rows } = await db.query<MemberRow>(
+    `SELECT ${COLS} FROM household_members WHERE archived_at IS NULL ORDER BY sort_order, id`,
+  );
   return rows.map(toMember);
 }
 
@@ -28,7 +30,7 @@ export async function memberById(id: number, db: Db = pool): Promise<HouseholdMe
 }
 
 export async function memberByKey(key: string, db: Db = pool): Promise<HouseholdMember | null> {
-  const { rows } = await db.query<MemberRow>(`SELECT ${COLS} FROM household_members WHERE key = $1`, [
+  const { rows } = await db.query<MemberRow>(`SELECT ${COLS} FROM household_members WHERE key = $1 AND archived_at IS NULL`, [
     key.trim().toLowerCase(),
   ]);
   return rows[0] ? toMember(rows[0]) : null;

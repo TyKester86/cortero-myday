@@ -1,13 +1,14 @@
 /**
  * Score & Streaks. Points totals from the ledger, the Perfect Week rule
- * (ported from apiTryPerfectWeek) and adult streaks (ported from
- * streakInfo_, with shields).
+ * (ported from apiTryPerfectWeek) and, for adults, the daily score, streaks
+ * with shields, streak bonuses and achievements (lib/adult.ts).
  */
 import { Router } from 'express';
-import type { DateStr, HouseholdMember, PerfectWeekResult, ScoreEntry, ScoreSource, ScoreSummary, StreakInfo } from '@myday/shared';
+import type { DateStr, HouseholdMember, PerfectWeekResult, ScoreEntry, ScoreSource, ScoreSummary } from '@myday/shared';
 import { pool } from '../db.js';
-import { addDays, isoWeekday, today, weekStart } from '../lib/dates.js';
+import { isoWeekday, today, weekStart } from '../lib/dates.js';
 import { targetMember } from '../lib/members.js';
+import { refreshAdultProgress } from '../lib/adult.js';
 import { xpStatus } from '../lib/xp.js';
 import { bankFor } from './rewards.js';
 
@@ -75,58 +76,6 @@ export async function tryPerfectWeek(member: HouseholdMember, award = true): Pro
     : { awarded: false, clean: true, alreadyAwarded: true, bonus };
 }
 
-/** Days with any logged activity (chores done, workouts logged). */
-async function activeDates(memberId: number): Promise<Set<DateStr>> {
-  const { rows } = await pool.query<{ day: DateStr }>(
-    `SELECT DISTINCT cc.completed_on::text AS day
-       FROM chore_completions cc JOIN chores c ON c.id = cc.chore_id
-      WHERE c.member_id = $1
-     UNION
-     SELECT DISTINCT logged_on::text FROM workout_logs WHERE member_id = $1`,
-    [memberId],
-  );
-  return new Set(rows.map((r) => r.day));
-}
-
-/**
- * Port of streakInfo_. Current streak counts back from today (or yesterday if
- * today has no activity yet). A shield is earned for each of the last 12
- * weeks with 5+ active days (max 5 banked) and covers one missed day.
- */
-export function computeStreak(act: Set<DateStr>, t: DateStr): StreakInfo {
-  const dates = [...act].sort();
-  const first = dates[0];
-  let shields = 0;
-  let ws = weekStart(t);
-  for (let w = 0; w < 12; w++) {
-    let n = 0;
-    for (let k = 0; k < 7; k++) if (act.has(addDays(ws, k))) n++;
-    if (n >= 5) shields = Math.min(5, shields + 1);
-    ws = addDays(ws, -7);
-  }
-
-  let current = 0;
-  let d = act.has(t) ? t : addDays(t, -1);
-  while (first !== undefined && d >= first) {
-    if (act.has(d)) current++;
-    else if (shields > 0) {
-      shields--;
-      current++;
-    } else break;
-    d = addDays(d, -1);
-  }
-
-  let longest = 0;
-  let run = 0;
-  let prev: DateStr | null = null;
-  for (const ds of dates) {
-    run = prev !== null && addDays(prev, 1) === ds ? run + 1 : 1;
-    longest = Math.max(longest, run);
-    prev = ds;
-  }
-  return { current, longest, shields, totalDays: dates.length };
-}
-
 interface ScoreRow {
   id: number;
   earned_on: DateStr;
@@ -139,6 +88,8 @@ scoreRouter.get('/api/score', async (req, res) => {
   const member = await targetMember(req);
   const t = today();
   const ws = weekStart(t);
+  // Adults: daily score, streak bonuses, achievements (may award XP, so first).
+  const progress = member.kind === 'adult' ? await refreshAdultProgress(member.id) : null;
   const { rows: sums } = await pool.query<{ total: number; week: number; today: number }>(
     `SELECT COALESCE(SUM(points), 0)::int AS total,
             COALESCE(SUM(points) FILTER (WHERE earned_on >= $2), 0)::int AS week,
@@ -149,6 +100,10 @@ scoreRouter.get('/api/score', async (req, res) => {
   const { rows: recent } = await pool.query<ScoreRow>(
     `SELECT id, earned_on, points, source, note FROM scores
       WHERE member_id = $1 ORDER BY earned_on DESC, id DESC LIMIT 20`,
+    [member.id],
+  );
+  const { rows: hist } = await pool.query<{ date: DateStr; total: number }>(
+    'SELECT day::text AS date, total FROM daily_scores WHERE member_id = $1 ORDER BY day DESC LIMIT 30',
     [member.id],
   );
   const s = sums[0];
@@ -162,7 +117,11 @@ scoreRouter.get('/api/score', async (req, res) => {
     weekStart: ws,
     perfectWeek: await tryPerfectWeek(member, false),
     // Kids: no streaks, no comparison (positive-only economy).
-    streak: member.kind === 'adult' ? computeStreak(await activeDates(member.id), t) : null,
+    streak: progress?.streak ?? null,
+    daily: progress?.daily ?? null,
+    dailyHistory: progress ? hist.reverse() : [],
+    achievements: progress?.achievements ?? [],
+    newlyUnlocked: progress?.newly ?? [],
     recent: recent.map(
       (r): ScoreEntry => ({ id: r.id, date: r.earned_on, points: r.points, source: r.source, note: r.note }),
     ),

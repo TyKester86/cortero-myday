@@ -13,6 +13,7 @@ import type {
 } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useSession } from '../../session';
+import { openGroceryPopout } from './GroceryPopout';
 
 /** One household grocery list — one family, one grocery run. */
 export default function Grocery() {
@@ -212,6 +213,9 @@ function Stores({ state, onChange }: { state: GroceryState; onChange: (s: Grocer
                       Sign in
                     </a>
                   )}
+                  <button className="chip" onClick={() => openGroceryPopout(f.store)}>
+                    Side-by-side list
+                  </button>
                   <button className={f.signedIn ? 'chip on' : 'chip'} onClick={() => void update({ store: f.store, signedIn: !f.signedIn })}>
                     {f.signedIn ? 'Signed in ✓' : 'Not signed in'}
                   </button>

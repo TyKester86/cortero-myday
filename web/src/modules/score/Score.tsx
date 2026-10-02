@@ -72,6 +72,46 @@ export default function Score() {
         </div>
       )}
 
+      {data.daily && (
+        <div className="card">
+          <div className="ex-head">
+            <h2>Today's score</h2>
+            <b>{data.daily.total}/100</b>
+          </div>
+          {data.dailyHistory.length > 1 && (
+            <div className="spark" aria-label="Last 30 days">
+              {data.dailyHistory.map((h) => (
+                <i key={h.date} title={`${h.date}: ${h.total}`} style={{ height: `${Math.max(4, h.total)}%` }} className={h.total === 100 ? 'hot' : ''} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {data.achievements.length > 0 && (
+        <div className="card" data-testid="achievements">
+          <h2>
+            Achievements{' '}
+            <small className="muted">
+              {data.achievements.filter((a) => a.unlocked).length}/{data.achievements.length}
+            </small>
+          </h2>
+          {data.newlyUnlocked.length > 0 && <p className="good">New: {data.newlyUnlocked.join(', ')} 🎉</p>}
+          <ul className="achievements">
+            {data.achievements.map((a) => (
+              <li key={a.name} className={a.unlocked ? 'on' : ''} title={a.desc}>
+                <b>{a.name}</b>
+                <small>
+                  {a.desc}
+                  {a.xp > 0 && ` · +${a.xp} XP`}
+                  {a.date && ` · ${a.date}`}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <h2>Recent</h2>
       {data.recent.length === 0 ? (
         <p className="muted">No points yet — check off a chore to start.</p>

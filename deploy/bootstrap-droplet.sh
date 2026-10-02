@@ -29,7 +29,7 @@ DO \$\$ BEGIN
 END \$\$;
 SQL
   if ! docker exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='myday'" | grep -q 1; then
-    docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_SUPERUSER" -d postgres -c "CREATE DATABASE myday OWNER myday"
+    docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_SUPERUSER" -d postgres -c "CREATE DATABASE myday OWNER myday ENCODING 'UTF8' TEMPLATE template0"
   fi
   docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_SUPERUSER" -d postgres -c "REVOKE CONNECT ON DATABASE myday FROM PUBLIC; GRANT CONNECT ON DATABASE myday TO myday;"
 
@@ -44,6 +44,13 @@ SESSION_SECRET=$(openssl rand -hex 32)
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 ALLOWED_EMAILS=
+# Ask Hana / tutor (Claude) — paste the key at the last mile.
+ANTHROPIC_KEY=
+# Money (Plaid, read-only) — paste sandbox keys at the last mile.
+PLAID_CLIENT_ID=
+PLAID_SECRET=
+PLAID_ENV=sandbox
+MONEY_TOKEN_KEY=$(openssl rand -hex 32)
 # TEMPORARY — verification only. Blank this line once Google sign-in works.
 DEV_LOGIN_TOKEN=$(openssl rand -hex 24)
 ENV

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { WEEKDAYS, type AddMealPlanRequest, type MealListResponse, type MealPlanResponse, type Weekday } from '@myday/shared';
+import { MEAL_SLOTS, WEEKDAYS, type AddMealPlanRequest, type MealListResponse, type MealPlanResponse, type MealSlot, type Weekday } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
@@ -10,6 +10,7 @@ export default function Meals() {
   const { viewing } = useSession();
   const [cuisine, setCuisine] = useState('');
   const [day, setDay] = useState<Weekday | ''>('');
+  const [slot, setSlot] = useState<MealSlot | ''>('');
   const library = useLoad<MealListResponse>(`/api/meals${cuisine ? `?cuisine=${encodeURIComponent(cuisine)}` : ''}`);
   const plan = useLoad<MealPlanResponse>(viewing ? withMember('/api/meal-plan', viewing.key) : null);
   const { toast, show } = useToast();
@@ -17,9 +18,9 @@ export default function Meals() {
   const key = viewing.key;
 
   const add = async (mealId: number, title: string): Promise<void> => {
-    const body: AddMealPlanRequest = { mealId, day: day || null };
+    const body: AddMealPlanRequest = { mealId, day: day || null, slot: slot || null };
     plan.setData(await api<MealPlanResponse>(withMember('/api/meal-plan', key), 'POST', body));
-    show(day ? `${title} → ${day}` : `${title} added to the week`);
+    show(day ? `${title} → ${day}${slot ? ` ${slot}` : ''}` : `${title} added to the week`);
   };
   const count = (mealId: number): number => plan.data?.meals.filter((m) => m.mealId === mealId).length ?? 0;
 
@@ -39,6 +40,14 @@ export default function Meals() {
           {WEEKDAYS.map((d) => (
             <option key={d} value={d}>
               {d}
+            </option>
+          ))}
+        </select>
+        <select aria-label="Meal slot" value={slot} onChange={(e) => setSlot(MEAL_SLOTS.find((s) => s === e.target.value) ?? '')}>
+          <option value="">any meal</option>
+          {MEAL_SLOTS.map((s) => (
+            <option key={s} value={s}>
+              {s}
             </option>
           ))}
         </select>

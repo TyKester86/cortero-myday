@@ -1,5 +1,7 @@
 import { Link } from 'react-router';
-import { WEEKDAYS, type MealPlanEntry, type MealPlanResponse, type SetMealDayRequest } from '@myday/shared';
+import { MEAL_SLOTS, WEEKDAYS, type MealPlanEntry, type MealPlanResponse, type MealSlot, type SetMealDayRequest } from '@myday/shared';
+
+export const SLOT_LABEL: Record<MealSlot, string> = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner' };
 import { api, useLoad, withMember } from '../../api';
 import { useSession } from '../../session';
 
@@ -12,6 +14,10 @@ export default function MealPlan() {
   if (!data || !viewing) return <p className="muted">Loading…</p>;
   const key = viewing.key;
 
+  const setSlot = async (m: MealPlanEntry, value: string): Promise<void> => {
+    const body: SetMealDayRequest = { slot: MEAL_SLOTS.find((s) => s === value) ?? null };
+    setData(await api<MealPlanResponse>(withMember(`/api/meal-plan/${m.id}`, key), 'PATCH', body));
+  };
   const move = async (m: MealPlanEntry, value: string): Promise<void> => {
     const body: SetMealDayRequest = { day: WEEKDAYS.find((d) => d === value) ?? null };
     setData(await api<MealPlanResponse>(withMember(`/api/meal-plan/${m.id}`, key), 'PATCH', body));
@@ -27,10 +33,19 @@ export default function MealPlan() {
   const row = (m: MealPlanEntry) => (
     <li key={m.id}>
       <span>
+        {m.slot && <small className="slot">{SLOT_LABEL[m.slot]}</small>}
         <Link to={`/meals/${m.mealId}`}>{m.title}</Link>
         {m.calories !== null && <span className="muted"> · {m.calories} cal</span>}
       </span>
       <span>
+        <select aria-label="Meal slot" value={m.slot ?? ''} onChange={(e) => void setSlot(m, e.target.value)}>
+          <option value="">Any meal</option>
+          {MEAL_SLOTS.map((s) => (
+            <option key={s} value={s}>
+              {SLOT_LABEL[s]}
+            </option>
+          ))}
+        </select>
         <select aria-label="Move to day" value={m.day ?? ''} onChange={(e) => void move(m, e.target.value)}>
           <option value="">No day</option>
           {WEEKDAYS.map((d) => (

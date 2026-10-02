@@ -6,7 +6,9 @@
  */
 import { Router, type Request } from 'express';
 import {
+  MEAL_SLOTS,
   WEEKDAYS,
+  type MealSlot,
   type Fulfillment,
   type GroceryChain,
   type GroceryFavorite,
@@ -71,6 +73,13 @@ function parseDay(raw: unknown): Weekday | null {
   return w;
 }
 
+function parseSlot(raw: unknown): MealSlot | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const s = MEAL_SLOTS.find((x) => x === raw);
+  if (!s) throw new HttpError(400, 'slot must be breakfast, lunch, dinner or null');
+  return s;
+}
+
 async function planFor(member: HouseholdMember, db: Db = pool): Promise<MealPlanResponse> {
   const { rows } = await db.query<{
     id: number;
@@ -80,10 +89,12 @@ async function planFor(member: HouseholdMember, db: Db = pool): Promise<MealPlan
     calories: number | null;
     protein: number | null;
     day: number | null;
+    slot: MealSlot | null;
   }>(
-    `SELECT e.id, e.meal_id, m.title, m.cuisine, m.calories, m.protein, e.day
+    `SELECT e.id, e.meal_id, m.title, m.cuisine, m.calories, m.protein, e.day, e.slot
        FROM meal_plan_entries e JOIN meals m ON m.id = e.meal_id
-      WHERE e.member_id = $1 ORDER BY e.added_at, e.id`,
+      WHERE e.member_id = $1
+      ORDER BY array_position(ARRAY['breakfast','lunch','dinner']::text[], e.slot) NULLS LAST, e.added_at, e.id`,
     [member.id],
   );
   const meals: MealPlanEntry[] = rows.map((r) => ({
@@ -94,6 +105,7 @@ async function planFor(member: HouseholdMember, db: Db = pool): Promise<MealPlan
     calories: r.calories,
     protein: r.protein,
     day: r.day === null ? null : isoToWeekday(r.day),
+    slot: r.slot,
   }));
   const t = today();
   const ws = weekStart(t);
@@ -116,32 +128,38 @@ mealsRouter.get('/api/meal-plan', async (req, res) => {
   res.json(await planFor(await targetMember(req)));
 });
 
-/** Add a meal to the week, optionally straight onto a day. Same meal + same slot twice is a no-op. */
+/** Add a meal to the week, optionally onto a day + slot. The same meal in the same day + slot twice is a no-op. */
 mealsRouter.post('/api/meal-plan', async (req, res) => {
   const member = await targetMember(req);
-  const b = req.body as { mealId?: unknown; day?: unknown };
+  const b = req.body as { mealId?: unknown; day?: unknown; slot?: unknown };
   const mealId = idParam(b.mealId);
   const day = parseDay(b.day);
+  const slot = parseSlot(b.slot);
   const { rows } = await pool.query('SELECT 1 FROM meals WHERE id = $1', [mealId]);
   if (!rows.length) throw new HttpError(404, 'Meal not found');
   await pool.query(
-    `INSERT INTO meal_plan_entries (member_id, meal_id, day)
-     SELECT $1, $2, $3
+    `INSERT INTO meal_plan_entries (member_id, meal_id, day, slot)
+     SELECT $1, $2, $3, $4
       WHERE NOT EXISTS (SELECT 1 FROM meal_plan_entries
-                         WHERE member_id = $1 AND meal_id = $2 AND day IS NOT DISTINCT FROM $3)`,
-    [member.id, mealId, day === null ? null : weekdayToIso(day)],
+                         WHERE member_id = $1 AND meal_id = $2 AND day IS NOT DISTINCT FROM $3
+                           AND slot IS NOT DISTINCT FROM $4)`,
+    [member.id, mealId, day === null ? null : weekdayToIso(day), slot],
   );
   res.json(await planFor(member));
 });
 
 mealsRouter.patch('/api/meal-plan/:entryId', async (req, res) => {
   const member = await targetMember(req);
-  const day = parseDay((req.body as { day?: unknown }).day);
-  await pool.query('UPDATE meal_plan_entries SET day = $3 WHERE member_id = $1 AND id = $2', [
-    member.id,
-    idParam(req.params.entryId),
-    day === null ? null : weekdayToIso(day),
-  ]);
+  const b = req.body as { day?: unknown; slot?: unknown };
+  const id = idParam(req.params.entryId);
+  // Omitted fields stay as they are.
+  if (b.day !== undefined) {
+    const day = parseDay(b.day);
+    await pool.query('UPDATE meal_plan_entries SET day = $3 WHERE member_id = $1 AND id = $2', [member.id, id, day === null ? null : weekdayToIso(day)]);
+  }
+  if (b.slot !== undefined) {
+    await pool.query('UPDATE meal_plan_entries SET slot = $3 WHERE member_id = $1 AND id = $2', [member.id, id, parseSlot(b.slot)]);
+  }
   res.json(await planFor(member));
 });
 

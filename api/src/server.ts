@@ -16,6 +16,13 @@ import { scoreRouter } from './routes/score.js';
 import { healthRouter } from './routes/health.js';
 import { mealsRouter } from './routes/meals.js';
 import { weeklyRouter } from './routes/weekly.js';
+import { dayRouter } from './routes/day.js';
+import { dumpRouter } from './routes/dump.js';
+import { battlesRouter } from './routes/battles.js';
+import { familyRouter } from './routes/family.js';
+import { householdRouter } from './routes/household.js';
+import { chatRouter } from './routes/chat.js';
+import { moneyRouter } from './routes/money.js';
 
 if (!config.sessionSecret || config.sessionSecret.length < 32) {
   throw new Error('SESSION_SECRET must be set (32+ chars)');
@@ -76,6 +83,13 @@ app.use(scoreRouter);
 app.use(healthRouter);
 app.use(mealsRouter);
 app.use(weeklyRouter);
+app.use(dayRouter);
+app.use(dumpRouter);
+app.use(battlesRouter);
+app.use(familyRouter);
+app.use(householdRouter);
+app.use(chatRouter);
+app.use(moneyRouter);
 
 app.use('/api', (_req: Request, _res: Response, next: NextFunction) => next(new HttpError(404, 'Not found')));
 

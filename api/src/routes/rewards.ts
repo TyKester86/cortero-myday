@@ -6,6 +6,7 @@
  */
 import { Router, type Request } from 'express';
 import type {
+  DecidedRedemption,
   HouseholdMember,
   Redemption,
   RedemptionStatus,
@@ -128,7 +129,24 @@ async function adminView(): Promise<RewardAdminResponse> {
   const { rows: pending } = await pool.query<RedemptionRow>(
     `${REDEMPTION_SELECT} WHERE d.status = 'pending' ORDER BY d.id`,
   );
-  return { rewards: rewards.map(toReward), pending: pending.map(toRedemption) };
+  const { rows: decided } = await pool.query<RedemptionRow & { decided_at: Date; decided_by: string | null }>(
+    `SELECT d.id, d.member_id, m.name AS member_name, d.reward_name, d.cost, d.status, d.requested_on,
+            d.decided_at, u.name AS decided_by
+       FROM redemptions d JOIN household_members m ON m.id = d.member_id
+       LEFT JOIN users u ON u.id = d.decided_by
+      WHERE d.status <> 'pending' ORDER BY d.decided_at DESC, d.id DESC LIMIT 30`,
+  );
+  return {
+    rewards: rewards.map(toReward),
+    pending: pending.map(toRedemption),
+    history: decided.map(
+      (d): DecidedRedemption => ({
+        ...toRedemption(d),
+        decidedAt: d.decided_at.toISOString(),
+        decidedBy: d.decided_by ?? 'a grown-up',
+      }),
+    ),
+  };
 }
 
 rewardsRouter.get('/api/rewards/admin', async (req, res) => {

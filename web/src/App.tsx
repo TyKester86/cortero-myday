@@ -1,14 +1,23 @@
 import { useState } from 'react';
 import { BrowserRouter, Link, NavLink, Route, Routes } from 'react-router';
 import { api } from './api';
+import Join from './Join';
 import Login from './Login';
-import { MODULES } from './modules';
+import { MODULES, type ModuleRoute } from './modules';
+import GroceryPopout from './modules/meals/GroceryPopout';
 import { SessionProvider, useSession } from './session';
 
 function Shell() {
   const { me, members, viewing, setViewing, isAdult } = useSession();
   const [menu, setMenu] = useState(false);
-  const routes = MODULES.filter((m) => !m.adultOnly || isAdult);
+  const who: 'kid' | 'adult' = isAdult ? 'adult' : 'kid';
+  const visible = (m: ModuleRoute): boolean =>
+    m.audience === 'all' ||
+    m.audience === who ||
+    (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student'));
+  const routes = MODULES.filter(visible);
+  const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who));
+  const menuItems = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who));
   const signOut = async (): Promise<void> => {
     await api('/api/auth/logout', 'POST');
     window.location.href = '/';
@@ -34,13 +43,11 @@ function Shell() {
         </button>
         {menu && (
           <nav className="menu" onClick={() => setMenu(false)}>
-            {routes
-              .filter((m) => m.nav?.place === 'menu')
-              .map((m) => (
-                <Link key={m.path} to={m.path}>
-                  {m.nav?.icon} {m.nav?.label}
-                </Link>
-              ))}
+            {menuItems.map((m) => (
+              <Link key={m.path} to={m.path}>
+                {m.nav?.icon} {m.nav?.label}
+              </Link>
+            ))}
             <button className="link" onClick={() => void signOut()}>
               Sign out
             </button>
@@ -56,24 +63,27 @@ function Shell() {
         </Routes>
       </main>
       <nav className="tabs">
-        {routes
-          .filter((m) => m.nav?.place === 'tab')
-          .map((m) => (
-            <NavLink key={m.path} to={m.path} end={m.path === '/'}>
-              <span>{m.nav?.icon}</span>
-              <small>{m.nav?.label}</small>
-            </NavLink>
-          ))}
+        {tabs.map((m) => (
+          <NavLink key={m.path} to={m.path} end={m.path === '/'}>
+            <span>{m.nav?.icon}</span>
+            <small>{m.nav?.label}</small>
+          </NavLink>
+        ))}
       </nav>
     </div>
   );
 }
 
 export default function App() {
+  const path = window.location.pathname;
+  // Invite links work signed out.
+  const join = path.match(/^\/join\/([^/]+)$/);
+  if (join?.[1]) return <Join token={join[1]} />;
   return (
     <BrowserRouter>
       <SessionProvider signedOut={<Login />}>
-        <Shell />
+        {/* The side-by-side grocery list opens in its own small window: no app chrome. */}
+        {path === '/grocery-list' ? <GroceryPopout /> : <Shell />}
       </SessionProvider>
     </BrowserRouter>
   );

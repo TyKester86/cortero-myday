@@ -32,6 +32,8 @@ export interface Me {
   auth: AuthKind;
   /** null until the signed-in account is linked to a household member. */
   member: HouseholdMember | null;
+  /** The member's XP level table (decides e.g. whether the tutor is offered). */
+  xpTrack: XpTrack | null;
 }
 
 /* ---------- kid sign-in (parent-managed PIN) ---------- */
@@ -42,6 +44,8 @@ export const KID_PIN_LENGTH = 6;
 export interface KidPinLoginRequest {
   name: string;
   pin: string;
+  /** Add this kid to this device's sign-in picker. */
+  remember?: boolean;
 }
 
 export interface KidAccess {
@@ -50,6 +54,14 @@ export interface KidAccess {
   name: string;
   hasPin: boolean;
   lockedUntil: string | null;
+  /** Most recent sign-in attempts, newest first. */
+  recentSignins: KidSignin[];
+}
+
+export interface KidSignin {
+  at: string;
+  ok: boolean;
+  device: string;
 }
 
 export interface KidAccessResponse {
@@ -141,6 +153,8 @@ export interface TodayResponse {
   pointsToday: number;
   /** Points from chores already checked off today. */
   pointsEarned: number;
+  /** Kids: tonight's curfew + phone-off times (null if none set). */
+  curfew: TonightCurfew | null;
 }
 
 export interface ToggleChoreRequest {
@@ -233,9 +247,16 @@ export interface NewReward {
   memberId: number | null;
 }
 
+export interface DecidedRedemption extends Redemption {
+  decidedAt: string;
+  decidedBy: string;
+}
+
 export interface RewardAdminResponse {
   rewards: Reward[];
   pending: Redemption[];
+  /** Approved + denied, newest first. */
+  history: DecidedRedemption[];
 }
 
 /* ---------- score + streaks ---------- */
@@ -270,6 +291,12 @@ export interface ScoreSummary {
   perfectWeek: PerfectWeekResult;
   /** Adults only. Kids get no streaks (positive-only economy, see README). */
   streak: StreakInfo | null;
+  /** Adults only: today's 5 × 20 score (scoreToday_). */
+  daily: DailyScore | null;
+  dailyHistory: Array<{ date: DateStr; total: number }>;
+  achievements: Achievement[];
+  /** Achievements unlocked by this request. */
+  newlyUnlocked: string[];
   recent: ScoreEntry[];
 }
 
@@ -390,9 +417,13 @@ export interface MealListResponse {
   cuisines: string[];
 }
 
+export const MEAL_SLOTS = ['breakfast', 'lunch', 'dinner'] as const;
+export type MealSlot = (typeof MEAL_SLOTS)[number];
+
 export interface MealPlanEntry {
   /** Plan entry id (the same meal can sit on several days). */
   id: number;
+  slot: MealSlot | null;
   mealId: number;
   title: string;
   cuisine: string;
@@ -424,10 +455,13 @@ export interface MealPlanResponse {
 export interface AddMealPlanRequest {
   mealId: number;
   day?: Weekday | null;
+  slot?: MealSlot | null;
 }
 
+/** Omit a field to leave it unchanged. */
 export interface SetMealDayRequest {
-  day: Weekday | null;
+  day?: Weekday | null;
+  slot?: MealSlot | null;
 }
 
 export interface GroceryItem {
@@ -524,4 +558,368 @@ export interface WeeklyPlanResponse {
   weekStart: DateStr;
   current: WeeklyPlan | null;
   previous: WeeklyPlan | null;
+}
+
+/* ================= build 3 ================= */
+
+/* ---------- family: curfews, partner check-in, 1-on-1s, kids overview ---------- */
+
+/** "HH:MM" (24h) or '' when not set. */
+export type ClockTime = string;
+
+export interface Curfew {
+  curfewWeekday: ClockTime;
+  curfewWeekend: ClockTime;
+  phoneOffWeekday: ClockTime;
+  phoneOffWeekend: ClockTime;
+}
+
+export interface TonightCurfew {
+  /** Friday and Saturday nights use the weekend times. */
+  weekend: boolean;
+  curfew: ClockTime;
+  phoneOff: ClockTime;
+}
+
+export interface PartnerCheckin {
+  weekStart: DateStr;
+  positives: number;
+  negatives: number;
+  /** e.g. "5.0:1", "∞" or "—" (the script's ratio display). */
+  ratio: string;
+  connection: string;
+  conflict: boolean;
+  flooded: boolean;
+  tookBreak: boolean;
+  need: string;
+}
+
+export type PartnerCheckinFields = Omit<PartnerCheckin, 'weekStart' | 'ratio'>;
+
+export interface OneOnOne {
+  id: number;
+  childId: number;
+  childName: string;
+  loggedOn: DateStr;
+  minutes: number;
+  promiseKept: boolean;
+  moment: boolean;
+  reflection: string;
+  word: string;
+}
+
+export type NewOneOnOne = Omit<OneOnOne, 'id' | 'childName' | 'loggedOn'>;
+
+export interface KidOverview {
+  member: HouseholdMember;
+  choresDone: number;
+  choresToday: number;
+  pointsToday: number;
+  weekPoints: number;
+  bank: number;
+  openHomework: number;
+  overdueHomework: number;
+  pendingRewards: number;
+  curfew: Curfew;
+  lastSignIn: string | null;
+}
+
+export interface FamilyResponse {
+  weekStart: DateStr;
+  partner: PartnerCheckin | null;
+  kids: KidOverview[];
+  oneOnOnes: OneOnOne[];
+}
+
+/* ---------- household admin ---------- */
+
+export interface RosterMember extends HouseholdMember {
+  xpTrack: XpTrack;
+  email: string | null;
+  archived: boolean;
+  hasPin: boolean;
+  invite: { status: 'pending' | 'accepted' | 'expired'; sentAt: string } | null;
+  isYou: boolean;
+}
+
+export interface HouseholdAdminResponse {
+  members: RosterMember[];
+  devices: KidDevice[];
+}
+
+export interface MemberFields {
+  name: string;
+  kind: MemberKind;
+  age: number | null;
+  xpTrack: XpTrack;
+  email: string | null;
+}
+
+export interface NewInvite {
+  name: string;
+  email: string;
+  xpTrack: XpTrack;
+}
+
+export interface InviteCreated {
+  /** Shown once; only a hash is stored. */
+  link: string;
+  member: RosterMember;
+}
+
+export interface InvitePreview {
+  name: string;
+  /** Masked, e.g. "k***@gmail.com". */
+  email: string;
+}
+
+export interface KidDevice {
+  id: number;
+  label: string;
+  kids: string[];
+  lastSeenAt: string;
+  isThisDevice: boolean;
+}
+
+export interface DeviceKidsResponse {
+  kids: Array<{ key: string; name: string }>;
+}
+
+/* ---------- adult engine: check-in, tasks, review, habits, daily score ---------- */
+
+export const NERVOUS = ['Calm', 'Buzzing', 'Fried'] as const;
+export const SLEEP = ['Poor', 'OK', 'Good', 'Great'] as const;
+export const PRIORITIES = ['Critical', 'Important', 'Later'] as const;
+export const ENERGIES = ['High Brain', 'Low Brain', 'Body-only'] as const;
+export const CONTEXTS = ['@Home', '@Work', '@Phone', '@Computer', '@Errands'] as const;
+export const END_ENERGY = ['Drained', 'OK', 'Charged'] as const;
+export type Priority = (typeof PRIORITIES)[number];
+export type Energy = (typeof ENERGIES)[number];
+
+export interface Checkin {
+  nervous: string;
+  sleep: string;
+  fuel: string;
+  grateful: string;
+}
+
+export interface Task {
+  id: number;
+  task: string;
+  priority: Priority;
+  energy: Energy;
+  context: string;
+  estMin: number | null;
+  mit: boolean;
+  done: boolean;
+}
+
+export interface NewTask {
+  task: string;
+  priority: Priority;
+  energy: Energy;
+  context: string;
+  estMin: number | null;
+  mit: boolean;
+}
+
+export interface Review {
+  got: string;
+  derailed: string;
+  tomorrow: string;
+  rsd: string;
+  energyEnd: string;
+}
+
+export interface WeeklyHabit {
+  id: number;
+  name: string;
+  /** Mon..Sun of the current week. */
+  days: boolean[];
+}
+
+export interface DailyScore {
+  labels: string[];
+  parts: number[];
+  total: number;
+}
+
+export interface MyDayResponse {
+  member: HouseholdMember;
+  date: DateStr;
+  xp: XpStatus;
+  checkin: Checkin | null;
+  tasks: Task[];
+  review: Review | null;
+  habits: WeeklyHabit[];
+  daily: DailyScore;
+}
+
+export interface Achievement {
+  name: string;
+  desc: string;
+  xp: number;
+  unlocked: boolean;
+  date: DateStr | null;
+}
+
+/* ---------- brain dump ---------- */
+
+export interface DumpItem {
+  id: number;
+  note: string;
+  capturedOn: DateStr;
+  status: 'open' | 'task' | 'done';
+  taskId: number | null;
+}
+
+export interface DumpResponse {
+  open: DumpItem[];
+  triaged: DumpItem[];
+}
+
+export interface TriageRequest {
+  to: 'task' | 'done';
+  priority?: Priority;
+  energy?: Energy;
+  mit?: boolean;
+}
+
+/* ---------- battles + red alert ---------- */
+
+export interface Boss {
+  name: string;
+  desc: string;
+}
+
+export interface BattleEntry {
+  id: number;
+  name: string;
+  status: 'active' | 'done' | 'replaced';
+  startedOn: DateStr;
+  doneOn: DateStr | null;
+}
+
+export interface BattlesResponse {
+  active: BattleEntry | null;
+  bosses: Boss[];
+  history: BattleEntry[];
+  xp: number;
+  cadence: 'weekly' | 'monthly' | 'epic';
+}
+
+export interface RedAlertResponse {
+  steps: string[];
+  recent: Array<{ day: DateStr; trigger: string; stepsDone: number; stepsTotal: number }>;
+}
+
+export interface RedAlertRequest {
+  trigger: string;
+  stepsDone: number;
+  note: string;
+}
+
+export interface RedAlertDone extends EarnResult {
+  message: string;
+}
+
+/* ---------- Ask Hana + homework tutor ---------- */
+
+export type ChatMode = 'companion' | 'tutor';
+
+export interface ChatMessage {
+  id: number;
+  who: 'user' | 'hana';
+  text: string;
+  at: string;
+}
+
+export interface ChatState {
+  mode: ChatMode;
+  /** Model access is configured (real key, or the local stub). */
+  available: boolean;
+  history: ChatMessage[];
+}
+
+export interface ChatSendResponse {
+  reply: ChatMessage;
+  history: ChatMessage[];
+}
+
+/* ---------- money (read-only) ---------- */
+
+export type MoneyProviderKind = 'plaid' | 'fake' | 'none';
+
+export interface MoneyAccount {
+  id: number;
+  name: string;
+  mask: string;
+  type: string;
+  subtype: string;
+  current: number | null;
+  available: number | null;
+  institution: string;
+}
+
+export interface MoneyTransaction {
+  id: number;
+  date: DateStr;
+  name: string;
+  merchant: string;
+  /** Plaid convention: positive = money out, negative = money in. */
+  amount: number;
+  category: string;
+  pending: boolean;
+  accountName: string;
+}
+
+export type Cadence = 'weekly' | 'biweekly' | 'monthly' | 'yearly';
+
+export interface Recurring {
+  merchant: string;
+  /** Typical amount (positive). */
+  amount: number;
+  cadence: Cadence;
+  lastDate: DateStr;
+  nextDate: DateStr;
+  /** Normalized monthly cost (positive). */
+  monthly: number;
+  count: number;
+}
+
+export interface SafeToSpend {
+  amount: number;
+  checking: number;
+  /** Recurring charges expected before `until`. */
+  upcoming: Array<{ merchant: string; amount: number; date: DateStr }>;
+  /** Next detected paycheck, or 14 days out when none is detected. */
+  until: DateStr;
+  basis: 'paycheck' | '14-days';
+}
+
+export interface MoneyItem {
+  id: number;
+  institution: string;
+  lastSyncedAt: string | null;
+  syncError: string;
+}
+
+export interface MoneyResponse {
+  provider: MoneyProviderKind;
+  items: MoneyItem[];
+  accounts: MoneyAccount[];
+  safeToSpend: SafeToSpend | null;
+  subscriptions: Recurring[];
+  income: Recurring[];
+  transactions: MoneyTransaction[];
+}
+
+export interface LinkTokenResponse {
+  provider: MoneyProviderKind;
+  linkToken: string;
+}
+
+export interface ExchangeRequest {
+  publicToken: string;
+  institution: string;
 }

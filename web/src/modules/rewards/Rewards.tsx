@@ -147,6 +147,24 @@ function RewardsAdmin() {
         <button className="btn">Add reward</button>
       </form>
 
+      {data.history.length > 0 && (
+        <div className="card" data-testid="reward-history">
+          <h2>History</h2>
+          <ul className="plain rows">
+            {data.history.map((d) => (
+              <li key={d.id}>
+                <span>
+                  <b>{d.memberName}</b>: {d.rewardName} <small className="muted">· {d.cost} pts</small>
+                </span>
+                <small className={d.status === 'approved' ? 'good' : 'muted'}>
+                  {d.status === 'approved' ? 'Approved' : 'Denied'} by {d.decidedBy} · {new Date(d.decidedAt).toLocaleDateString()}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <h2>The store</h2>
       <ul className="plain rows">
         {data.rewards.map((r) => (

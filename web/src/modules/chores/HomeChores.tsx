@@ -59,6 +59,21 @@ export default function HomeChores() {
         )}
       </div>
 
+      {data.curfew && (
+        <div className="card curfew" data-testid="curfew">
+          {data.curfew.phoneOff && (
+            <span>
+              📵 Phone off <b>{data.curfew.phoneOff}</b>
+            </span>
+          )}
+          {data.curfew.curfew && (
+            <span>
+              🏠 Home by <b>{data.curfew.curfew}</b>
+            </span>
+          )}
+        </div>
+      )}
+
       {left[0] && (
         <div className="now card">
           <small>NOW</small>

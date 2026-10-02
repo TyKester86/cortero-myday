@@ -20,6 +20,7 @@ import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { memberById, requireAdult, targetMember } from '../lib/members.js';
 import { totalPoints, withEarn, xpStatus } from '../lib/xp.js';
 import { tryPerfectWeek } from './score.js';
+import { tonightCurfew } from './family.js';
 
 export const choresRouter = Router();
 
@@ -66,7 +67,8 @@ export async function todayFor(member: HouseholdMember, db: Db = pool): Promise<
   // Same arithmetic as apiToday: today's plate = scheduled chores + open homework.
   const pointsToday = list.reduce((s, c) => s + c.points, 0) + homework.reduce((s, h) => s + h.points, 0);
   const pointsEarned = list.filter((c) => c.done).reduce((s, c) => s + c.points, 0);
-  return { member, date, weekday: weekdayName(date), chores: list, homework, pointsToday, pointsEarned };
+  const curfew = member.kind === 'kid' ? await tonightCurfew(member.id, date) : null;
+  return { member, date, weekday: weekdayName(date), chores: list, homework, pointsToday, pointsEarned, curfew };
 }
 
 choresRouter.get('/api/chores/today', async (req, res) => {
@@ -149,7 +151,7 @@ choresRouter.get('/api/chores', async (_req, res) => {
   const { rows } = await pool.query<ChoreRow>(
     `SELECT c.id, c.name, c.member_id, m.name AS member_name, c.days, c.points
        FROM chores c JOIN household_members m ON m.id = c.member_id
-      WHERE c.active
+      WHERE c.active AND m.archived_at IS NULL
       ORDER BY m.sort_order, m.id, c.id`,
   );
   const chores: Chore[] = rows.map((r) => ({

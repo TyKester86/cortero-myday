@@ -11,6 +11,13 @@ import { pool, tx } from './db.js';
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
 async function main(): Promise<void> {
+  // Names, notes and achievements contain emoji: refuse to run on anything but UTF-8.
+  const { rows: enc } = await pool.query<{ enc: string }>(
+    'SELECT pg_encoding_to_char(encoding) AS enc FROM pg_database WHERE datname = current_database()',
+  );
+  if (enc[0]?.enc !== 'UTF8') {
+    throw new Error(`database encoding is ${enc[0]?.enc ?? 'unknown'}; recreate it with ENCODING 'UTF8' TEMPLATE template0`);
+  }
   await pool.query(
     `CREATE TABLE IF NOT EXISTS schema_migrations (
        name text PRIMARY KEY,

@@ -36,8 +36,8 @@ export default function KidAccess() {
   };
 
   return (
-    <section>
-      <h1>Kid sign-in</h1>
+    <section className="card">
+      <h2>Kid sign-in</h2>
       <p className="muted">
         Kids sign in with their first name and a {KID_PIN_LENGTH}-digit PIN — no Google account needed. Setting a new PIN signs them
         out on every device. Five wrong tries locks sign-in for 15 minutes.
@@ -87,6 +87,18 @@ export default function KidAccess() {
             <button className="link danger" onClick={() => void turnOff(k.memberId, k.name)}>
               Turn off PIN sign-in
             </button>
+          )}
+          {k.recentSignins.length > 0 && (
+            <details data-testid={`signins-${k.key}`}>
+              <summary className="muted small">Recent sign-ins</summary>
+              <ul className="plain small">
+                {k.recentSignins.slice(0, 8).map((s, i) => (
+                  <li key={i} className={s.ok ? 'muted' : 'warn'}>
+                    {new Date(s.at).toLocaleString()} · {s.device} · {s.ok ? 'signed in' : 'wrong PIN'}
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
         </div>
       ))}

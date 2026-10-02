@@ -51,6 +51,9 @@ const serverEnv = (fakeNow) => ({
   DATABASE_URL: dbUrl,
   SESSION_SECRET: SECRET,
   DEV_LOGIN_TOKEN: DEV_TOKEN,
+  // Local proof only: fake bank data + stubbed AI replies (both refused in production).
+  MONEY_PROVIDER: 'fake',
+  CHAT_STUB: '1',
   ...(fakeNow ? { FAKE_NOW: fakeNow } : {}),
 });
 
@@ -73,12 +76,16 @@ const section = (s) => console.log(`\n== ${s}`);
 /* ---------- HTTP personas with cookie jars ---------- */
 
 class Client {
-  constructor(name) {
+  constructor(name, userAgent = 'MyDay-e2e') {
     this.name = name;
-    this.cookie = '';
+    this.jar = new Map();
+    this.userAgent = userAgent;
+  }
+  get cookie() {
+    return [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ');
   }
   async req(method, p, body, { json = true, headers = {} } = {}) {
-    const h = { ...headers };
+    const h = { 'User-Agent': this.userAgent, ...headers };
     if (this.cookie) h.Cookie = this.cookie;
     let payload;
     if (body !== undefined && json) {
@@ -90,10 +97,14 @@ class Client {
       payload = '{}';
     }
     const res = await fetch(BASE + p, { method, headers: h, body: payload, redirect: 'manual' });
-    const set = res.headers.get('set-cookie');
-    if (set) {
-      const m = set.match(/myday\.sid=([^;]*)/);
-      if (m) this.cookie = m[1] ? `myday.sid=${m[1]}` : '';
+    for (const sc of res.headers.getSetCookie()) {
+      const [pair] = sc.split(';');
+      const i = (pair ?? '').indexOf('=');
+      const k = pair.slice(0, i).trim();
+      const v = pair.slice(i + 1);
+      if (!k) continue;
+      if (!v || /expires=Thu, 01 Jan 1970/i.test(sc)) this.jar.delete(k);
+      else this.jar.set(k, v);
     }
     const text = await res.text();
     let data = null;
@@ -164,7 +175,8 @@ async function setup() {
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   await admin.query('DROP DATABASE IF EXISTS myday_e2e WITH (FORCE)');
-  await admin.query('CREATE DATABASE myday_e2e');
+  // Always UTF-8 (emoji in achievement names etc.), whatever the server's default.
+  await admin.query("CREATE DATABASE myday_e2e ENCODING 'UTF8' TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'");
   await admin.end();
   const m1 = runNode(['dist/migrate.js']);
   const m2 = runNode(['dist/migrate.js']);
@@ -293,6 +305,7 @@ async function monday() {
   eq('form-encoded POST rejected', csrf.status, 415);
   const bodyless = await ty.req('DELETE', '/api/homework/999999', undefined, { json: false });
   eq('bodyless write without JSON header rejected', bodyless.status, 415);
+  await build3Monday();
 }
 
 async function midweek() {
@@ -305,6 +318,7 @@ async function midweek() {
     }
     await checkAll(avery);
     await checkAll(ty, 'evan');
+    await checkinTy(); // a 7-day check-in streak by Sunday
     if (d === 'Sat') {
       const s = (await avery.get('/api/score')).data.perfectWeek;
       eq('Saturday: week clean so far, pays out only on Sunday', [s.clean, s.awarded], [true, false]);
@@ -398,6 +412,7 @@ async function sunday() {
   eq('habits appear on today’s health page', (await ty.get('/api/workouts/today')).data.habits, { water: true, shake: false, creatine: true });
   eq('unknown habit → 404', (await ty.post('/api/habits/coffee', { done: true })).status, 404);
   eq("kid can't tick a sibling's habit", (await avery.post('/api/habits/water?member=evan', { done: true })).status, 403);
+  await build3Sunday();
 }
 
 async function mealsAndGrocery() {
@@ -466,6 +481,7 @@ async function mealsAndGrocery() {
   await ty.post('/api/grocery/favorites', { store: 'Corner Market', favorite: true });
   const gone = await ty.del(`/api/grocery/stores/${encodeURIComponent('Corner Market')}`);
   eq('delete own store also drops the favorite', [gone.data.chains.some((c) => c.name === 'Corner Market'), gone.data.favorites.map((f) => f.store)], [false, ['Walmart']]);
+  await mealSlots();
 }
 
 async function pinRotation() {
@@ -489,7 +505,7 @@ async function pinRotation() {
   eq('…and PIN login refused', (await anon.post('/api/auth/kid-login', { name: 'Evan', pin: '730194' })).status, 401);
 
   section('build 1: pages + logout');
-  for (const p of ['/', '/homework', '/rewards', '/score', '/health', '/meals', '/meals/plan', '/meals/grocery', '/weekly', '/kids', '/manifest.webmanifest', '/icons/myday-icon-512.png']) {
+  for (const p of ['/', '/homework', '/rewards', '/score', '/health', '/meals', '/meals/plan', '/meals/grocery', '/weekly', '/kids', '/day', '/money', '/family', '/hana', '/tutor', '/battles', '/red-alert', '/dump', '/household', '/grocery-list', '/join/abc', '/manifest.webmanifest', '/icons/myday-icon-512.png']) {
     const r = await fetch(BASE + p);
     check(`GET ${p}`, r.status === 200, `${r.status} ${r.headers.get('content-type')}`);
   }
@@ -497,6 +513,256 @@ async function pinRotation() {
   eq('logout ends the session', (await ty.get('/api/me')).status, 401);
 }
 
+/* ======================= build 3 ======================= */
+
+const kayla = new Client('kayla');
+const grandma = new Client('grandma');
+const tablet = new Client('tablet', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)');
+const xpOf = async (c) => (await c.get('/api/score')).data.xp.total;
+const sql = async (q, p = []) => {
+  const db = new pg.Client({ connectionString: dbUrl });
+  await db.connect();
+  try {
+    return (await db.query(q, p)).rows;
+  } finally {
+    await db.end();
+  }
+};
+const checkinTy = (sleep = 'OK') => ty.put('/api/day/checkin', { nervous: 'Calm', sleep, fuel: 'eggs', grateful: 'coffee' });
+
+async function build3Monday() {
+  section('9. adult engine: check-in, tasks, habits, review (+ XP)');
+  const x0 = await xpOf(ty);
+  const ci = await checkinTy();
+  eq('morning check-in → +5 XP', [ci.status, ci.data.xp.total - x0, ci.data.day.checkin?.sleep], [200, 5, 'OK']);
+  eq('editing the check-in pays nothing more', (await checkinTy()).data.xp.total - x0, 5);
+  eq('bad sleep value → 400', (await ty.put('/api/day/checkin', { sleep: 'Amazing' })).status, 400);
+  eq("kids don't get the adult engine", (await avery.get('/api/day')).status, 403);
+  const t1 = await ty.post('/api/day/tasks', { task: 'Call the insurance company', priority: 'Critical', energy: 'Low Brain', context: '@Phone', estMin: 15, mit: true });
+  const task = t1.data.tasks[0];
+  eq('add an MIT task', [t1.status, task.task, task.mit, task.priority, task.context], [201, 'Call the insurance company', true, 'Critical', '@Phone']);
+  const x1 = await xpOf(ty);
+  const done = await ty.post(`/api/day/tasks/${task.id}/done`);
+  eq('finish it → +5 XP (Family Leader task XP)', [done.data.xp.total - x1, done.data.day.tasks[0].done], [5, true]);
+  eq('finishing twice pays nothing', (await ty.post(`/api/day/tasks/${task.id}/done`)).data.xp.total - x1, 5);
+  eq("finished tasks can't be deleted", (await ty.del(`/api/day/tasks/${task.id}`)).status, 409);
+  const h = await ty.post('/api/day/habits', { name: 'Read 10 pages' });
+  const habit = h.data.habits[0];
+  const x2 = await xpOf(ty);
+  const tick = await ty.post(`/api/day/habits/${habit.id}/toggle`, { dayIdx: 0, done: true });
+  eq('tick Monday → +3 XP, grid shows it', [tick.data.xp.total - x2, tick.data.day.habits[0].days], [3, [true, false, false, false, false, false, false]]);
+  const untick = await ty.post(`/api/day/habits/${habit.id}/toggle`, { dayIdx: 0, done: false });
+  eq('untick → the 3 XP comes back off', untick.data.xp.total - x2, 0);
+  await ty.post(`/api/day/habits/${habit.id}/toggle`, { dayIdx: 0, done: true });
+  eq("can't tick a future day", (await ty.post(`/api/day/habits/${habit.id}/toggle`, { dayIdx: 6, done: true })).status, 400);
+  const x3 = await xpOf(ty);
+  const rv = await ty.put('/api/day/review', { got: 'Insurance sorted', derailed: 'Email rabbit hole', tomorrow: 'Gym', rsd: 'No', energyEnd: 'OK' });
+  eq('evening review → +10 XP', rv.data.xp.total - x3, 10);
+  eq('re-saving the review → +0', (await ty.put('/api/day/review', { got: 'Insurance sorted!', rsd: 'No', energyEnd: 'OK' })).data.xp.total - x3, 10);
+  const day = (await ty.get('/api/day')).data;
+  eq('daily score: today started + top task done = 40/100', [day.daily.total, day.daily.parts], [40, [0, 0, 20, 20, 0]]);
+
+  section('3. brain dump → triage');
+  for (const note of ['Renew car tags', 'Birthday gift for Avery', 'Look up summer camps']) await ty.post('/api/dump', { note });
+  let dump = (await ty.get('/api/dump')).data;
+  eq('three notes in the inbox (newest first)', dump.open.map((d) => d.note), ['Look up summer camps', 'Birthday gift for Avery', 'Renew car tags']);
+  const tags = dump.open.find((d) => d.note === 'Renew car tags');
+  dump = (await ty.post(`/api/dump/${tags.id}/triage`, { to: 'task', energy: 'High Brain' })).data;
+  eq('triage → task', [dump.open.length, dump.triaged[0].status], [2, 'task']);
+  const tasks = (await ty.get('/api/day')).data.tasks.map((t) => [t.task, t.energy]);
+  check('…and it is on today’s task list as High Brain', tasks.some(([n, e]) => n === 'Renew car tags' && e === 'High Brain'), JSON.stringify(tasks));
+  dump = (await ty.post(`/api/dump/${dump.open[0].id}/triage`, { to: 'done' })).data;
+  eq('triage → handled', [dump.open.length, dump.triaged[0].status], [1, 'done']);
+  eq('triaging twice → 404', (await ty.post(`/api/dump/${tags.id}/triage`, { to: 'done' })).status, 404);
+  const kd = (await avery.post('/api/dump', { note: 'Ask about the field trip' })).data.open[0];
+  eq('kids can capture too', kd.note, 'Ask about the field trip');
+  eq('…but can’t make tasks', (await avery.post(`/api/dump/${kd.id}/triage`, { to: 'task' })).status, 403);
+  eq("…and can't touch a grown-up's notes", (await avery.post(`/api/dump/${dump.open[0].id}/triage`, { to: 'done' })).status, 404);
+  eq('kid marks theirs handled', (await avery.post(`/api/dump/${kd.id}/triage`, { to: 'done' })).data.open.length, 0);
+
+  section('2. boss battles');
+  let b = (await ty.get('/api/battles')).data;
+  eq('Family Leader list: 11 bosses, monthly, 100 XP', [b.bosses.length, b.cadence, b.xp, b.bosses[1].name], [11, 'monthly', 100, '💑 Plan a date night']);
+  eq('complete with nothing active → 409', (await ty.post('/api/battles/complete')).status, 409);
+  await ty.post('/api/battles', { name: '📞 Make 5 important calls' });
+  b = (await ty.post('/api/battles', { name: '🔧 Complete home repair' })).data;
+  eq('starting another replaces the first', [b.active?.name, b.history[0]?.status], ['🔧 Complete home repair', 'replaced']);
+  const x4 = await xpOf(ty);
+  const won = await ty.post('/api/battles/complete');
+  eq('defeat it → +100 XP, logged as done', [won.data.xp.total - x4, won.data.battles.active, won.data.battles.history[0].status], [100, null, 'done']);
+  eq("kids don't fight bosses", (await avery.get('/api/battles')).status, 403);
+
+  section('8. red alert');
+  const ra = (await ty.get('/api/red-alert')).data;
+  eq('the 5 restart steps', ra.steps.length, 5);
+  const x5 = await xpOf(ty);
+  const r1 = await ty.post('/api/red-alert', { trigger: 'Overslept, kids late', stepsDone: 3, note: 'Bed by 10' });
+  check('log it → +5 XP + the protocol message', r1.data.xp.total - x5 === 5 && r1.data.message.startsWith('Minimum viable day complete'), r1.data.message);
+  eq('second one the same day → no extra XP', (await ty.post('/api/red-alert', { trigger: 'again', stepsDone: 5 })).data.xp.total - x5, 5);
+  eq('history keeps both runs', (await ty.get('/api/red-alert')).data.recent.map((r) => `${r.stepsDone}/${r.stepsTotal}`), ['5/5', '3/5']);
+  eq('stepsDone is capped to the step count', (await ty.post('/api/red-alert', { stepsDone: 99 })).status, 200);
+  eq("kids don't get red alert", (await avery.get('/api/red-alert')).status, 403);
+
+  section('4. family: curfews, partner check-in, 1-on-1s, kids overview');
+  await ty.put('/api/family/curfews/3', { curfewWeekday: '21:30', curfewWeekend: '23:00', phoneOffWeekday: '9:00', phoneOffWeekend: '22:30' });
+  const fam0 = (await ty.put('/api/family/curfews/3', { phoneOffWeekday: '21:00' })).data;
+  eq('curfews saved and normalized', fam0.kids.find((k) => k.member.key === 'avery').curfew, { curfewWeekday: '21:30', curfewWeekend: '23:00', phoneOffWeekday: '21:00', phoneOffWeekend: '22:30' });
+  eq('invalid time clears it', (await ty.put('/api/family/curfews/4', { curfewWeekday: '25:99' })).data.kids.find((k) => k.member.key === 'evan').curfew.curfewWeekday, '');
+  eq('curfew for an adult → 404', (await ty.put('/api/family/curfews/1', { curfewWeekday: '21:00' })).status, 404);
+  eq('Avery sees tonight’s (Monday) times on Today', (await avery.get('/api/chores/today')).data.curfew, { weekend: false, curfew: '21:30', phoneOff: '21:00' });
+  eq('grown-ups get no curfew card', (await ty.get('/api/chores/today')).data.curfew, null);
+  const x6 = await xpOf(ty);
+  const p1 = await ty.put('/api/family/partner', { positives: 10, negatives: 2, connection: 'Walk after dinner', conflict: true, flooded: false, tookBreak: true, need: 'More sleep' });
+  eq('partner check-in → 5.0:1 ratio, +15 XP', [p1.data.family.partner.ratio, p1.data.xp.total - x6], ['5.0:1', 15]);
+  eq('updating it this week → +0', (await ty.put('/api/family/partner', { positives: 12, negatives: 2 })).data.xp.total - x6, 15);
+  const o1 = await ty.post('/api/family/one-on-ones', { childId: 3, minutes: 30, promiseKept: true, moment: true, reflection: 'Basketball in the driveway', word: 'laughing' });
+  eq('1-on-1 with Avery → +20 XP', [o1.status, o1.data.xp.total - x6, o1.data.family.oneOnOnes[0].childName], [201, 35, 'Avery']);
+  eq('second 1-on-1 this week → logged, +0 XP', (await ty.post('/api/family/one-on-ones', { childId: 4, minutes: 15 })).data.xp.total - x6, 35);
+  eq('1-on-1 "with" a grown-up → 400', (await ty.post('/api/family/one-on-ones', { childId: 2, minutes: 5 })).status, 400);
+  const ov = (await ty.get('/api/family')).data.kids.find((k) => k.member.key === 'avery');
+  check('kids overview: chores, points, homework, sign-in', ov.choresDone === 2 && ov.choresToday === 2 && ov.pointsToday === 15 && ov.openHomework === 1 && ov.lastSignIn !== null, JSON.stringify({ ...ov, member: undefined, curfew: undefined }));
+  eq("kids can't open Family", (await avery.get('/api/family')).status, 403);
+
+  section('5. household: roster, roles, archive, invites');
+  eq("kids can't manage the household", (await avery.get('/api/household/admin')).status, 403);
+  await ty.post('/api/household/members', { name: 'Jordan', kind: 'kid', age: 8 });
+  let hh = (await ty.post('/api/household/members', { name: 'Jordan', kind: 'kid' })).data;
+  eq('add members (unique keys)', hh.members.filter((m) => m.name === 'Jordan').map((m) => [m.key, m.xpTrack, m.age]), [['jordan', 'kid', 8], ['jordan2', 'kid', null]]);
+  const j2 = hh.members.find((m) => m.key === 'jordan2');
+  hh = (await ty.patch(`/api/household/members/${j2.id}`, { name: 'Jo', age: 9 })).data;
+  eq('edit name + age', hh.members.find((m) => m.id === j2.id).name + '/' + hh.members.find((m) => m.id === j2.id).age, 'Jo/9');
+  hh = (await ty.post(`/api/household/members/${j2.id}/archive`)).data;
+  eq('remove = archive (history kept)', hh.members.find((m) => m.id === j2.id).archived, true);
+  check('…gone from the everyday roster', !(await ty.get('/api/household')).data.members.some((m) => m.key === 'jordan2'));
+  eq('restore', (await ty.post(`/api/household/members/${j2.id}/restore`)).data.members.find((m) => m.id === j2.id).archived, false);
+  eq("can't remove yourself", (await ty.post('/api/household/members/1/archive')).status, 409);
+  eq("can't make yourself a kid", (await ty.patch('/api/household/members/1', { kind: 'kid' })).status, 409);
+  eq('add a grown-up with an email', (await ty.post('/api/household/members', { name: 'X', kind: 'adult', email: 'dup@example.com' })).status, 201);
+  eq('the same email again (any case) → 409', (await ty.post('/api/household/members', { name: 'Y', kind: 'adult', email: 'DUP@example.com' })).status, 409);
+  const inv = await ty.post('/api/household/invites', { name: 'Grandma', email: 'grandma@example.com', xpTrack: 'woman' });
+  const token = inv.data.link?.split('/join/')[1];
+  check('invite a grown-up → one-time link', inv.status === 201 && inv.data.link.startsWith(`${BASE}/join/`) && !!token, '(link not printed)');
+  eq('invite shows pending', inv.data.member.invite?.status, 'pending');
+  const stored = await sql('SELECT token_hash FROM invites');
+  check('only the link’s hash is stored', stored.length === 1 && stored[0].token_hash !== token);
+  eq('public invite preview (masked email)', (await anon.get(`/api/invites/${token}`)).data, { name: 'Grandma', email: 'g***@example.com' });
+  eq('bogus invite → 404', (await anon.get('/api/invites/nope')).status, 404);
+  eq('invite for a kid track → 400', (await ty.post('/api/household/invites', { name: 'K', email: 'k@example.com', xpTrack: 'kid' })).status, 400);
+  await grandma.get(`/dev-login?token=${DEV_TOKEN}&member=grandma`);
+  eq('first sign-in accepts the invite', (await ty.get('/api/household/admin')).data.members.find((m) => m.key === 'grandma').invite.status, 'accepted');
+  eq('…and the link stops working', (await anon.get(`/api/invites/${token}`)).status, 404);
+  const gm = (await ty.get('/api/household/admin')).data.members.find((m) => m.key === 'grandma');
+  await ty.post(`/api/household/members/${gm.id}/archive`);
+  eq('removing someone signs them out', (await grandma.get('/api/me')).status, 401);
+  await ty.post(`/api/household/members/${gm.id}/restore`);
+  eq('restoring lets them back in', (await grandma.get('/api/me')).data.member?.key, 'grandma');
+
+  section('9. kid sign-in polish: remember this device + sign-in log');
+  eq('no picker on an unknown device', (await anon.get('/api/auth/kid-device')).data.kids, []);
+  eq('kid signs in with "remember me"', (await tablet.post('/api/auth/kid-login', { name: 'Avery', pin: averyPin, remember: true })).status, 200);
+  check('device cookie set (httpOnly)', tablet.jar.has('myday.kiddev'));
+  await tablet.post('/api/auth/logout');
+  eq('after sign-out the device still offers Avery', (await tablet.get('/api/auth/kid-device')).data.kids, [{ key: 'avery', name: 'Avery' }]);
+  await tablet.post('/api/auth/kid-login', { name: 'avery', pin: '000002' });
+  const ka = (await ty.get('/api/kid-access')).data.kids.find((k) => k.key === 'avery');
+  check('parent sees Avery’s recent sign-ins (incl. the wrong PIN, device label)', ka.recentSignins[0].ok === false && ka.recentSignins[0].device === 'iPhone' && ka.recentSignins.some((s) => s.ok), JSON.stringify(ka.recentSignins.slice(0, 3)));
+  const devs = (await ty.get('/api/household/admin')).data.devices;
+  eq('parent sees the device and its kids', devs.map((d) => [d.label, d.kids]), [['iPhone', ['Avery']]]);
+  await tablet.post('/api/auth/kid-device/forget', { key: 'avery' });
+  eq('"not me" removes the name from this device', (await tablet.get('/api/auth/kid-device')).data.kids, []);
+  await tablet.post('/api/auth/kid-login', { name: 'Avery', pin: averyPin, remember: true });
+  await ty.del(`/api/household/devices/${devs[0].id}`);
+  eq('parent forgets the device → picker gone', (await tablet.get('/api/auth/kid-device')).data.kids, []);
+
+  section('1. money (FAKE provider — local proof)');
+  eq("kids can't see money", (await avery.get('/api/money')).status, 403);
+  let m = (await ty.get('/api/money')).data;
+  eq('provider is the fake, nothing linked yet', [m.provider, m.items.length, m.safeToSpend], ['fake', 0, null]);
+  const lt = (await ty.post('/api/money/link-token')).data;
+  check('link token from the fake', lt.provider === 'fake' && lt.linkToken.startsWith('link-fake-'));
+  eq('a non-fake public token is refused', (await ty.post('/api/money/exchange', { publicToken: 'public-sandbox-xyz', institution: 'X' })).status, 400);
+  m = (await ty.post('/api/money/exchange', { publicToken: 'public-fake-e2e', institution: 'Demo Bank (fake)' })).data;
+  eq('link → 3 accounts synced', m.accounts.map((a) => [a.name, a.subtype]), [['Rewards Visa', 'credit card'], ['Everyday Checking', 'checking'], ['Rainy Day Savings', 'savings']]);
+  eq('subscription radar finds exactly the recurring charges', m.subscriptions.map((s) => [s.merchant, s.cadence, s.amount]).sort(), [
+    ['Netflix', 'monthly', 15.49], ['OG&E', 'monthly', m.subscriptions.find((s) => s.merchant === 'OG&E')?.amount], ['Oakwood Apartments', 'monthly', 1450],
+    ['Planet Fitness', 'monthly', 29.99], ['Spotify', 'monthly', 11.99],
+  ].sort());
+  check('…and NOT the irregular spending (Kroger, Starbucks, Amazon)', !m.subscriptions.some((s) => /Kroger|Starbucks|Amazon/.test(s.merchant)));
+  eq('paycheck detected: Acme Corp, biweekly, $2,400', m.income.map((i) => [i.merchant, i.cadence, i.amount, i.nextDate]), [['Acme Corp', 'biweekly', 2400, '2026-10-09']]);
+  eq('safe to spend = $2,840.12 checking − rent $1,450 − gym $29.99 due before payday', [m.safeToSpend.amount, m.safeToSpend.until, m.safeToSpend.basis, m.safeToSpend.upcoming.map((u) => `${u.merchant} ${u.date}`)], [1360.13, '2026-10-09', 'paycheck', ['Oakwood Apartments 2026-10-01', 'Planet Fitness 2026-10-05']]);
+  eq('search transactions', (await ty.get('/api/money/transactions?days=120&q=netflix')).data.transactions.map((t) => t.date), ['2026-09-12', '2026-08-12', '2026-07-12', '2026-06-12']);
+  const enc = await sql('SELECT access_token_enc FROM money_items');
+  check('access token encrypted at rest', enc[0].access_token_enc.startsWith('v1.') && !enc[0].access_token_enc.includes('access-fake'));
+  const n0 = (await sql('SELECT COUNT(*)::int AS n FROM money_transactions'))[0].n;
+  await ty.post('/api/money/sync');
+  eq('re-sync is idempotent', (await sql('SELECT COUNT(*)::int AS n FROM money_transactions'))[0].n, n0);
+  m = (await ty.del(`/api/money/items/${m.items[0].id}`)).data;
+  eq('unlink removes the bank and its data', [m.items.length, m.accounts.length, (await sql('SELECT COUNT(*)::int AS n FROM money_transactions'))[0].n], [0, 0, 0]);
+
+  section('6 + 7. Ask Hana + homework tutor (STUBBED model — local proof)');
+  eq("kids don't get the companion", (await avery.get('/api/chat/companion')).status, 403);
+  const st = (await avery.get('/api/chat/tutor')).data;
+  eq('kid tutor available (stub), empty history', [st.available, st.history.length], [true, 0]);
+  const a1 = await avery.post('/api/chat/tutor', { message: 'Can you just tell me the answer to 3x+5=20?' });
+  check('tutor reply comes back through the full pipeline', a1.status === 200 && a1.data.reply.text.startsWith('[stub reply]'), a1.data.reply?.text);
+  check('…with the tutor’s "never give the answer" rule in the system prompt', a1.data.reply.text.includes('rule=no-answers'));
+  check('…Avery’s open homework as context', a1.data.reply.text.includes('ctx=Math worksheet (Math)'));
+  check('…and the tutor’s 450-token cap', a1.data.reply.text.includes('max_tokens=450'));
+  const a2 = await avery.post('/api/chat/tutor', { message: 'ok what do I do first' });
+  check('second turn includes the stored history (3 turns sent)', a2.data.reply.text.includes('turns=3'), a2.data.reply.text);
+  eq('conversation stored server-side', a2.data.history.map((h) => h.who), ['user', 'hana', 'user', 'hana']);
+  eq("chats are per person (Evan's tutor history is empty)", (await evan.get('/api/chat/tutor')).data.history.length, 0);
+  eq('empty message → 400', (await avery.post('/api/chat/tutor', { message: '  ' })).status, 400);
+  const hana = await ty.post('/api/chat/companion', { message: 'What should I do next?' });
+  check('Ask Hana: companion persona + sees the day', hana.data.reply.text.includes('persona=hana') && hana.data.reply.text.includes('ctx=day'), hana.data.reply.text);
+  await kayla.get(`/dev-login?token=${DEV_TOKEN}&member=kayla`);
+  eq('tutor is for kids + the student track (Heart of Home → 403)', (await kayla.get('/api/chat/tutor')).status, 403);
+  await ty.patch('/api/household/members/2', { xpTrack: 'student' });
+  const kt = await kayla.post('/api/chat/tutor', { message: 'Help me plan my essay' });
+  check('switch Kayla to Student → Socratic college tutor', kt.status === 200 && kt.data.reply.text.includes('rule=socratic'), kt.data.reply?.text);
+  await ty.patch('/api/household/members/2', { xpTrack: 'woman' });
+}
+
+async function build3Sunday() {
+  section('9. streak XP bonus, perfect day, achievements');
+  // Ty checked in every day Mon..Sun; today make it a 100/100 day.
+  await checkinTy('Great');
+  await ty.post('/api/workouts/complete-day');
+  const tk = await ty.post('/api/day/tasks', { task: 'Meal prep', priority: 'Important', energy: 'Body-only' });
+  await ty.post(`/api/day/tasks/${tk.data.tasks.find((t) => t.task === 'Meal prep').id}/done`);
+  await ty.post('/api/family/one-on-ones', { childId: 4, minutes: 20 });
+  const s1 = (await ty.get('/api/score')).data;
+  eq('daily score 100/100', [s1.daily.total, s1.daily.labels], [100, ['Sleep 7+ hrs', 'Workout', 'Today started', 'Top task done', 'Family action']]);
+  eq('7-day streak', s1.streak.current, 7);
+  const ev = await sql("SELECT action, xp FROM xp_events WHERE member_id = 1 AND earned_on = '2026-10-04' AND action IN ('Perfect day (100/100)', '7-day streak') ORDER BY action");
+  eq('awards: Perfect day +50 XP, 7-day streak +20 XP', ev.map((e) => [e.action, e.xp]), [['7-day streak', 20], ['Perfect day (100/100)', 50]]);
+  const unlocked = s1.achievements.filter((a) => a.unlocked).map((a) => a.name);
+  check('achievements unlocked', ['🌅 First Day', '📅 Week One', '🛡️ Restarted', '💯 Perfect Day'].every((n) => unlocked.includes(n)), unlocked.join(', '));
+  eq('Sunday newly unlocks exactly the two only possible today', s1.newlyUnlocked, ['📅 Week One', '💯 Perfect Day']);
+  eq('…First Day + Restarted were unlocked back on Monday, the day they happened', s1.achievements.filter((a) => ['🌅 First Day', '🛡️ Restarted'].includes(a.name)).map((a) => a.date), ['2026-09-28', '2026-09-28']);
+  const s2 = (await ty.get('/api/score')).data;
+  eq('reloading pays nothing twice', [s2.xp.total, s2.newlyUnlocked], [s1.xp.total, []]);
+  eq('weekend curfew on Sunday? no — Sunday is a school night', (await avery.get('/api/chores/today')).data.curfew, { weekend: false, curfew: '21:30', phoneOff: '21:00' });
+
+  section('9. rewards history for parents');
+  const hist = (await ty.get('/api/rewards/admin')).data.history;
+  eq('approved + denied, newest first, with who decided', hist.map((h) => [h.rewardName, h.status, h.decidedBy]), [['Movie night pick', 'approved', 'Ty'], ['Ice cream run', 'denied', 'Ty']]);
+}
+
+async function mealSlots() {
+  section('9. meal slots');
+  let p = (await ty.post('/api/meal-plan', { mealId: 1, day: 'Thu', slot: 'dinner' })).data;
+  p = (await ty.post('/api/meal-plan', { mealId: 3, day: 'Thu', slot: 'breakfast' })).data;
+  eq('Thursday: breakfast sorts before dinner', p.days[3].meals.map((m) => `${m.slot}:${m.title}`), ['breakfast:Turkey chili', 'dinner:Chicken burrito bowls']);
+  p = (await ty.post('/api/meal-plan', { mealId: 3, day: 'Thu', slot: 'breakfast' })).data;
+  eq('same meal, same day + slot twice → no-op', p.days[3].meals.length, 2);
+  p = (await ty.post('/api/meal-plan', { mealId: 3, day: 'Thu', slot: 'lunch' })).data;
+  eq('…but a different slot is a new entry', p.days[3].meals.map((m) => m.slot), ['breakfast', 'lunch', 'dinner']);
+  const lunch = p.days[3].meals[1];
+  p = (await ty.patch(`/api/meal-plan/${lunch.id}`, { slot: 'dinner' })).data;
+  eq('change a slot (day untouched)', [p.days[3].meals.map((m) => m.slot), p.days[3].meals[2].day], [['breakfast', 'dinner', 'dinner'], 'Thu']);
+  eq('bad slot → 400', (await ty.patch(`/api/meal-plan/${lunch.id}`, { slot: 'brunch' })).status, 400);
+}
 try {
   await setup();
   await monday();
