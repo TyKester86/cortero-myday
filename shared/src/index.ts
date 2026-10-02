@@ -1730,3 +1730,67 @@ export function projectInvestments(start: number, monthly: number, years: number
   }
   return out;
 }
+
+/* ================= community / circles ================= */
+
+export const CIRCLE_REACTIONS = ['❤️', '👏', '💪', '🙏', '😂'] as const;
+export type CircleStatus = 'visible' | 'pending' | 'hidden' | 'removed';
+
+export interface CircleSummary {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  teenOk: boolean;
+  members: number;
+  joined: boolean;
+  moderator: boolean;
+}
+
+export interface CircleComment {
+  id: number;
+  author: string;
+  mine: boolean;
+  body: string;
+  status: CircleStatus;
+  at: string;
+}
+
+export interface CirclePost {
+  id: number;
+  /** "Dana · K." for grown-ups, "Teen member" for teens — never a profile. */
+  author: string;
+  mine: boolean;
+  body: string;
+  status: CircleStatus;
+  at: string;
+  reactions: Array<{ emoji: string; count: number; mine: boolean }>;
+  comments: CircleComment[];
+}
+
+export interface CircleView {
+  circle: CircleSummary;
+  posts: CirclePost[];
+}
+
+export interface ModerationItem {
+  type: 'post' | 'comment';
+  id: number;
+  circle: string;
+  author: string;
+  body: string;
+  status: CircleStatus;
+  at: string;
+  /** Why it's in the queue. */
+  reason: 'teen_approval' | 'reported';
+  reports: Array<{ id: number; reason: string }>;
+}
+
+export interface ModerationQueue {
+  items: ModerationItem[];
+  isAdmin: boolean;
+}
+
+export interface TeenActivity {
+  items: Array<{ teen: string; circle: string; type: 'post' | 'comment' | 'reaction'; body: string; status: CircleStatus | 'visible'; at: string }>;
+}

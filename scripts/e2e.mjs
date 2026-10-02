@@ -1302,6 +1302,83 @@ async function investments() {
   eq('remove an account (history goes with it)', [v.accounts.length, (await sql('SELECT COUNT(*)::int AS n FROM invest_balances WHERE account_id = $1', [roth.id]))[0].n], [1, 0]);
 }
 
+async function circles() {
+  section('5. Circles: family-safe community — kid-safety rules');
+  eq('kids under 13 can’t use circles (Evan, 11 → 403)', (await evan.get('/api/circles')).status, 403);
+  const all = (await ty.get('/api/circles')).data.circles;
+  const adhd = all.find((c) => c.slug === 'adhd-families');
+  const teenFocus = all.find((c) => c.slug === 'teen-focus');
+  eq('grown-ups see all 3 seeded circles', all.length, 3);
+  eq('teens see only teen-ok circles', (await avery.get('/api/circles')).data.circles.map((c) => c.slug), ['teen-focus', 'college-adhd']);
+  eq('…and can’t join a grown-ups-only circle (404)', (await avery.post(`/api/circles/${adhd.id}/join`)).status, 404);
+  eq('there are no direct messages at all (no DM endpoint)', [(await ty.post('/api/circles/dm', { to: 'avery', body: 'hi' })).status, (await ty.get('/api/circles/messages')).status].every((s) => s === 404 || s === 400), true);
+  eq('can’t read a circle without joining', (await ty.get(`/api/circles/${adhd.id}`)).status, 403);
+
+  section('5. posts, comments, reactions across households');
+  await ty.post(`/api/circles/${adhd.id}/join`);
+  let v = (await ty.post(`/api/circles/${adhd.id}/posts`, { body: 'Visual timers changed our mornings.' })).data;
+  eq('grown-up post goes live right away; author is first name + household initial', [v.posts[0].status, v.posts[0].author], ['visible', 'Ty · O.']);
+  const tyPost = v.posts[0];
+  await sam.post(`/api/circles/${adhd.id}/join`);
+  v = (await sam.get(`/api/circles/${adhd.id}`)).data;
+  eq('another household sees it', v.posts.map((p) => p.body), ['Visual timers changed our mornings.']);
+  v = (await sam.post(`/api/circles/posts/${tyPost.id}/react`, { emoji: '❤️' })).data;
+  eq('react ❤️', v.posts[0].reactions.find((r) => r.emoji === '❤️'), { emoji: '❤️', count: 1, mine: true });
+  eq('unknown reaction → 400', (await sam.post(`/api/circles/posts/${tyPost.id}/react`, { emoji: '💩' })).status, 400);
+  v = (await sam.post(`/api/circles/posts/${tyPost.id}/comments`, { body: 'Which timer do you use?' })).data;
+  eq('comment', v.posts[0].comments.map((c) => [c.author, c.body]), [['Sam · S.', 'Which timer do you use?']]);
+
+  section('5. teens: no name, no profile, parent approves first; parents see everything');
+  await avery.post(`/api/circles/${teenFocus.id}/join`);
+  await sam.post(`/api/circles/${teenFocus.id}/join`);
+  await ty.post(`/api/circles/${teenFocus.id}/join`);
+  v = (await avery.post(`/api/circles/${teenFocus.id}/posts`, { body: 'Body doubling on video works for me' })).data;
+  eq('teen post waits for a parent', [v.posts[0].status, v.posts[0].author], ['pending', 'Teen member']);
+  const teenPost = v.posts[0];
+  eq('…invisible to other households meanwhile', (await sam.get(`/api/circles/${teenFocus.id}`)).data.posts.length, 0);
+  let q = (await ty.get('/api/circles/moderation/queue')).data;
+  eq('her parent sees it in the queue (named — it’s his own kid)', q.items.map((i) => [i.reason, i.author, i.body]), [['teen_approval', 'Avery', 'Body doubling on video works for me']]);
+  eq('another household’s parent doesn’t', (await sam.get('/api/circles/moderation/queue')).data.items.length, 0);
+  eq('…and can’t approve it (403)', (await sam.post(`/api/circles/moderation/post/${teenPost.id}/approve`)).status, 403);
+  eq('teens can’t open moderation', (await avery.get('/api/circles/moderation/queue')).status, 403);
+  q = (await ty.post(`/api/circles/moderation/post/${teenPost.id}/approve`)).data;
+  eq('parent approves → queue empty', q.items.length, 0);
+  const seen = await sam.get(`/api/circles/${teenFocus.id}`);
+  eq('now live for everyone, still just “Teen member”', seen.data.posts.map((p) => [p.author, p.status]), [['Teen member', 'visible']]);
+  check('no trace of the teen’s name anywhere in what others receive', !JSON.stringify(seen.data).includes('Avery'));
+  await sam.post(`/api/circles/posts/${teenPost.id}/comments`, { body: 'Same here!' });
+  v = (await avery.post(`/api/circles/posts/${teenPost.id}/comments`, { body: 'Thanks :)' })).data;
+  eq('teen comments wait for approval too', v.posts[0].comments.map((c) => c.status), ['visible', 'pending']);
+  await avery.post(`/api/circles/posts/${teenPost.id}/react`, { emoji: '👏' });
+  const act = (await ty.get('/api/circles/activity/teens')).data.items;
+  eq('parent sees all teen activity: post, comment, reaction', ['post', 'comment', 'reaction'].map((t) => act.some((i) => i.teen === 'Avery' && i.type === t)), [true, true, true]);
+  eq('…other households see none of it', (await sam.get('/api/circles/activity/teens')).data.items.length, 0);
+
+  section('5. reports → moderation queue (moderators + admins); 3 reports hide');
+  const own = (await sam.post('/api/circles', { name: 'Sam Kitchen Table', description: 'Low-key support' })).data;
+  eq('a grown-up starts a circle and moderates it', [own.joined, own.moderator], [true, true]);
+  eq('teens can’t start circles', (await avery.post('/api/circles', { name: 'x' })).status, 403);
+  for (const c of [ty, kayla, ret]) await c.post(`/api/circles/${own.id}/join`);
+  v = (await ret.post(`/api/circles/${own.id}/posts`, { body: 'Buy cheap meds here!!! link' })).data;
+  const spam = v.posts[0];
+  const r1 = (await ty.post('/api/circles/report', { type: 'post', id: spam.id, reason: 'spam' })).data;
+  await ty.post('/api/circles/report', { type: 'post', id: spam.id, reason: 'again' });
+  await kayla.post('/api/circles/report', { type: 'post', id: spam.id, reason: 'spam' });
+  eq('one report per person; still visible at 2', [r1.hidden, (await sam.get(`/api/circles/${own.id}`)).data.posts.length], [false, 1]);
+  await sam.post('/api/circles/report', { type: 'post', id: spam.id, reason: 'spam' });
+  eq('3 reports → hidden until reviewed', (await ty.get(`/api/circles/${own.id}`)).data.posts.length, 0);
+  q = (await sam.get('/api/circles/moderation/queue')).data;
+  eq('the circle’s moderator sees it with 3 reports', q.items.map((i) => [i.reason, i.reports.length]), [['reported', 3]]);
+  eq('a plain member can’t act on reports', (await ty.post(`/api/circles/moderation/post/${spam.id}/approve`)).status, 403);
+  const adm = new Client('admin-c');
+  await adm.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  eq('MyDay admins see it too (no household needed)', (await adm.get('/api/circles/moderation/queue')).data.items.some((i) => i.id === spam.id), true);
+  q = (await adm.post(`/api/circles/moderation/post/${spam.id}/remove`)).data;
+  eq('admin removes it; reports resolved', [q.items.length, (await sql("SELECT COUNT(*)::int AS n FROM circle_reports WHERE target_id = $1 AND status = 'open'", [spam.id]))[0].n], [0, 0]);
+  eq('authors can take down their own post', (await ty.del(`/api/circles/posts/${tyPost.id}`)).status, 200);
+  eq('…but not someone else’s', (await ty.del(`/api/circles/posts/${teenPost.id}`)).status, 404);
+}
+
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
 async function uiGate() {
@@ -1428,7 +1505,7 @@ async function uiGate() {
     eq('billing page renders for a grown-up', await page.getByTestId('billing-status').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation'];
     const notFound = [];
     for (const p of pages) {
       await page.goto(BASE + p);
@@ -1503,6 +1580,7 @@ try {
   await bigBuild();
   await billingAdmin();
   await investments();
+  await circles();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);

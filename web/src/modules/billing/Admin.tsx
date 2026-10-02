@@ -55,6 +55,9 @@ export default function Admin() {
         Payments: <b>{data.provider === 'none' ? 'not live' : 'stub (test mode, never charges)'}</b> — MRR is what active households would pay at the current plan prices.
       </p>
       {msg && <p className="muted" role="status">{msg}</p>}
+      <p>
+        <a href="/circles/moderation">Circles moderation queue →</a>
+      </p>
       <div className="stats" data-testid="admin-totals">
         <div className="stat">
           <b>{t.households}</b>

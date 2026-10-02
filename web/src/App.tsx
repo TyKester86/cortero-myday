@@ -5,6 +5,7 @@ import FirstRun from './components/FirstRun';
 import Shortcuts from './components/Shortcuts';
 import { CreateHousehold } from './Onboarding';
 import Admin from './modules/billing/Admin';
+import { Moderation } from './modules/circles/Circles';
 import { useWide } from './modules/desk/Home';
 import { applyLook } from './modules/settings/Settings';
 import { ConfirmProvider } from './components/Confirm';
@@ -32,11 +33,13 @@ function Shell() {
     applyLook(me.prefs?.theme ?? 'system', me.prefs?.accent ?? 'navy');
   }, [me.prefs]);
   const who: 'kid' | 'adult' = isAdult ? 'adult' : 'kid';
+  const tooYoung = (m: ModuleRoute): boolean => m.minKidAge !== undefined && me.member?.kind === 'kid' && (me.member.age ?? 0) < m.minKidAge;
   const visible = (m: ModuleRoute): boolean =>
-    m.audience === 'all' ||
+    !tooYoung(m) &&
+    (m.audience === 'all' ||
     m.audience === who ||
     (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student')) ||
-    (m.audience === 'admin' && me.isAdmin);
+    (m.audience === 'admin' && me.isAdmin));
   const routes = MODULES.filter(visible);
   const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who));
   const menuItems = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who));
@@ -110,12 +113,8 @@ function Shell() {
 function Gate() {
   const { me } = useSession();
   // Staff can open the admin dashboard without a household of their own.
-  if (!me.household && me.isAdmin && window.location.pathname === '/admin') {
-    return (
-      <main className="page">
-        <Admin />
-      </main>
-    );
+  if (!me.household && me.isAdmin && (window.location.pathname === '/admin' || window.location.pathname === '/circles/moderation')) {
+    return <main className="page">{window.location.pathname === '/admin' ? <Admin /> : <Moderation />}</main>;
   }
   if (!me.household) return <CreateHousehold />;
   return <Shell />;

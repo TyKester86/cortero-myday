@@ -38,6 +38,7 @@ import Home from './desk/Home';
 import Billing from './billing/Billing';
 import Admin from './billing/Admin';
 import Invest from './invest/Invest';
+import Circles, { Circle, Moderation } from './circles/Circles';
 
 /** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
 export type Audience = 'all' | 'adult' | 'kid' | 'tutor' | 'admin';
@@ -50,6 +51,8 @@ export interface ModuleRoute {
   path: string;
   element: ReactNode;
   audience: Audience;
+  /** Kids younger than this don't see the route at all (e.g. Circles: 13+). */
+  minKidAge?: number;
   /** Shown in navigation when set: in the bottom bar for the listed audiences, otherwise in the ☰ menu. */
   nav?: { label: string; icon: string; tabFor?: Array<'kid' | 'adult'> };
 }
@@ -92,6 +95,9 @@ export const MODULES: ModuleRoute[] = [
   { path: '/command', element: <CommandCenter />, audience: 'adult', nav: { label: 'Command center', icon: '🖥' } },
   { path: '/setup', element: <Setup />, audience: 'adult' },
   { path: '/invest', element: <Invest />, audience: 'adult', nav: { label: 'Investments', icon: '📈' } },
+  { path: '/circles', element: <Circles />, audience: 'all', minKidAge: 13, nav: { label: 'Circles', icon: '🫂' } },
+  { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },
+  { path: '/circles/:id', element: <Circle />, audience: 'all', minKidAge: 13 },
   { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: '💳' } },
   { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: '🛠' } },
   { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️' } },

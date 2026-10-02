@@ -30,7 +30,9 @@ export type EventName =
   | 'notification_sent'
   | 'quick_note'
   | 'billing_change'
-  | 'household_deleted';
+  | 'household_deleted'
+  | 'circle_post'
+  | 'circle_moderation';
 
 export async function logEvent(
   name: EventName,
