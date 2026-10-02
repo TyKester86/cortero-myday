@@ -32,6 +32,8 @@ async function main(): Promise<void> {
     if (done.has(file)) continue;
     const sql = await readFile(path.join(dir, file), 'utf8');
     await tx(async (c) => {
+      // Migrations see every household (row-level security would hide rows otherwise).
+      await c.query("SELECT set_config('app.system', 'on', true)");
       await c.query(sql);
       await c.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
     });

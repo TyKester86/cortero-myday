@@ -14,6 +14,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import pg from 'pg';
@@ -34,7 +35,19 @@ function envFileValue(key) {
 }
 const adminUrl = process.env.E2E_DATABASE_URL ?? envFileValue('DATABASE_URL');
 if (!adminUrl) throw new Error('Set E2E_DATABASE_URL (a Postgres URL that may CREATE DATABASE)');
+// The app runs as an ordinary role that owns its database, exactly like the droplet: a superuser
+// would silently bypass row-level security and hide cross-household leaks.
+const APP_ROLE = 'myday_e2e_app';
+const APP_PW = randomBytes(18).toString('hex');
 const dbUrl = (() => {
+  const u = new URL(adminUrl);
+  u.pathname = '/myday_e2e';
+  u.username = APP_ROLE;
+  u.password = APP_PW;
+  return u.toString();
+})();
+/** Superuser connection to the test database, for the test's own direct checks. */
+const adminDbUrl = (() => {
   const u = new URL(adminUrl);
   u.pathname = '/myday_e2e';
   return u.toString();
@@ -54,6 +67,12 @@ const serverEnv = (fakeNow) => ({
   // Local proof only: fake bank data + stubbed AI replies (both refused in production).
   MONEY_PROVIDER: 'fake',
   CHAT_STUB: '1',
+  // Big build local proofs (all refused in production): canned lecture transcript,
+  // push recorded instead of sent, Google Classroom with 3 sample courses.
+  TRANSCRIPTION_STUB: '1',
+  PUSH_STUB: '1',
+  CLASSROOM_PROVIDER: 'fake',
+  SCHEDULERS: 'off',
   ...(fakeNow ? { FAKE_NOW: fakeNow } : {}),
 });
 
@@ -113,7 +132,7 @@ class Client {
     } catch {
       data = text;
     }
-    return { status: res.status, data, location: res.headers.get('location') };
+    return { status: res.status, data, location: res.headers.get('location'), headers: res.headers };
   }
   get(p) { return this.req('GET', p); }
   post(p, b) { return this.req('POST', p, b); }
@@ -176,7 +195,9 @@ async function setup() {
   await admin.connect();
   await admin.query('DROP DATABASE IF EXISTS myday_e2e WITH (FORCE)');
   // Always UTF-8 (emoji in achievement names etc.), whatever the server's default.
-  await admin.query("CREATE DATABASE myday_e2e ENCODING 'UTF8' TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'");
+  await admin.query(`DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${APP_ROLE}') THEN CREATE ROLE ${APP_ROLE} LOGIN NOSUPERUSER NOBYPASSRLS; END IF; END $$`);
+  await admin.query(`ALTER ROLE ${APP_ROLE} WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${APP_PW}'`);
+  await admin.query(`CREATE DATABASE myday_e2e OWNER ${APP_ROLE} ENCODING 'UTF8' TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'`);
   await admin.end();
   const m1 = runNode(['dist/migrate.js']);
   const m2 = runNode(['dist/migrate.js']);
@@ -188,9 +209,9 @@ async function setup() {
   runNode(['dist/cli.js', 'member:add', '--name', 'Evan', '--kind', 'kid', '--age', '11']);
   runNode(['dist/cli.js', 'import:chores', path.join(fixtures, 'sample-chores.csv')]);
   runNode(['dist/cli.js', 'import:workouts', path.join(fixtures, 'sample-workouts.csv')]);
-  runNode(['dist/cli.js', 'import:meals', path.join(fixtures, 'sample-meals.csv')]);
+  runNode(['dist/cli.js', 'meals:seed']); // the real 120-meal library (api/content/meals.csv)
   runNode(['dist/cli.js', 'profile:set', '--member', 'ty', '--start', '2026-09-28', '--days', '1,2,4,5', '--calories', '2700', '--protein', '190', '--carbs', '300', '--fat', '85']);
-  const db = new pg.Client({ connectionString: dbUrl });
+  const db = new pg.Client({ connectionString: adminDbUrl });
   await db.connect();
   // Chores "exist" from the start of the test week.
   await db.query("UPDATE chores SET created_on = '2026-09-28'");
@@ -244,7 +265,7 @@ async function monday() {
   eq('parent sets Evan a chosen PIN', setE.status, 200);
   const list = await ty.get('/api/kid-access');
   eq('kid access list shows both PINs set', list.data.kids.map((k) => [k.name, k.hasPin]), [['Avery', true], ['Evan', true]]);
-  const db = new pg.Client({ connectionString: dbUrl });
+  const db = new pg.Client({ connectionString: adminDbUrl });
   await db.connect();
   const stored = (await db.query("SELECT pin_hash FROM household_members WHERE key = 'evan'")).rows[0].pin_hash;
   await db.end();
@@ -424,7 +445,7 @@ async function mealsAndGrocery() {
   eq('Mon / Tue / unassigned', [plan.days[0].meals.map((m) => m.title), plan.days[1].meals.map((m) => m.title), plan.unassigned.map((m) => m.title)], [['Chicken burrito bowls'], ['Chicken stir fry'], ['Turkey chili']]);
   eq('week runs Mon..Sun with dates', plan.days.map((d) => `${d.day} ${d.date}`), Object.entries(DAY).map(([k, v]) => `${k} ${v}`));
   eq('today (Sunday) is flagged', plan.days.filter((d) => d.isToday).map((d) => d.day), ['Sun']);
-  eq('daily totals', [plan.days[0].calories, plan.days[0].protein], [650, 52]);
+  eq('daily totals', [plan.days[0].calories, plan.days[0].protein], [630, 52]);
   const chili = plan.unassigned[0];
   plan = (await ty.patch(`/api/meal-plan/${chili.id}`, { day: 'Wed' })).data;
   eq('move chili to Wednesday', [plan.days[2].meals.map((m) => m.title), plan.unassigned.length], [['Turkey chili'], 0]);
@@ -520,7 +541,7 @@ const grandma = new Client('grandma');
 const tablet = new Client('tablet', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)');
 const xpOf = async (c) => (await c.get('/api/score')).data.xp.total;
 const sql = async (q, p = []) => {
-  const db = new pg.Client({ connectionString: dbUrl });
+  const db = new pg.Client({ connectionString: adminDbUrl });
   await db.connect();
   try {
     return (await db.query(q, p)).rows;
@@ -645,7 +666,7 @@ async function build3Monday() {
   eq('invite shows pending', inv.data.member.invite?.status, 'pending');
   const stored = await sql('SELECT token_hash FROM invites');
   check('only the link’s hash is stored', stored.length === 1 && stored[0].token_hash !== token);
-  eq('public invite preview (masked email)', (await anon.get(`/api/invites/${token}`)).data, { name: 'Grandma', email: 'g***@example.com' });
+  eq('public invite preview (masked email)', (await anon.get(`/api/invites/${token}`)).data, { name: 'Grandma', email: 'g***@example.com', household: 'Our family' });
   eq('bogus invite → 404', (await anon.get('/api/invites/nope')).status, 404);
   eq('invite for a kid track → 400', (await ty.post('/api/household/invites', { name: 'K', email: 'k@example.com', xpTrack: 'kid' })).status, 400);
   await grandma.get(`/dev-login?token=${DEV_TOKEN}&member=grandma`);
@@ -763,6 +784,539 @@ async function mealSlots() {
   eq('change a slot (day untouched)', [p.days[3].meals.map((m) => m.slot), p.days[3].meals[2].day], [['breakfast', 'dinner', 'dinner'], 'Thu']);
   eq('bad slot → 400', (await ty.patch(`/api/meal-plan/${lunch.id}`, { slot: 'brunch' })).status, 400);
 }
+/* ======================= THE BIG BUILD ======================= */
+
+const sam = new Client('sam');
+const upload = (client, classId, body = randomBytes(2048), headers = {}) =>
+  client.req('POST', `/api/lectures/upload?classId=${classId}&durationS=1800`, body, {
+    json: false,
+    headers: { 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1', ...headers },
+  });
+async function waitLecture(client, id) {
+  for (let i = 0; i < 100; i++) {
+    const r = await client.get(`/api/lectures/${id}`);
+    if (r.data.status === 'ready' || r.data.status === 'failed') return r.data;
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  return (await client.get(`/api/lectures/${id}`)).data;
+}
+
+async function bigBuild() {
+  await startServer(noonOn('Sun'));
+  await ty.get(`/dev-login?token=${DEV_TOKEN}&member=ty`);
+  await ty.put('/api/kid-access/4/pin', { pin: '583920' });
+  await evan.post('/api/auth/kid-login', { name: 'Evan', pin: '583920' });
+
+  section('D. body-style programs: shake formula + program rules (unit checks on the compiled code)');
+  const shared = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
+  const prog = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'program.js')).href);
+  const modes = ['gaining', 'cutting', 'recomp', 'maintenance'];
+  eq('180 lb man, 100 g food: shakes per day gaining/cutting/recomp/maintenance', modes.map((m) => shared.shakesPerDay(180, m, 100).shakes), [2, 4, 2, 1]);
+  eq('140 lb woman, 80 g food: shakes per day', modes.map((m) => shared.shakesPerDay(140, m, 80).shakes), [1, 3, 2, 1]);
+  eq('protein targets for 180 lb (g/day)', modes.map((m) => shared.shakesPerDay(180, m, 100).proteinTarget), [144, 189, 162, 126]);
+  eq('never negative shakes', shared.shakesPerDay(120, 'maintenance', 200).shakes, 0);
+  const problems = [];
+  for (const b of shared.BUILDS) {
+    for (const lvl of ['beginner', 'experienced']) {
+      const ph = prog.buildPhases(b, lvl);
+      let w = 1;
+      for (const x of ph) {
+        if (x.weekStart !== w) problems.push(`${b}/${lvl} gap at ${w}`);
+        w = x.weekEnd + 1;
+      }
+      if (w !== 53) problems.push(`${b}/${lvl} ends at ${w - 1}`);
+      const rows = prog.programRows(b, ph);
+      const hyp = ph.find((x) => x.kind === 'hypertrophy');
+      const hr = rows.filter((r) => r.weekStart === hyp.weekStart);
+      const sets = prog.weeklySets(hr);
+      const freq = prog.weeklyFrequency(hr);
+      for (const [m, n] of Object.entries(sets)) if (n > 26) problems.push(`${b} ${m} ${n} sets`);
+      for (const m of prog.priorityMuscles(b)) {
+        if (!(sets[m] >= 10 && sets[m] <= 20)) problems.push(`${b} priority ${m} ${sets[m]} sets`);
+        if ((freq[m] ?? 0) < 2) problems.push(`${b} priority ${m} ${freq[m]}x/wk`);
+      }
+      const de = ph.find((x) => x.kind === 'deload');
+      if (de) {
+        const ratio = rows.filter((r) => r.weekStart === de.weekStart).reduce((s, r) => s + r.sets, 0) / hr.reduce((s, r) => s + r.sets, 0);
+        if (ratio < 0.4 || ratio > 0.62) problems.push(`${b} deload ${ratio.toFixed(2)}`);
+      }
+      const st = ph.find((x) => x.kind === 'strength');
+      if (st && !rows.some((r) => r.weekStart === st.weekStart && r.reps.startsWith('3–5'))) problems.push(`${b} strength lacks 3–5`);
+    }
+  }
+  eq('all 9 builds × 2 levels: 52 contiguous weeks, priority 10–20 sets 2×/wk, ≤26 sets, deload ≈½, strength 3–5 reps', problems, []);
+  const vt = prog.buildPhases('v_taper', 'experienced');
+  eq('macros, 180 lb V-taper: hypertrophy / cut', [prog.macrosFor(180, vt.find((x) => x.kind === 'hypertrophy')), prog.macrosFor(180, vt.find((x) => x.kind === 'cut'))], [
+    { calories: 3020, protein: 144, carbs: 469, fat: 63 },
+    { calories: 2160, protein: 189, carbs: 209, fat: 63 },
+  ]);
+
+  section('D + A2. pick a build → a planned year (API)');
+  await kayla.get(`/dev-login?token=${DEV_TOKEN}&member=kayla`);
+  const k0 = (await kayla.get('/api/workouts/today')).data;
+  eq('no plan yet: hasPlan false and no made-up workout', [k0.hasPlan, k0.session, k0.program], [false, null, null]);
+  eq('bad build → 400', (await kayla.put('/api/program', { build: 'huge', bodyweightLb: 140, level: 'beginner' })).status, 400);
+  const kp = (await kayla.put('/api/program', { build: 'hourglass', bodyweightLb: 140, level: 'beginner' })).data.program;
+  eq('hourglass, beginner: week 1, recomp phase, 80 g food default, 2 shakes', [kp.build.key, kp.week, kp.phase.nutrition, kp.shakes.foodProtein, kp.shakes.shakes], ['hourglass', 1, 'recomp', 80, 2]);
+  const plan = (await kayla.get('/api/workouts/plan')).data;
+  eq('plan: 52 weeks, exactly one current (week 1), every week phased', [plan.weeks.length, plan.weeks.filter((w) => w.isCurrent).map((w) => w.week), plan.weeks.every((w) => w.kind)], [52, [1], true]);
+  const k1 = (await kayla.get('/api/workouts/today')).data;
+  check('today now comes from the loaded plan', k1.hasPlan && k1.program?.build.key === 'hourglass', `rest=${k1.isRest} session=${k1.session?.dayName ?? '-'}`);
+  const kp2 = (await kayla.put('/api/program', { build: 'strong_curvy', bodyweightLb: 142, level: 'beginner' })).data.program;
+  eq('changing builds re-plans from the current week', [kp2.build.key, kp2.week, kp2.bodyweightLb], ['strong_curvy', 1, 142]);
+  check('protein target vs plan reported', typeof kp2.plannedProtein === 'number' && kp2.shakes.proteinTarget > 0, `${kp2.plannedProtein} of ${kp2.shakes.proteinTarget}`);
+  eq('Ty (CSV plan) still has his plan', (await ty.get('/api/workouts/plan')).data.hasPlan, true);
+  eq('no workout on Ty’s Sunday to move → 409', (await ty.post('/api/workouts/move', { to: 'tomorrow' })).status, 409);
+  const ses = await ty.post('/api/workouts/session', { activity: 'Walk', minutes: 30 });
+  eq('A4: log any workout (activity + minutes)', ses.status < 300, true);
+  const hist = (await ty.get('/api/workouts/history')).data;
+  eq('history shows it, with weekly minutes', [hist.sessions[0]?.activity, hist.weekMinutes >= 30], ['Walk', true]);
+  eq('baseline notes saved', (await ty.put('/api/workouts/baseline', { exercise: 'walks', sleep: '6h', food: 'skip breakfast' })).data.baseline, { exercise: 'walks', sleep: '6h', food: 'skip breakfast' });
+
+  section('A3. meal library: 120 meals, every one with a picture, phase-tagged');
+  const lib = (await ty.get('/api/meals')).data;
+  eq('120 meals', lib.meals.length, 120);
+  check('every meal has /meals/<slug>.svg', lib.meals.every((m) => m.imageUrl === `/meals/${shared.mealSlug(m.title)}.svg`));
+  let broken = 0;
+  for (const m of lib.meals) {
+    const r = await fetch(BASE + m.imageUrl);
+    if (r.status !== 200 || !/svg/.test(r.headers.get('content-type') ?? '')) broken++;
+  }
+  eq('no broken images (all 120 load)', broken, 0);
+  eq('placeholder image exists', (await fetch(`${BASE}/meals/_placeholder.svg`)).status, 200);
+  let thin = 0;
+  for (const m of lib.meals) {
+    const d = (await ty.get(`/api/meals/${m.id}`)).data;
+    if (d.ingredients.length < 4 || d.steps.length < 3 || [d.calories, d.protein, d.carbs, d.fat].some((x) => x === null) || !d.cuisine) thin++;
+  }
+  eq('every meal complete: macros, cuisine, 4+ ingredients, 3+ numbered steps', thin, 0);
+  const cut = (await ty.get('/api/meals?phase=cutting')).data.meals;
+  eq('phase filter: 64 cutting meals, all tagged cutting', [cut.length, cut.every((m) => m.phaseTags.includes('cutting'))], [64, true]);
+  const mine = (await kayla.get('/api/meals?phase=mine')).data;
+  eq('“my phase” follows the program (Kayla: recomp)', [mine.phase, mine.meals.every((m) => m.phaseTags.includes('recomp'))], ['recomp', true]);
+  const chains = (await ty.get('/api/grocery')).data.chains;
+  check('every chain but Trader Joe’s has a real online ordering page', chains.filter((c) => !c.custom && c.name !== "Trader Joe's").every((c) => /^https:\/\//.test(c.orderUrl ?? '')), chains.filter((c) => !c.orderUrl).map((c) => c.name).join(','));
+  eq("Trader Joe's is in-store only", chains.find((c) => c.name === "Trader Joe's")?.orderUrl, null);
+
+  section('B. lecture capture → notes → study library (TRANSCRIPTION STUBBED: TRANSCRIPTION_STUB=1 returns a canned classroom transcript; notes via the local stub structurer — no AI key used)');
+  const sch = (await avery.post('/api/classes', { name: 'Biology', teacher: 'Ms. Reed', days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], startTime: '09:00' })).data;
+  const bio = sch.classes.find((c) => c.name === 'Biology');
+  eq('kid adds a class', [bio?.teacher, bio?.days.length], ['Ms. Reed', 5]);
+  eq('first-use policy screen required before recording (409)', (await upload(avery, bio.id)).status, 409);
+  await avery.post('/api/lectures/ack');
+  eq('policy acknowledged', (await avery.get('/api/school')).data.recordingAcknowledged, true);
+  eq('upload without the custom header → 400 (no cross-site uploads)', (await upload(avery, bio.id, randomBytes(64), { 'X-MyDay-Upload': '0' })).status, 400);
+  eq('Evan (no policy screen yet) cannot upload → 409', (await upload(evan, bio.id)).status, 409);
+  const up1 = await upload(avery, bio.id);
+  eq('upload accepted, processing in the background', [up1.status, up1.data.lecture?.status], [201, 'uploaded']);
+  const l1 = await waitLecture(avery, up1.data.lecture.id);
+  eq('lecture ready', l1.status, 'ready');
+  check('structured notes, not a transcript dump: headed sections + key points + terms', l1.notes.sections.length >= 2 && l1.notes.keyPoints.length >= 2 && l1.notes.terms.some((t) => t.term === 'Photosynthesis'), l1.notes.title);
+  check('…homework sentences are pulled out of the notes', !JSON.stringify(l1.notes.sections).includes('For homework'));
+  eq('assignments detected with real due dates (recorded Sun 10-04)', l1.assignments.map((a) => [a.title, a.due]), [
+    ['Finish worksheet 4.2 on the two stages', '2026-10-09'],
+    ['Read pages 112 to 118', '2026-10-06'],
+  ]);
+  eq('audio deleted once transcribed (private by default)', (await sql('SELECT audio_path FROM lectures WHERE id = $1', [l1.id]))[0].audio_path, null);
+  eq("private: a parent can't open it (404)", (await ty.get(`/api/lectures/${l1.id}`)).status, 404);
+  eq("…nor a sibling", (await evan.get(`/api/lectures/${l1.id}`)).status, 404);
+  const added = (await avery.post(`/api/lectures/${l1.id}/assignments/${l1.assignments[0].id}/add`)).data;
+  check('add detected assignment → Homework', added.assignments[0].homeworkId !== null && (await avery.get('/api/homework')).data.open.some((h) => h.assignment === 'Finish worksheet 4.2 on the two stages' && h.due === '2026-10-09'));
+  eq('adding twice → 409', (await avery.post(`/api/lectures/${l1.id}/assignments/${l1.assignments[0].id}/add`)).status, 409);
+  eq('dismiss the other', (await avery.post(`/api/lectures/${l1.id}/assignments/${l1.assignments[1].id}/dismiss`)).data.assignments[1].dismissed, true);
+  let sv = (await avery.get(`/api/study/${bio.id}`)).data;
+  check('flashcards made from the lecture', sv.cards.length >= 2 && sv.cards.every((c) => c.box === 1 && c.explanation), `${sv.cards.length} cards`);
+  const card = sv.cards[0];
+  sv = (await avery.post(`/api/study/cards/${card.id}/answer`, { correct: true })).data;
+  eq('right answer → box 2', sv.cards.find((c) => c.id === card.id).box, 2);
+  sv = (await avery.post(`/api/study/cards/${card.id}/answer`, { correct: false })).data;
+  eq('wrong → back to box 1; quiz history 1/2, 50%', [sv.cards.find((c) => c.id === card.id).box, sv.quiz[0].correct, sv.quiz[0].total, sv.accuracy], [1, 1, 2, 50]);
+  sv = (await avery.post(`/api/study/${bio.id}/cards`, { front: 'Where is the Calvin cycle?', back: 'The stroma' })).data;
+  check('own flashcard added', sv.cards.some((c) => c.front === 'Where is the Calvin cycle?'));
+  const tq = await avery.post('/api/chat/tutor', { message: 'quiz me', lectureId: l1.id });
+  check('tutor quizzes from the lecture material (and keeps its no-answers rule)', tq.data.reply.text.includes('quiz=lecture') && tq.data.reply.text.includes('rule=no-answers'), tq.data.reply.text);
+  eq("tutor can't quiz from someone else's lecture", (await evan.post('/api/chat/tutor', { message: 'quiz', lectureId: l1.id })).status, 404);
+  const l2 = await waitLecture(avery, (await upload(avery, bio.id)).data.lecture.id);
+  eq('2nd lecture: notes shown right away', [l2.scaffold, l2.notes !== null], ['none', true]);
+  const l3 = await waitLecture(avery, (await upload(avery, bio.id)).data.lecture.id);
+  eq('3rd lecture: scaffold — student drafts the summary first, notes hidden', [l3.scaffold, l3.revealed, l3.notes], ['summary', false, null]);
+  eq('empty draft → 400', (await avery.post(`/api/lectures/${l3.id}/draft`, { part: 'summary', draft: '' })).status, 400);
+  const l3b = (await avery.post(`/api/lectures/${l3.id}/draft`, { part: 'summary', draft: 'Plants turn light into sugar in the chloroplast.' })).data;
+  eq('after the draft the AI notes are revealed, draft kept', [l3b.revealed, l3b.notes !== null, l3b.drafts.summary], [true, true, 'Plants turn light into sugar in the chloroplast.']);
+  sv = (await avery.get(`/api/study/${bio.id}`)).data;
+  eq('library keeps every lecture (never expires)', sv.lectures.length, 3);
+  const cr = (await avery.post('/api/classroom/connect')).data;
+  eq('Google Classroom (FAKE provider) imports 3 courses', cr.imported, 3);
+  eq('…and reconnecting doesn’t duplicate them', (await avery.post('/api/classroom/connect')).data.imported, 0);
+  eq('classes now: Biology + 3 imported', (await avery.get('/api/school')).data.classes.length, 4);
+
+  section('E1. student academic engine + its 4 achievements');
+  await ty.patch('/api/household/members/2', { xpTrack: 'student' });
+  for (let i = 0; i < 9; i++) await sql("INSERT INTO study_sessions (household_id, member_id, minutes, day) VALUES (1, 2, 30, '2026-09-30')");
+  const st1 = await kayla.post('/api/school/study', { minutes: 45, location: 'Library' });
+  eq('study session logged (+15 XP)', [st1.status, st1.data.school.studyToday], [201, 45]);
+  const ka = (await kayla.post('/api/school/assignments', { name: 'Essay outline', due: '2026-10-08', priority: 'High' })).data;
+  await kayla.post(`/api/school/assignments/${ka.assignments[0].id}/done`);
+  for (const n of ['Writing center', 'Tutoring lab', 'Professor Diaz']) {
+    const c = (await kayla.post('/api/school/campus', { name: n, kind: 'Tutoring' })).data.campus.find((x) => x.name === n);
+    await kayla.post(`/api/school/campus/${c.id}/visit`);
+    if (n === 'Professor Diaz') for (let i = 0; i < 2; i++) await kayla.post(`/api/school/campus/${c.id}/visit`);
+  }
+  await kayla.post('/api/school/exams', { name: 'Midterm', course: 'Bio', date: '2026-10-20' });
+  const ks = (await kayla.get('/api/score')).data;
+  const kun = ks.achievements.filter((a) => a.unlocked).map((a) => a.name);
+  eq('Bookworm, Assignment Zero, Office Hours Hero, Support Seeker unlocked', ['📚 Bookworm', '🎯 Assignment Zero', '📞 Office Hours Hero', '🤝 Support Seeker'].map((n) => kun.includes(n)), [true, true, true, true]);
+  eq('student daily score: Study/assignment part earned', ks.daily.parts[2], 20);
+  await ty.patch('/api/household/members/2', { xpTrack: 'woman' });
+
+  section('E2. identity tools');
+  eq('kids get 403', (await avery.get('/api/identity')).status, 403);
+  let idn = (await ty.get('/api/identity')).data;
+  eq('13 anchor fields, 5 husband/father questions, 12 mental-load categories seeded', [idn.fields.length, idn.questions[0], idn.mentalLoad.length], [13, 'Who was I this month as a husband and father?', 12]);
+  idn = (await ty.put('/api/identity/anchor', { anchor: { 'Personal mission': 'Lead with presence', Bogus: 'x' } })).data;
+  eq('anchor saved (unknown fields ignored)', [idn.anchor['Personal mission'], idn.anchor.Bogus], ['Lead with presence', undefined]);
+  await ty.put('/api/identity/review', { answers: ['a', 'b', 'c', 'd', 'e'] });
+  await ty.put('/api/identity/review', { answers: ['a2', 'b', 'c', 'd', 'e'] });
+  eq('monthly review: saved, +30 XP once', [(await ty.get('/api/identity')).data.reviews[0].answers[0], (await sql("SELECT COUNT(*)::int AS n FROM xp_events WHERE member_id = 1 AND action = 'Identity Review Completed'"))[0].n], ['a2', 1]);
+  eq('review needs 5 answers', (await ty.put('/api/identity/review', { answers: ['x'] })).status, 400);
+  eq('head-of-household survey out of range → 400', (await kayla.put('/api/identity/survey', { presence: 6, reliability: 3, emotional: 3, followThrough: 3, communication: 3 })).status, 400);
+  eq('survey saved', (await kayla.put('/api/identity/survey', { presence: 4, reliability: 5, emotional: 3, followThrough: 4, communication: 4, moreOf: 'date nights' })).data.survey.moreOf, 'date nights');
+  const ml = idn.mentalLoad.find((r) => r.category === 'Meals/groceries');
+  eq('mental load row updated', (await ty.patch(`/api/identity/load/${ml.id}`, { load: 'Heavy', owner: 'Ty', delegate: true })).data.mentalLoad.find((r) => r.id === ml.id), { id: ml.id, category: 'Meals/groceries', load: 'Heavy', owner: 'Ty', delegate: true });
+
+  section('E3. bills, income, money check-in');
+  eq('kids get 403', (await avery.get('/api/bills')).status, 403);
+  await ty.post('/api/bills', { name: 'Rent', amount: 1450, dueDay: 1, autopay: true });
+  await ty.post('/api/bills', { name: 'Phone', amount: '$80', dueDay: 6, autopay: false });
+  eq('bad due day → 400', (await ty.post('/api/bills', { name: 'X', amount: 1, dueDay: 40 })).status, 400);
+  let bl = (await ty.post('/api/income', { source: 'Paycheck', amount: 4800 })).data;
+  eq('totals, left, autopilot %, due soon', [bl.totalBills, bl.totalIncome, bl.left, bl.autopilot, bl.dueSoon.map((d) => `${d.name} ${d.date}`)], [1530, 4800, 3270, 50, ['Phone 2026-10-06']]);
+  bl = (await ty.post('/api/money/checkin', { anxiety: 'Medium' })).data;
+  eq('money check-in logged', bl.lastCheck, { date: '2026-10-04', anxiety: 'Medium', looked: true });
+  eq('bad anxiety → 400', (await ty.post('/api/money/checkin', { anxiety: 'Panic' })).status, 400);
+
+  section('I. kid & teen money (MyDay never moves money)');
+  let km = (await ty.put('/api/kidmoney/allowance', { member: 'evan', amount: 10, weekday: 'Sun' })).data;
+  eq('parent sets Evan $10 every Sunday → paid today', [km.allowance, km.spendable], [{ amount: 10, weekday: 'Sun', lastPaid: '2026-10-04' }, 10]);
+  await ty.get('/api/kidmoney?member=evan');
+  eq('allowance pays once (reload safe)', (await sql("SELECT COUNT(*)::int AS n FROM kid_ledger WHERE member_id = 4 AND kind = 'allowance'"))[0].n, 1);
+  km = (await evan.post('/api/kidmoney/entries', { amount: 3, kind: 'spend', category: 'Food & snacks', note: 'slushie' })).data;
+  eq('Evan records spending → $7', [km.spendable, km.canManage, km.categories], [7, false, [{ category: 'Food & snacks', spent: 3 }]]);
+  eq("can't spend more than he has → 409", (await evan.post('/api/kidmoney/entries', { amount: 50, kind: 'spend' })).status, 409);
+  eq("kids can't add money in → 403", (await evan.post('/api/kidmoney/entries', { amount: 50, kind: 'gift' })).status, 403);
+  eq("kids can't see a sibling's money", (await evan.get('/api/kidmoney?member=avery')).status, 403);
+  km = (await evan.post('/api/kidmoney/goals', { name: 'Lego set', target: 20 })).data;
+  const lego = km.goals[0];
+  km = (await evan.post(`/api/kidmoney/goals/${lego.id}/move`, { amount: 5, direction: 'in' })).data;
+  eq('save $5 toward Lego → 25%, spendable $2', [km.goals[0].saved, km.goals[0].pct, km.spendable], [5, 25, 2]);
+  eq("can't move more than spendable", (await evan.post(`/api/kidmoney/goals/${lego.id}/move`, { amount: 5, direction: 'in' })).status, 409);
+  km = (await evan.del(`/api/kidmoney/goals/${lego.id}`)).data;
+  eq('removing the goal returns its money', [km.goals.length, km.spendable], [0, 7]);
+  km = (await avery.get('/api/kidmoney')).data;
+  eq('Avery (15) is a teen; bank link gated off by default', [km.isTeen, km.bankLinkAllowed, km.bank], [true, false, null]);
+  eq('parent can’t link while the household gate is off → 409', (await ty.post('/api/kidmoney/avery/bank/link-token')).status, 409);
+  await ty.patch('/api/household/info', { allowTeenBankLink: true });
+  eq("teen can't link her own bank (parent completes it) → 403", (await avery.post('/api/kidmoney/avery/bank/link-token')).status, 403);
+  eq('Evan (11) is too young → 409', (await ty.post('/api/kidmoney/evan/bank/link-token')).status, 409);
+  eq('parent gets a link token for Avery', (await ty.post('/api/kidmoney/avery/bank/link-token')).data.provider, 'fake');
+  const linked = (await ty.post('/api/kidmoney/avery/bank/exchange', { publicToken: 'public-fake-teen', institution: 'Demo Bank (fake)' })).data;
+  check('teen sees her account read-only', linked.bank?.accounts.length === 3);
+  check('Avery sees it too', (await avery.get('/api/kidmoney')).data.bank?.institution === 'Demo Bank (fake)');
+  eq("…and it doesn't leak into the household Money view", (await ty.get('/api/money')).data.items.length, 0);
+  eq('parent revokes the link', (await ty.del('/api/kidmoney/avery/bank')).data.bank, null);
+
+  section('H. engagement: quests, family challenge, win feed, Sunday ritual, private notes, themes, first run');
+  let en = (await evan.get('/api/engagement')).data;
+  eq('Evan: kid role, 3 rotating quests', [en.role, en.quests.length, new Set(en.quests.map((q) => q.code)).size], ['kid', 3, 3]);
+  eq('Avery: teen role; Ty: adult; Kayla: adult', [(await avery.get('/api/engagement')).data.role, (await ty.get('/api/engagement')).data.role, (await kayla.get('/api/engagement')).data.role], ['teen', 'adult', 'adult']);
+  const notDone = en.quests.find((q) => !q.done);
+  if (notDone) eq('claiming an unfinished quest → 409', (await evan.post(`/api/quests/${notDone.id}/claim`)).status, 409);
+  await evan.post('/api/focus/done', { minutes: 15 });
+  await evan.post('/api/focus/done', { minutes: 15 });
+  await evan.post('/api/focus/done', { minutes: 15 });
+  await evan.post(`/api/kidmoney/goals`, { name: 'Bike', target: 100 });
+  const bike = (await evan.get('/api/kidmoney')).data.goals[0];
+  await evan.post(`/api/kidmoney/goals/${bike.id}/move`, { amount: 1, direction: 'in' });
+  for (const q of en.quests.filter((x) => ['chores5', 'choredays4', 'homework3', 'early2', 'cards20', 'water5'].includes(x.code))) {
+    await sql('UPDATE quests SET goal = 1 WHERE id = $1', [q.id]);
+  }
+  await sql("INSERT INTO health_habits (household_id, member_id, day, habit) VALUES (1, 4, '2026-10-04', 'water') ON CONFLICT DO NOTHING");
+  en = (await evan.get('/api/engagement')).data;
+  const ready = en.quests.find((q) => q.done && !q.claimed);
+  check('a quest is complete', !!ready, en.quests.map((q) => `${q.code}:${q.progress}/${q.goal}`).join(' '));
+  const pts0 = (await sql("SELECT COALESCE(SUM(points),0)::int AS n FROM scores WHERE member_id = 4 AND source = 'quest'"))[0].n;
+  en = (await evan.post(`/api/quests/${ready.id}/claim`)).data;
+  await evan.post(`/api/quests/${ready.id}/claim`);
+  eq('claim pays the reward once', (await sql("SELECT COALESCE(SUM(points),0)::int AS n FROM scores WHERE member_id = 4 AND source = 'quest'"))[0].n - pts0, ready.reward);
+  check('family challenge with helpers', en.challenge && en.challenge.goal > 0 && en.challenge.helpers.length > 0, en.challenge?.title);
+  check('win feed: celebration only (no misses, no rankings)', en.wins.length > 0 && en.wins.every((w) => w.emoji && !/miss|overdue|late|behind|fail|last place/i.test(w.text)), `${en.wins.length} wins`);
+  eq("Sunday: kids can't close the ritual", (await avery.post('/api/sunday', { highlight: 'x' })).status, 403);
+  en = (await ty.post('/api/sunday', { highlight: 'Evan saved for a bike' })).data;
+  eq('Sunday ritual done with a highlight', [en.sunday.isSunday, en.sunday.done, en.sunday.highlight], [true, true, 'Evan saved for a bike']);
+  await avery.post('/api/private-notes', { body: 'my private thought' });
+  eq('teen private note is hers', (await avery.get('/api/private-notes')).data.notes.map((n) => n.body), ['my private thought']);
+  eq("parents can't read it", (await ty.get('/api/private-notes')).data.notes.length, 0);
+  const pn = (await avery.get('/api/private-notes')).data.notes[0];
+  eq("…or delete it", (await ty.del(`/api/private-notes/${pn.id}`)).status, 404);
+  eq('bad theme → 400', (await avery.patch('/api/me/prefs', { theme: 'neon' })).status, 400);
+  await avery.patch('/api/me/prefs', { theme: 'dark', accent: 'purple', firstRunDone: true });
+  eq('theme + accent + first run saved on /api/me', (await avery.get('/api/me')).data.prefs, { theme: 'dark', accent: 'purple', firstRunDone: true });
+
+  section('F. push (PUSH_STUB=1: no push service contacted) + offline replay');
+  let nt = (await ty.get('/api/notifications')).data;
+  eq('off by default; no VAPID key configured here', [nt.prefs.enabled, nt.vapidPublicKey], [false, null]);
+  eq('bad time → 400', (await ty.put('/api/notifications', { sendAt: '25:00' })).status, 400);
+  nt = (await ty.put('/api/notifications', { enabled: true, sendAt: '00:00', quietStart: '03:00', quietEnd: '03:01', frequency: 'daily' })).data;
+  eq('turned on with my own time + quiet hours', [nt.prefs.enabled, nt.prefs.sendAt, nt.prefs.quietStart], [true, '00:00', '03:00']);
+  eq('non-https endpoint rejected', (await ty.post('/api/push/subscribe', { endpoint: 'http://x', keys: { p256dh: 'a', auth: 'b' } })).status, 400);
+  nt = (await ty.post('/api/push/subscribe', { endpoint: 'https://push.example.com/e2e-ty', keys: { p256dh: 'p', auth: 'a' } })).data;
+  eq('subscription saved', nt.subscriptions, 1);
+  check('batched preview mentions the upcoming bill, gently', /bill/.test(nt.preview?.body ?? '') && /You've got this/.test(nt.preview.body), nt.preview?.body);
+  eq('digest pass: 1 sent', (await ty.post('/api/push/run-digests')).data.sent, 1);
+  eq('…and never a second one the same day', (await ty.post('/api/push/run-digests')).data.sent, 0);
+  eq('logged (stubbed)', (await sql("SELECT stubbed, delivered FROM notification_log WHERE member_id = 1 AND day = '2026-10-04'"))[0], { stubbed: true, delivered: 1 });
+  Object.assign(process.env, serverEnv()); // push.js reads the server config on import
+  const push = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'push.js')).href);
+  const refused = ['You missed 3 chores', "Don't forget your homework", 'Your bill is OVERDUE', 'Hurry up!!', 'You should have finished'].filter((t) => {
+    try {
+      push.assertGentle(t);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  eq('guilt copy refused at the policy level', refused.length, 5);
+  let okCopy = true;
+  try {
+    push.assertGentle('A quick heads-up when you have a minute: 2 chores. Later is fine.');
+  } catch {
+    okCopy = false;
+  }
+  eq('…gentle copy passes (incl. the word “later”)', okCopy, true);
+  eq('quiet hours respected', [push.inQuietHours('22:30', '21:00', '07:00'), push.inQuietHours('06:59', '21:00', '07:00'), push.inQuietHours('12:00', '21:00', '07:00')], [true, true, false]);
+  const dumps0 = (await sql('SELECT COUNT(*)::int AS n FROM dump_items WHERE member_id = 1'))[0].n;
+  const k = randomBytes(8).toString('hex');
+  const r1 = await ty.req('POST', '/api/dump', { note: 'written offline' }, { headers: { 'Idempotency-Key': k, 'X-MyDay-Replay': '1' } });
+  const r2 = await ty.req('POST', '/api/dump', { note: 'written offline' }, { headers: { 'Idempotency-Key': k, 'X-MyDay-Replay': '1' } });
+  eq('offline write replayed twice → applied once, same answer', [r1.status, r2.status, r2.headers.get('idempotent-replay'), (await sql('SELECT COUNT(*)::int AS n FROM dump_items WHERE member_id = 1'))[0].n - dumps0], [201, 201, 'true', 1]);
+  const swr = await fetch(`${BASE}/sw.js`);
+  eq('service worker served, never cached stale', [swr.status, swr.headers.get('cache-control')], [200, 'no-cache']);
+
+  section('G. Hana does things (STUBBED model: deterministic intents; real Claude uses the same tools)');
+  const h1 = (await ty.post('/api/chat/companion', { message: 'add task Call the dentist' })).data;
+  eq('“add task …” → done right away', h1.actions.map((a) => [a.tool, a.status, a.destructive]), [['add_task', 'done', false]]);
+  const dentist = (await ty.get('/api/day')).data.tasks.find((t) => t.task === 'Call the dentist');
+  check('…the task is really there', !!dentist);
+  await ty.post('/api/chat/companion', { message: 'add oat milk and bananas to the grocery list' });
+  const groc = (await ty.get('/api/grocery')).data.items.map((i) => i.item);
+  check('groceries added by Hana', groc.includes('oat milk') && groc.includes('bananas'), groc.join(', '));
+  const h2 = (await ty.post('/api/chat/companion', { message: `delete task #${dentist.id}` })).data;
+  eq('“delete task” is only proposed (needs OK)', h2.actions.map((a) => [a.tool, a.status, a.destructive]), [['delete_task', 'pending', true]]);
+  check('…reply says it is NOT done yet', /Not done yet/.test(h2.reply.text), h2.reply.text);
+  check('…task still there', (await ty.get('/api/day')).data.tasks.some((t) => t.id === dentist.id));
+  eq('pending shows on reload', (await ty.get('/api/chat/companion')).data.pending.map((a) => a.summary), [`Delete task #${dentist.id}`]);
+  eq("kids can't confirm Hana actions", (await avery.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).status, 403);
+  eq("Kayla can't confirm Ty's", (await kayla.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).status, 404);
+  const conf = (await ty.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).data;
+  eq('confirm → done, task gone, Hana says so in chat', [conf.action.status, (await ty.get('/api/day')).data.tasks.some((t) => t.id === dentist.id), conf.history.at(-1).text.startsWith('Done:')], ['done', false, true]);
+  eq('confirming twice → 409', (await ty.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).status, 409);
+  const h3 = (await ty.post('/api/chat/companion', { message: 'clear checked groceries' })).data;
+  const can = (await ty.post(`/api/hana/actions/${h3.actions[0].id}/cancel`)).data;
+  eq('cancel → nothing changes', [can.action.status, can.pending.length], ['cancelled', 0]);
+  eq('add homework for a kid by name', (await ty.post('/api/chat/companion', { message: 'add homework for Evan: Spelling list due 2026-10-07' })).data.actions[0].status, 'done');
+  check('…it’s on Evan’s homework', (await ty.get('/api/homework?member=evan')).data.open.some((h) => h.assignment === 'Spelling list' && h.due === '2026-10-07'));
+  eq('unknown kid → action failed (not crashed)', (await ty.post('/api/chat/companion', { message: 'add homework for Zed: x' })).data.actions[0].status, 'failed');
+  await ty.post('/api/day/tasks', { task: 'Deep: write the plan', priority: 'Important', energy: 'High Brain' });
+  await ty.post('/api/day/tasks', { task: 'Easy: reply to texts', priority: 'Important', energy: 'Low Brain' });
+  await ty.put('/api/day/checkin', { nervous: 'Fried', sleep: 'OK', fuel: 'eggs', grateful: 'coffee' });
+  let dd = (await ty.get('/api/day')).data;
+  const firstOpen = (d) => d.tasks.find((t) => !t.done)?.energy;
+  eq('Fried → low-brain first, with a note', [firstOpen(dd), /Fried/.test(dd.energyNote)], ['Low Brain', true]);
+  await ty.put('/api/day/checkin', { nervous: 'Calm', sleep: 'OK', fuel: 'eggs', grateful: 'coffee' });
+  dd = (await ty.get('/api/day')).data;
+  eq('Calm → deep work first', firstOpen(dd), 'High Brain');
+
+  section('A4. records + quick note');
+  await ty.post('/api/dump', { note: 'quick note from Today' });
+  const rec = (await ty.get('/api/records?days=30')).data;
+  check('records: check-ins, workouts, notes, money check-ins in one history', ['checkin', 'workout', 'note', 'money'].every((k) => rec.records.some((r) => r.kind === k)), [...new Set(rec.records.map((r) => r.kind))].join(','));
+  eq('filter + search', (await ty.get('/api/records?kind=note&q=quick')).data.records.map((r) => r.detail), ['quick note from Today']);
+  const csv = await fetch(`${BASE}/api/records.csv?kind=note`, { headers: { Cookie: ty.cookie } });
+  check('CSV export', csv.status === 200 && /^date,kind,title,detail/.test(await csv.text()));
+  eq('kids get 403', (await avery.get('/api/records')).status, 403);
+
+  section('J. signup for anyone (solo household) + tenancy isolation');
+  await sam.get(`/dev-login?token=${DEV_TOKEN}&email=sam@example.com`);
+  const sm0 = (await sam.get('/api/me')).data;
+  eq('new person: signed in, no household yet', [sm0.household, sm0.member], [null, null]);
+  eq('household-only routes refuse until there is one (409)', (await sam.get('/api/chores/today')).status, 409);
+  const created = await sam.post('/api/households', { householdName: 'Sam’s place', type: 'solo', yourName: 'Sam', build: 'lean_athletic' });
+  eq('create a solo household (+30-day trial)', created.status, 201);
+  const sm = (await sam.get('/api/me')).data;
+  eq('Sam is the grown-up of a solo household with a trial', [sm.household.type, sm.member.kind, !!sm.household.trialEndsAt], ['solo', 'adult', true]);
+  eq('build picked at signup is saved', (await sql("SELECT p.build FROM health_profiles p JOIN household_members m ON m.id = p.member_id WHERE m.name = 'Sam'"))[0]?.build, 'lean_athletic');
+  eq('onboarding step recorded', (await sam.post('/api/onboarding/bank', { skipped: true })).data.onboarding.bank, true);
+  eq('isolation: Sam sees only himself', (await sam.get('/api/household')).data.members.map((m) => m.name), ['Sam']);
+  eq("…not the Kester family's grocery list", (await sam.get('/api/grocery')).data.items.length, 0);
+  eq("…nor their bills", (await sam.get('/api/bills')).data.bills.length, 0);
+  eq("…nor a lecture by id", (await sam.get(`/api/lectures/${l1.id}`)).status, 404);
+  eq("…nor a Kester chore", (await sam.post(`/api/chores/${(await sql('SELECT id FROM chores LIMIT 1'))[0].id}/toggle`, { done: true })).status, 404);
+  eq('the meal library is shared (120)', (await sam.get('/api/meals')).data.meals.length, 120);
+  eq('school autocomplete (optional field)', (await ty.get('/api/schools')).status, 200);
+
+  section('K. events: append-only, logged everywhere');
+  const names = (await sql('SELECT DISTINCT name FROM events')).map((r) => r.name);
+  const want = ['signin', 'signup', 'household_created', 'onboarding_step', 'chore_done', 'homework_done', 'module_used', 'hana_asked', 'hana_action', 'hana_action_confirmed', 'lecture_recorded', 'build_chosen', 'bank_linked', 'push_subscribed', 'offline_synced', 'focus_done', 'quest_claimed', 'notification_sent', 'kid_signin'];
+  eq('events present for every new feature', want.filter((n) => !names.includes(n)), []);
+  let blocked = false;
+  try {
+    await sql('DELETE FROM events');
+  } catch {
+    blocked = true;
+  }
+  eq('events cannot be deleted (append-only, even by the DB owner)', blocked, true);
+
+  section('L. new pages serve');
+  for (const p of ['/school', '/record', '/lectures/1', '/study/1', '/classroom-mode', '/wins', '/my-money', '/focus', '/private', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/chores', '/sw.js', '/meals/_placeholder.svg']) {
+    const r = await fetch(BASE + p);
+    check(`GET ${p}`, r.status === 200, `${r.status}`);
+  }
+}
+
+/* ======================= UI gate (Playwright, real browser) ======================= */
+
+async function uiGate() {
+  section('L2. button audit: every control → a handler → a real API route');
+  const { audit } = await import(pathToFileURL(path.join(root, 'scripts', 'button-audit.mjs')).href);
+  const au = audit();
+  eq(`no dead controls (${au.buttons} buttons, ${au.calls} API calls, ${au.links} links checked)`, au.problems, []);
+
+  let chromium;
+  try {
+    ({ chromium } = createRequire(path.join(root, 'package.json'))('playwright'));
+  } catch {
+    check('Playwright installed (npm i, then npx playwright install chromium)', false);
+    return;
+  }
+  const browser = await chromium.launch();
+  try {
+    const phone = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true };
+    const errors = [];
+    const watch = (page) => page.on('pageerror', (e) => errors.push(`${page.url()}: ${e.stack ?? e.message}`));
+
+    section('A1. in-page confirm (no native dialogs): remove a chore, delete homework, archive a member — and it sticks');
+    const tyCtx = await browser.newContext(phone);
+    const page = await tyCtx.newPage();
+    watch(page);
+    let nativeDialogs = 0;
+    page.on('dialog', (d) => {
+      nativeDialogs++;
+      void d.dismiss();
+    });
+    await page.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
+    await ty.patch('/api/me/prefs', { firstRunDone: true }); // Ty's welcome card is covered by Evan's below
+    await ty.post('/api/chores', { name: 'UI test chore', memberId: 4, days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], points: 5 });
+    await page.goto(`${BASE}/chores/manage`);
+    await page.locator('li', { hasText: 'UI test chore' }).getByRole('button', { name: 'Remove' }).click();
+    await page.getByTestId('confirm').waitFor();
+    const del = page.waitForRequest((r) => r.method() === 'DELETE' && /\/api\/chores\/\d+$/.test(r.url()));
+    await page.getByTestId('confirm-ok').click();
+    await del;
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    eq('chore removed via the in-page confirm, gone after reload', await page.locator('li', { hasText: 'UI test chore' }).count(), 0);
+
+    await ty.post('/api/homework?member=evan', { assignment: 'UI worksheet', subject: 'Math', due: null });
+    await page.evaluate(() => localStorage.setItem('myday.viewing', 'evan'));
+    await page.goto(`${BASE}/homework`);
+    await page.locator('li', { hasText: 'UI worksheet' }).locator('button.danger').click();
+    await page.getByTestId('confirm-ok').click();
+    await page.waitForResponse((r) => r.request().method() === 'DELETE' && /\/api\/homework\/\d+/.test(r.url()));
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    eq('homework deleted via the in-page confirm, gone after reload', await page.locator('li', { hasText: 'UI worksheet' }).count(), 0);
+    await page.evaluate(() => localStorage.setItem('myday.viewing', 'ty'));
+
+    await ty.post('/api/household/members', { name: 'Uitest Person', kind: 'adult', xpTrack: 'leader' });
+    await page.goto(`${BASE}/household`);
+    await page.locator('li', { hasText: 'Uitest Person' }).getByRole('button', { name: 'Remove' }).click();
+    await page.getByTestId('confirm-ok').click();
+    await page.waitForResponse((r) => /\/api\/household\/members\/\d+\/archive$/.test(r.url()));
+    await page.reload();
+    eq('member archived via the in-page confirm, persists after reload', (await ty.get('/api/household/admin')).data.members.find((m) => m.name === 'Uitest Person')?.archived, true);
+    eq('no native confirm() dialogs anywhere', nativeDialogs, 0);
+
+    section('C. phone layout unchanged; desktop gets the command center + shortcuts');
+    await page.goto(`${BASE}/`);
+    await page.waitForLoadState('networkidle');
+    check('phone: Today is the checklist (no command center), bottom tabs present', (await page.locator('[data-testid^=command-]').count()) === 0 && (await page.locator('nav.tabs a').count()) >= 4);
+    const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const dp = await desk.newPage();
+    watch(dp);
+    await dp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
+    await dp.waitForLoadState('networkidle');
+    check('desktop: a grown-up lands on the command center', (await dp.locator('[data-testid^=command-]').count()) === 1);
+    await dp.keyboard.press('?');
+    check('“?” opens the shortcut help', await dp.getByTestId('shortcut-help').isVisible());
+    await dp.keyboard.press('Escape');
+    await dp.keyboard.press('g');
+    await dp.keyboard.press('m');
+    await dp.waitForURL('**/meals');
+    check('“g m” goes to Meals', dp.url().endsWith('/meals'));
+    await dp.waitForSelector('.mealcard img');
+    check('meal cards show pictures', (await dp.locator('.mealcard img').count()) === 120);
+
+    section('G. Hana’s confirm card in the chat');
+    const t = (await ty.post('/api/day/tasks', { task: 'UI delete me', priority: 'Later', energy: 'Low Brain' })).data.tasks.find((x) => x.task === 'UI delete me');
+    await page.goto(`${BASE}/hana`);
+    await page.getByPlaceholder('What’s on your mind?').fill(`delete task #${t.id}`);
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.getByTestId('hana-pending').waitFor();
+    await page.getByTestId('hana-pending').getByRole('button', { name: 'Confirm' }).click();
+    await page.getByTestId('hana-pending').waitFor({ state: 'detached' });
+    eq('confirmed in the chat → task deleted', (await ty.get('/api/day')).data.tasks.some((x) => x.id === t.id), false);
+
+    section('every page renders for a grown-up (no crashes, no “not found”)');
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings'];
+    const notFound = [];
+    for (const p of pages) {
+      await page.goto(BASE + p);
+      await page.waitForLoadState('networkidle');
+      if (await page.getByText('Page not found.').count()) notFound.push(p);
+    }
+    eq(`${pages.length} pages render`, notFound, []);
+
+    section('kids: tutor renders (untouched), recorder, first run');
+    const kid = await browser.newContext(phone);
+    const kp = await kid.newPage();
+    watch(kp);
+    await kp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`); // PIN login is rate-limited per IP by now
+    await kp.goto(`${BASE}/tutor`);
+    check('tutor renders for a kid', await kp.getByRole('heading', { name: /Homework helper/ }).waitFor({ timeout: 10000 }).then(() => true, () => false));
+    await kp.goto(`${BASE}/record`);
+    check('recorder: class picker (policy already acknowledged)', await kp.getByTestId('record-class').waitFor({ timeout: 10000 }).then(() => true, () => false));
+    for (const p of ['/school', '/my-money', '/focus', '/private', '/wins', '/settings', `/study/${(await avery.get('/api/school')).data.classes[0].id}`]) {
+      await kp.goto(BASE + p);
+      await kp.waitForLoadState('networkidle');
+      if (await kp.getByText('Page not found.').count()) notFound.push(`kid ${p}`);
+    }
+    eq('kid pages render', notFound, []);
+    const ev = await browser.newContext(phone);
+    const ep = await ev.newPage();
+    await ep.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=evan`);
+    await ep.goto(`${BASE}/`);
+    await ep.getByTestId('first-run-kid').waitFor();
+    check('age-specific first run (kid) shows once', true);
+    await ep.getByRole('button', { name: 'Let’s go' }).click();
+    await ep.reload();
+    await ep.waitForLoadState('networkidle');
+    eq('…and not again after dismissing', await ep.getByTestId('first-run-kid').count(), 0);
+    eq('no uncaught page errors', errors, []);
+  } finally {
+    await browser.close();
+  }
+}
+
 try {
   await setup();
   await monday();
@@ -770,6 +1324,8 @@ try {
   await sunday();
   await mealsAndGrocery();
   await pinRotation();
+  await bigBuild();
+  if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);
   console.error(e);

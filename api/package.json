@@ -17,7 +17,9 @@
     "connect-pg-simple": "^10.0.0",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "web-push": "^3.6.7",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/connect-pg-simple": "^7.0.3",
@@ -25,6 +27,7 @@
     "@types/express-session": "^1.19.0",
     "@types/node": "^26.6.4",
     "@types/pg": "^8.23.1",
+    "@types/web-push": "^3.6.4",
     "typescript": "^7.0.2"
   }
 }

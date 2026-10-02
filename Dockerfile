@@ -27,9 +27,12 @@ COPY --from=build /app/shared/dist shared/dist
 COPY --from=build /app/api/package.json api/
 COPY --from=build /app/api/dist api/dist
 COPY --from=build /app/api/migrations api/migrations
+COPY --from=build /app/api/content api/content
 COPY --from=build /app/web/dist web/dist
+# Lecture audio waits here only until it's transcribed (then it's deleted).
+RUN mkdir -p /data/uploads && chown -R node:node /data
 USER node
 WORKDIR /app/api
 EXPOSE 4000
-# Migrations run on every start (= every deploy), then the server.
-CMD ["sh", "-c", "node dist/migrate.js && node dist/server.js"]
+# Every start (= every deploy): migrations, the shared meal library, then the server.
+CMD ["sh", "-c", "node dist/migrate.js && node dist/cli.js meals:seed && node dist/server.js"]

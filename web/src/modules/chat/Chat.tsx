@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ChatMode, ChatSendResponse, ChatState } from '@myday/shared';
+import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
 import { api, useLoad } from '../../api';
 
 const COPY: Record<ChatMode, { title: string; intro: string; placeholder: string }> = {
@@ -21,8 +21,14 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   const [msg, setMsg] = useState('');
   const [pending, setPending] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [actions, setActions] = useState<HanaAction[]>([]);
+  // B3: /tutor?lecture=ID quizzes from one of the student's own lectures.
+  const lectureId = mode === 'tutor' ? new URLSearchParams(window.location.search).get('lecture') : null;
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: 'end' }), [data, pending]);
+  useEffect(() => {
+    // Braces matter: newer browsers return a Promise from scrollIntoView, which React would treat as a cleanup.
+    void end.current?.scrollIntoView({ block: 'end' });
+  }, [data, pending]);
 
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
@@ -36,8 +42,9 @@ export default function Chat({ mode }: { mode: ChatMode }) {
     setPending(text);
     setErr(null);
     try {
-      const r = await api<ChatSendResponse>(`/api/chat/${mode}`, 'POST', { message: text });
-      setData({ ...data, history: r.history });
+      const r = await api<ChatSendResponse>(`/api/chat/${mode}`, 'POST', { message: text, ...(lectureId ? { lectureId: Number(lectureId) } : {}) });
+      setData({ ...data, history: r.history, pending: [...data.pending, ...r.actions.filter((a) => a.status === 'pending')] });
+      setActions(r.actions.filter((a) => a.status !== 'pending'));
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : 'That didn’t go through — try again');
       setMsg(text);
@@ -46,10 +53,20 @@ export default function Chat({ mode }: { mode: ChatMode }) {
     }
   };
 
+  const decide = async (a: HanaAction, verb: 'confirm' | 'cancel'): Promise<void> => {
+    try {
+      const r = await api<{ action: HanaAction; history: ChatMessage[]; pending: HanaAction[] }>(`/api/hana/actions/${a.id}/${verb}`, 'POST');
+      setData({ ...data, history: r.history, pending: r.pending });
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : 'That didn’t go through');
+    }
+  };
+
   return (
     <section className="chat">
       <h1>{copy.title}</h1>
       <p className="muted small">{copy.intro}</p>
+      {lectureId && <p className="pill sun">Quiz mode: questions from your lecture</p>}
       {!data.available && <p className="warn">Hana isn’t set up yet — a grown-up needs to add the AI key on the server.</p>}
       <div className="bubbles" data-testid="chat-history">
         {data.history.map((m) => (
@@ -63,6 +80,25 @@ export default function Chat({ mode }: { mode: ChatMode }) {
             <div className="bubble hana muted">Thinking…</div>
           </>
         )}
+        {actions.map((a) => (
+          <div key={a.id} className="bubble hana small" data-testid="hana-action">
+            {a.status === 'done' ? '✓' : '⚠'} {a.summary}
+          </div>
+        ))}
+        {data.pending.map((a) => (
+          <div key={a.id} className="card" data-testid="hana-pending" role="alertdialog" aria-label={`Confirm: ${a.summary}`}>
+            <b>Hana wants to: {a.summary}</b>
+            <p className="muted small">Nothing changes until you confirm.</p>
+            <div className="confirm-actions">
+              <button className="btn small ghost" onClick={() => void decide(a, 'cancel')}>
+                Cancel
+              </button>
+              <button className="btn small danger" onClick={() => void decide(a, 'confirm')}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        ))}
         <div ref={end} />
       </div>
       {err && <p className="error">{err}</p>}

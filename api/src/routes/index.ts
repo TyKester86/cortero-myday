@@ -1,0 +1,20 @@
+/**
+ * Feature routers added in the big build. Each module owns its router; this
+ * list is the only place they're registered.
+ */
+import type { Router } from 'express';
+import { billsRouter } from './bills.js';
+import { engagementRouter } from './engagement.js';
+import { identityRouter } from './identity.js';
+import { kidMoneyRouter } from './kidmoney.js';
+import { lecturesRouter, lectureUploadRouter } from './lectures.js';
+import { notificationsRouter } from './notifications.js';
+import { programRouter } from './program.js';
+import { recordsRouter } from './records.js';
+import { schoolRouter } from './school.js';
+
+export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
+  notificationsRouter, recordsRouter];
+
+/** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
+export const uploadRoutes: Router[] = [lectureUploadRouter];

@@ -9,10 +9,12 @@ const LOGIN_ERRORS: Record<string, string> = {
 };
 
 export default function Login() {
-  const err = new URLSearchParams(window.location.search).get('error');
+  const qs = new URLSearchParams(window.location.search);
+  const err = qs.get('error');
+  const [code, setCode] = useState(qs.get('code') ?? '');
   const device = useLoad<DeviceKidsResponse>('/api/auth/kid-device');
   const known = device.data?.kids ?? [];
-  const [kid, setKid] = useState(false);
+  const [kid, setKid] = useState(qs.has('code'));
   const [name, setName] = useState('');
   const [picked, setPicked] = useState(false);
   const [pin, setPin] = useState('');
@@ -21,7 +23,7 @@ export default function Login() {
 
   const kidLogin = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
-    const body: KidPinLoginRequest = { name, pin, remember };
+    const body: KidPinLoginRequest & { household?: string } = { name, pin, remember, ...(code ? { household: code } : {}) };
     try {
       await api('/api/auth/kid-login', 'POST', body);
       window.location.href = '/';
@@ -69,6 +71,9 @@ export default function Login() {
           <a className="btn" href="/api/auth/google">
             Sign in with Google
           </a>
+          <a className="link light" href="/api/auth/google" data-testid="start-trial">
+            New here? Start a free 30-day trial
+          </a>
           <button className="link light" onClick={() => setKid(true)}>
             I'm a kid — sign in with my PIN
           </button>
@@ -80,7 +85,10 @@ export default function Login() {
               Hi {known.find((k) => k.key === name)?.name ?? name}! Type your PIN.
             </p>
           ) : (
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your first name" autoComplete="username" required />
+            <>
+              <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 6))} placeholder="Family code (ask a grown-up)" autoCapitalize="characters" aria-label="Family code" />
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your first name" autoComplete="username" required />
+            </>
           )}
           <input
             value={pin}
@@ -118,6 +126,25 @@ export default function Login() {
             Back
           </button>
         </form>
+      )}
+      {!kid && (
+        <div className="feature" style={{ maxWidth: 720, textAlign: 'left' }} data-testid="landing">
+          {[
+            ['✅ Today, for everyone', 'Chores, homework and tasks with points kids actually care about.'],
+            ['💪 A year of training', 'Pick a body-style build; get 52 phased weeks, meals and protein math.'],
+            ['🍽 Meals → groceries', '120 recipes with pictures. One tap builds the list and opens your store.'],
+            ['📚 School, captured', 'Record a class; get real study notes, flashcards and homework found for you.'],
+            ['💬 Hana', 'An AI that can actually do things — add tasks, groceries, move a workout.'],
+            ['🏠 Any household', 'Families, couples, empty nesters, solo, and college students.'],
+          ].map(([t, b]) => (
+            <div key={t} className="card" style={{ color: 'var(--text)' }}>
+              <b>{t}</b>
+              <p className="small" style={{ margin: '4px 0 0', color: 'var(--muted)' }}>
+                {b}
+              </p>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

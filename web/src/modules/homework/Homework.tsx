@@ -8,6 +8,7 @@ import {
 } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
+import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 
 /** Kids log their homework; checking it off pays HOMEWORK_POINTS. */
@@ -19,6 +20,7 @@ export default function Homework() {
   const [subject, setSubject] = useState('');
   const [due, setDue] = useState('');
   const { toast, show, earned } = useToast();
+  const confirm = useConfirm();
 
   if (error) return <p className="error">{error}</p>;
   if (!data || !key) return <p className="muted">Loading…</p>;
@@ -43,7 +45,7 @@ export default function Homework() {
   };
 
   const remove = async (h: HomeworkEntry): Promise<void> => {
-    if (!confirm(`Delete "${h.assignment}"?`)) return;
+    if (!(await confirm({ title: `Delete "${h.assignment}"?`, body: 'It comes off the homework list.', confirmLabel: 'Delete', danger: true }))) return;
     setData(await api<HomeworkListResponse>(`/api/homework/${h.id}`, 'DELETE'));
   };
 

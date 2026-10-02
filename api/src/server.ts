@@ -5,12 +5,13 @@ import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import type { HealthCheck, HouseholdResponse } from '@myday/shared';
 import { config } from './config.js';
-import { pool } from './db.js';
-import { authRouter, kidAccessRouter, loadUser, meHandler, requireAuth } from './auth.js';
-import { homeworkRouter } from './routes/homework.js';
-import { rewardsRouter } from './routes/rewards.js';
+import { rawPool, requestScope } from './db.js';
+import { authRouter, kidAccessRouter, loadUser, meHandler, requireAuth, requireHousehold } from './auth.js';
 import { errorHandler, HttpError } from './lib/http.js';
 import { listMembers } from './lib/members.js';
+import { idempotency, moduleUsed } from './lib/requestlog.js';
+import { homeworkRouter } from './routes/homework.js';
+import { rewardsRouter } from './routes/rewards.js';
 import { choresRouter } from './routes/chores.js';
 import { scoreRouter } from './routes/score.js';
 import { healthRouter } from './routes/health.js';
@@ -21,8 +22,11 @@ import { dumpRouter } from './routes/dump.js';
 import { battlesRouter } from './routes/battles.js';
 import { familyRouter } from './routes/family.js';
 import { householdRouter } from './routes/household.js';
+import { householdsRouter } from './routes/households.js';
 import { chatRouter } from './routes/chat.js';
 import { moneyRouter } from './routes/money.js';
+import { extraRouters, uploadRoutes } from './routes/index.js';
+import { startSchedulers } from './lib/schedulers.js';
 
 if (!config.sessionSecret || config.sessionSecret.length < 32) {
   throw new Error('SESSION_SECRET must be set (32+ chars)');
@@ -36,13 +40,14 @@ app.get('/api/health', (_req, res: Response<HealthCheck>) => {
   res.json({ ok: true });
 });
 
-app.use(express.json({ limit: '100kb' }));
+// Every API request runs on its own connection, pinned to the caller's household.
+app.use(['/api', '/dev-login'], requestScope);
 
 const PgStore = connectPgSimple(session);
 app.use(
   session({
     name: 'myday.sid',
-    store: new PgStore({ pool, tableName: 'session', createTableIfMissing: false }),
+    store: new PgStore({ pool: rawPool, tableName: 'session', createTableIfMissing: false }),
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -56,6 +61,14 @@ app.use(
   }),
 );
 
+app.use('/api', loadUser);
+
+// Binary uploads (lecture audio) come before the JSON body parser and the
+// JSON-only CSRF rule; they require a custom header a cross-site form can't send.
+for (const r of uploadRoutes) app.use(r);
+
+app.use(express.json({ limit: '200kb' }));
+
 // CSRF: state-changing API calls must declare JSON (a cross-site form can't).
 // Checks the header itself: req.is() returns null for bodyless DELETEs.
 app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
@@ -66,12 +79,17 @@ app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-app.use('/api', loadUser);
 app.use(authRouter);
 
 app.get('/api/me', requireAuth, meHandler);
 
 app.use('/api', requireAuth);
+app.use('/api', idempotency);
+// Signup + onboarding work before you belong to a household.
+app.use(householdsRouter);
+app.use('/api', requireHousehold);
+app.use('/api', moduleUsed);
+
 app.get('/api/household', async (_req, res: Response<HouseholdResponse>) => {
   res.json({ members: await listMembers() });
 });
@@ -90,11 +108,16 @@ app.use(familyRouter);
 app.use(householdRouter);
 app.use(chatRouter);
 app.use(moneyRouter);
+for (const r of extraRouters) app.use(r);
 
 app.use('/api', (_req: Request, _res: Response, next: NextFunction) => next(new HttpError(404, 'Not found')));
 
 // The web app (built by Vite), with SPA fallback for client routes.
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');
+// The service worker must never be cached by the browser's HTTP cache.
+app.get('/sw.js', (_req, res) => {
+  res.sendFile(path.join(webDist, 'sw.js'), { headers: { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' } });
+});
 app.use(express.static(webDist, { index: false, maxAge: '1h' }));
 app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });
@@ -105,4 +128,5 @@ app.use(errorHandler);
 app.listen(config.port, () => {
   console.log(`myday api listening on :${config.port} (tz ${config.tz})`);
   if (config.devLoginToken) console.warn('WARNING: DEV_LOGIN_TOKEN is set — /dev-login is ENABLED (temporary).');
+  startSchedulers();
 });

@@ -44,9 +44,13 @@ export async function dailyScore(memberId: number, track: XpTrack, t: DateStr): 
       (ci !== undefined && ci.grateful.trim() !== '') ||
       (await count('SELECT COUNT(*)::int AS n FROM reviews WHERE member_id = $1 AND day = $2', [memberId, t])) > 0 ||
       (await count('SELECT COUNT(*)::int AS n FROM dump_items WHERE member_id = $1 AND captured_on = $2', [memberId, t])) > 0;
-    const nonMit = await count('SELECT COUNT(*)::int AS n FROM tasks WHERE member_id = $1 AND done AND done_on = $2 AND NOT mit', [memberId, t]);
+    // Study/assignment (script: FamAssign or FamStudy today); a non-MIT task still counts too.
+    const study =
+      (await count('SELECT COUNT(*)::int AS n FROM study_sessions WHERE member_id = $1 AND day = $2', [memberId, t])) +
+      (await count('SELECT COUNT(*)::int AS n FROM assignments WHERE member_id = $1 AND (created_on = $2 OR done_on = $2)', [memberId, t])) +
+      (await count('SELECT COUNT(*)::int AS n FROM tasks WHERE member_id = $1 AND done AND done_on = $2 AND NOT mit', [memberId, t]));
     labels = ['Dashboard + MITs', '1 MIT done', 'Study/assignment', 'Exercise', 'Mind care'];
-    parts = [ci ? 20 : 0, (await tasksDone(true)) > 0 ? 20 : 0, nonMit > 0 ? 20 : 0, workout ? 20 : 0, mind ? 20 : 0];
+    parts = [ci ? 20 : 0, (await tasksDone(true)) > 0 ? 20 : 0, study > 0 ? 20 : 0, workout ? 20 : 0, mind ? 20 : 0];
   } else {
     // familyActionRecent_: a partner check-in or 1-on-1 within the last 3 days.
     const family =
@@ -90,21 +94,30 @@ interface AchContext {
   sleepStreak: number;
   mitStreak: number;
   moneyLinked: boolean;
+  billsTracked: boolean;
+  studyCount: number;
+  assignZero: number;
+  campusVisits: number;
+  campusDistinct: number;
 }
 
 type AchDef = [name: string, desc: string, xp: number, test: (x: AchContext) => boolean];
 
-/** ACH_DEFS. The four student badges that need the (not ported) academic engine are left out. */
+/** ACH_DEFS, student academic badges included. */
 export function achievementDefs(track: XpTrack): AchDef[] {
   if (track === 'student') {
     return [
       ['🚀 First Launch', '3 active days', 50, (x) => x.activeDays >= 3],
       ['📅 First Week', '7-day streak', 30, (x) => x.streak.current >= 7],
+      ['📚 Bookworm', '10 study sessions', 40, (x) => x.studyCount >= 10],
       ['⚡ MIT Master', 'MIT done 5 days running', 50, (x) => x.mitStreak >= 5],
-      ['💰 Budget Boss', 'Bank linked in Money + 30-day streak', 40, (x) => x.moneyLinked && x.streak.current >= 30],
+      ['💰 Budget Boss', 'Bills tracked + 30-day streak', 40, (x) => (x.billsTracked || x.moneyLinked) && x.streak.current >= 30],
       ['🏋️ Gym Rat', '12 workouts in a month', 40, (x) => x.workoutsMonth >= 12],
       ['😴 Sleep Champion', '7+ hrs, 14 nights running', 60, (x) => x.sleepStreak >= 14],
       ['🧠 Brain Dumper', '50 brain dumps', 25, (x) => x.dumpCount >= 50],
+      ['🎯 Assignment Zero', '7 days, nothing overdue', 50, (x) => x.assignZero >= 7],
+      ['📞 Office Hours Hero', '5 campus visits', 40, (x) => x.campusVisits >= 5],
+      ['🤝 Support Seeker', '3 different campus resources', 35, (x) => x.campusDistinct >= 3],
       ['🔥 7-Day Streak', '7 consecutive system days', 35, (x) => x.streak.current >= 7],
     ];
   }
@@ -142,6 +155,10 @@ async function achContext(memberId: number, track: XpTrack, t: DateStr, streak: 
     (await pool.query<{ day: DateStr }>('SELECT DISTINCT done_on::text AS day FROM tasks WHERE member_id = $1 AND done AND mit', m)).rows.map((r) => r.day),
   );
   const xp = await xpStatus(memberId);
+  // Assignment Zero: days running (back from today) with nothing overdue and something done.
+  const asg = (await pool.query<{ due: DateStr | null; done: boolean }>('SELECT due::text AS due, done FROM assignments WHERE member_id = $1', m)).rows;
+  const anyDone = asg.some((a) => a.done);
+  const assignZero = anyDone ? consecutiveDays((d) => !asg.some((a) => !a.done && a.due !== null && a.due < d), t) : 0;
   return {
     checkins: await count('SELECT COUNT(*)::int AS n FROM checkins WHERE member_id = $1', m),
     redAlerts: await count('SELECT COUNT(*)::int AS n FROM red_alerts WHERE member_id = $1', m),
@@ -162,7 +179,12 @@ async function achContext(memberId: number, track: XpTrack, t: DateStr, streak: 
     dumpCount: await count('SELECT COUNT(*)::int AS n FROM dump_items WHERE member_id = $1', m),
     sleepStreak: consecutiveDays((d) => sleepGreat.has(d), t),
     mitStreak: consecutiveDays((d) => mitDays.has(d), t),
-    moneyLinked: (await count('SELECT COUNT(*)::int AS n FROM money_items', [])) > 0,
+    moneyLinked: (await count('SELECT COUNT(*)::int AS n FROM money_items WHERE member_id IS NULL', [])) > 0,
+    billsTracked: (await count('SELECT COUNT(*)::int AS n FROM bills', [])) > 0,
+    studyCount: await count('SELECT COUNT(*)::int AS n FROM study_sessions WHERE member_id = $1', m),
+    assignZero,
+    campusVisits: await count('SELECT COUNT(*)::int AS n FROM campus_visits WHERE member_id = $1', m),
+    campusDistinct: await count('SELECT COUNT(DISTINCT name)::int AS n FROM campus_visits WHERE member_id = $1', m),
   };
 }
 

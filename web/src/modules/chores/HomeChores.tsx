@@ -2,11 +2,15 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import type { PerfectWeekResult, TodayResponse, ToggleChoreResponse } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
+import QuickNote from '../../components/QuickNote';
 import { useSession } from '../../session';
+import { QuestsCard, useEngagement } from '../engagement/Wins';
 
 /** Today's checklist for one person. Checking a chore pays out instantly. */
 export default function HomeChores() {
-  const { viewing } = useSession();
+  const { viewing, me, isAdult } = useSession();
+  const eng = useEngagement();
+  const own = viewing?.key === me.member?.key;
   const key = viewing?.key ?? null;
   const { data, error, setData } = useLoad<TodayResponse>(key ? withMember('/api/chores/today', key) : null);
   const [total, setTotal] = useState<number | null>(null);
@@ -74,8 +78,10 @@ export default function HomeChores() {
         </div>
       )}
 
+      {isAdult && own && <QuickNote />}
+
       {left[0] && (
-        <div className="now card">
+        <div className="now card" key={left[0].id}>
           <small>NOW</small>
           <div className="now-name">{left[0].name}</div>
         </div>
@@ -100,6 +106,23 @@ export default function HomeChores() {
             </li>
           ))}
         </ul>
+      )}
+
+      {own && eng.data && (
+        <QuestsCard
+          quests={eng.data.quests}
+          onClaim={(q) =>
+            void eng.claim(q).then((m) => {
+              setToast(m);
+              setTimeout(() => setToast(null), 2500);
+            })
+          }
+        />
+      )}
+      {!isAdult && (
+        <p className="small">
+          <Link to="/focus">⏱ Focus timer</Link> · <Link to="/wins">Family wins</Link>
+        </p>
       )}
 
       {data.homework.length > 0 && (

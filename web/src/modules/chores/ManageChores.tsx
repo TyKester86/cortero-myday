@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { WEEKDAYS, type ChoreListResponse, type NewChore, type Weekday } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 
 /** Grown-ups add / remove chores and assign them to anyone on the roster. */
@@ -12,6 +13,7 @@ export default function ManageChores() {
   const [days, setDays] = useState<Weekday[]>([...WEEKDAYS]);
   const [points, setPoints] = useState(10);
   const [msg, setMsg] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   if (!isAdult) return <p className="muted">Only grown-ups can change chores.</p>;
 
@@ -31,7 +33,7 @@ export default function ManageChores() {
   };
 
   const remove = async (id: number, label: string): Promise<void> => {
-    if (!confirm(`Remove "${label}"? Points already earned stay earned.`)) return;
+    if (!(await confirm({ title: `Remove "${label}"?`, body: 'Points already earned stay earned.', confirmLabel: 'Remove', danger: true }))) return;
     await api(`/api/chores/${id}`, 'DELETE');
     reload();
   };

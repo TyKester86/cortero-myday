@@ -182,6 +182,33 @@ function Stores({ state, onChange }: { state: GroceryState; onChange: (s: Grocer
         )}
       </div>
 
+      <div className="card" data-testid="order">
+        <h2>Order your list</h2>
+        <p className="muted small">
+          One tap opens that store's own grocery ordering page. You place the order there — MyDay never orders or pays for anything.
+        </p>
+        <button
+          className="btn small ghost"
+          onClick={() => {
+            const text = state.items.filter((i) => !i.done).map((i) => i.item).join('\n');
+            void navigator.clipboard?.writeText(text).then(() => setErr('List copied — paste it into the store’s search.'));
+          }}
+        >
+          Copy list
+        </button>
+        <div className="storebtns" style={{ marginTop: 8 }}>
+          {[...state.chains]
+            .filter((c) => c.orderUrl)
+            .sort((a, b) => Number(!!fav(b.name)) - Number(!!fav(a.name)))
+            .map((c) => (
+              <a key={c.name} className={fav(c.name) ? 'btn small' : 'btn small ghost'} href={c.orderUrl ?? c.shopUrl} target="_blank" rel="noreferrer" data-testid="order-link">
+                {fav(c.name) ? '★ ' : ''}
+                {c.name}
+              </a>
+            ))}
+        </div>
+      </div>
+
       {state.favorites.length > 0 && (
         <div className="card" data-testid="favorites">
           <h2>My stores</h2>

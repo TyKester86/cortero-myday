@@ -10,8 +10,13 @@
  *
  * Column layouts match the sheet tabs exactly as the old script read them.
  */
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { pool, tx } from './db.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { BUILDS, mealPhaseTags, mealSlug } from '@myday/shared';
+import { asSystem, inHousehold, pool, tx } from './db.js';
+import { loadBuildPlan, loadCsvPlan } from './lib/planload.js';
 
 type Flags = Record<string, string>;
 
@@ -101,7 +106,7 @@ const commands: Record<string, (pos: string[], flags: Flags) => Promise<void>> =
     await pool.query(
       `INSERT INTO household_members (key, name, kind, age, email, xp_track, sort_order)
        VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM household_members))
-       ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind, xp_track = EXCLUDED.xp_track,
+       ON CONFLICT (household_id, key) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind, xp_track = EXCLUDED.xp_track,
          age = COALESCE(EXCLUDED.age, household_members.age), email = COALESCE(EXCLUDED.email, household_members.email)`,
       [key, name, kind, age, email, track],
     );
@@ -210,6 +215,76 @@ const commands: Record<string, (pos: string[], flags: Flags) => Promise<void>> =
     console.log(`imported ${rows.length} meals`);
   },
 
+  /**
+   * Load a member's year plan. Either from a build (one command per build):
+   *   plan:load --member ty --build v_taper --bodyweight 180 [--level beginner|experienced] [--start 2026-09-28]
+   * or from a CSV in the "MH Workouts" sheet layout:
+   *   plan:load --member ty --csv "MH Workouts.csv" [--start 2026-09-28]
+   */
+  async 'plan:load'(_pos, f) {
+    const ids = await memberIds();
+    const key = need(f, 'member').toLowerCase();
+    const mid = ids.get(key);
+    if (mid === undefined) throw new Error(`unknown member ${key}`);
+    const start = f.start;
+    if (f.csv) {
+      const rows = (await csvRows(f.csv))
+        .filter((r) => !f.person || cell(r, 4).toLowerCase() === f.person.toLowerCase())
+        .map((r) => ({
+          phaseId: cell(r, 0), phaseName: cell(r, 1), weekStart: num(cell(r, 2)), weekEnd: num(cell(r, 3)),
+          dayNum: num(cell(r, 5)), dayName: cell(r, 6), exercise: cell(r, 7), sets: num(cell(r, 8)), reps: cell(r, 9),
+          rest: cell(r, 10), equipment: cell(r, 11), cues: cell(r, 12), subs: cell(r, 13), focus: cell(r, 14),
+        }));
+      const out = await loadCsvPlan(mid, rows, start);
+      console.log(`${key}: loaded ${out.rows} plan rows in ${out.phases} phases from CSV`);
+      return;
+    }
+    const build = BUILDS.find((b) => b === f.build);
+    if (!build) throw new Error(`--build must be one of ${BUILDS.join(', ')} (or pass --csv)`);
+    const out = await loadBuildPlan(mid, {
+      build,
+      level: f.level === 'experienced' ? 'experienced' : 'beginner',
+      bodyweightLb: f.bodyweight ? Number(f.bodyweight) : null,
+      foodProtein: f['food-protein'] ? Number(f['food-protein']) : null,
+      start,
+    });
+    console.log(`${key}: ${build} plan loaded — ${out.phases} phases, ${out.rows} rows, 52 weeks`);
+  },
+
+  /**
+   * The meal library (shared by every household): api/content/meals.csv →
+   * meals, with picture, phase tags, servings and prep time. Idempotent;
+   * runs on every container start.
+   */
+  async 'meals:seed'(pos) {
+    const file = pos[0] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'content', 'meals.csv');
+    const rows = await csvRows(file);
+    const lines = (v: string): string[] => v.split('\n').map((l) => l.trim()).filter(Boolean);
+    await tx(async (c) => {
+      for (const r of rows) {
+        const id = Math.round(num(cell(r, 0)));
+        const title = cell(r, 1);
+        if (!id || !title) continue;
+        const calories = Math.round(num(cell(r, 3)));
+        const protein = Math.round(num(cell(r, 4)));
+        const slug = mealSlug(title);
+        await c.query(
+          `INSERT INTO meals (id, title, cuisine, calories, protein, carbs, fat, ingredients, steps, servings, prep_min, slug, image_url, phase_tags)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, cuisine = EXCLUDED.cuisine, calories = EXCLUDED.calories,
+             protein = EXCLUDED.protein, carbs = EXCLUDED.carbs, fat = EXCLUDED.fat, ingredients = EXCLUDED.ingredients,
+             steps = EXCLUDED.steps, servings = EXCLUDED.servings, prep_min = EXCLUDED.prep_min, slug = EXCLUDED.slug,
+             image_url = EXCLUDED.image_url, phase_tags = EXCLUDED.phase_tags`,
+          [id, title, cell(r, 2), calories, protein, numOrNull(cell(r, 5)), numOrNull(cell(r, 6)), lines(r[7] ?? ''),
+            lines(r[8] ?? ''), numOrNull(cell(r, 9)), numOrNull(cell(r, 10)), slug, `/meals/${slug}.svg`,
+            mealPhaseTags(calories, protein)],
+        );
+      }
+      await c.query("SELECT setval(pg_get_serial_sequence('meals', 'id'), GREATEST((SELECT MAX(id) FROM meals), 1))");
+    });
+    console.log(`meal library: ${rows.length} meals seeded`);
+  },
+
   /** Health profile (was MH_PROFILE / MH_START / MH_TRAIN_WEEKDAYS in the script). */
   async 'profile:set'(_pos, f) {
     const ids = await memberIds();
@@ -233,14 +308,55 @@ const commands: Record<string, (pos: string[], flags: Flags) => Promise<void>> =
   },
 };
 
+/**
+ * Every command runs inside one household (row-level security). Pick it with
+ * --household <id>; with one household it's used automatically, and on a
+ * fresh database one is created ("Our family").
+ */
+async function resolveHousehold(flags: Flags): Promise<number> {
+  return asSystem(async () => {
+    if (flags.household) {
+      const { rows } = await pool.query<{ id: number }>('SELECT id FROM households WHERE id = $1', [Number(flags.household)]);
+      const id = rows[0]?.id;
+      if (id === undefined) throw new Error(`no household ${flags.household}`);
+      return id;
+    }
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM households ORDER BY id LIMIT 2');
+    if (rows.length > 1) throw new Error('several households exist: pass --household <id> (see household:list)');
+    if (rows[0]) return rows[0].id;
+    const code = Array.from(randomBytes(6), (b) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[b % 31]).join('');
+    const { rows: made } = await pool.query<{ id: number }>(
+      "INSERT INTO households (name, type, code) VALUES ($1, 'family', $2) RETURNING id",
+      [flags['household-name'] ?? 'Our family', code],
+    );
+    const id = made[0]?.id;
+    if (id === undefined) throw new Error('household insert returned nothing');
+    console.log(`created household ${id} (family code ${code})`);
+    return id;
+  });
+}
+
 async function main(): Promise<void> {
   const { cmd, pos, flags } = parseArgs(process.argv.slice(2));
-  const fn = commands[cmd];
-  if (!fn) {
-    console.log(`commands: ${Object.keys(commands).join(', ')}`);
+  if (cmd === 'household:list') {
+    await asSystem(async () => {
+      const { rows } = await pool.query('SELECT id, name, type, code, created_at FROM households ORDER BY id');
+      console.table(rows);
+    });
     return;
   }
-  await fn(pos, flags);
+  const fn = commands[cmd];
+  if (!fn) {
+    console.log(`commands: household:list, ${Object.keys(commands).join(', ')}`);
+    return;
+  }
+  // The meal library is shared content; it needs no household.
+  if (cmd === 'import:meals' || cmd === 'meals:seed') {
+    await asSystem(() => fn(pos, flags));
+    return;
+  }
+  const householdId = await resolveHousehold(flags);
+  await inHousehold(householdId, () => fn(pos, flags));
 }
 
 main()

@@ -18,6 +18,7 @@ import { pool, tx, type Db } from '../db.js';
 import { today } from '../lib/dates.js';
 import { HttpError, idParam, int, str } from '../lib/http.js';
 import { memberById, requireAdult, self, targetMember } from '../lib/members.js';
+import { logEvent } from '../lib/events.js';
 
 export const rewardsRouter = Router();
 
@@ -115,6 +116,7 @@ rewardsRouter.post('/api/rewards/:id/redeem', async (req, res) => {
       [me.id, rewardId, reward.name, reward.cost, today()],
     );
   });
+  await logEvent('reward_redeemed', { reward: rewardId }, me.id);
   res.status(201).json(await storeFor(me));
 });
 

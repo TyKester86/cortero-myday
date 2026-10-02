@@ -84,6 +84,30 @@ export function parseNewTask(b: Record<string, unknown>): NewTask {
   };
 }
 
+/**
+ * Energy-aware order, driven by the morning check-in: Fried → low-brain and
+ * body-only work first; Calm → deep (high-brain) work first; Buzzing → move
+ * first, then thinking. Within the same energy, MITs and priority still lead.
+ */
+const ENERGY_ORDER: Record<string, Energy[]> = {
+  Fried: ['Low Brain', 'Body-only', 'High Brain'],
+  Calm: ['High Brain', 'Low Brain', 'Body-only'],
+  Buzzing: ['Body-only', 'Low Brain', 'High Brain'],
+};
+const ENERGY_NOTE: Record<string, string> = {
+  Fried: 'Fried today — easy wins first. Deep work can wait until you have more in the tank.',
+  Calm: 'Calm brain — deep work first while it lasts.',
+  Buzzing: 'Buzzing — burn some energy on body tasks first, then settle into the rest.',
+};
+
+export function orderByEnergy(tasks: Task[], nervous: string): Task[] {
+  const order = ENERGY_ORDER[nervous];
+  if (!order) return tasks;
+  const rank = (t: Task): number => order.indexOf(t.energy);
+  // Stable sort: the SQL order (MIT, priority, id) is kept within each energy band.
+  return [...tasks].sort((a, b) => Number(a.done) - Number(b.done) || rank(a) - rank(b));
+}
+
 async function myDay(member: HouseholdMember): Promise<MyDayResponse> {
   const t = today();
   const ws = weekStart(t);
@@ -116,7 +140,8 @@ async function myDay(member: HouseholdMember): Promise<MyDayResponse> {
     date: t,
     xp: await xpStatus(member.id),
     checkin: ci ?? null,
-    tasks: tasks.map(toTask),
+    tasks: orderByEnergy(tasks.map(toTask), ci?.nervous ?? ''),
+    energyNote: ENERGY_NOTE[ci?.nervous ?? ''] ?? null,
     review,
     habits: habits.map(
       (h): WeeklyHabit => ({

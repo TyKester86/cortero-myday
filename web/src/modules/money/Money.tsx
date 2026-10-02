@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ExchangeRequest, LinkTokenResponse, MoneyResponse, MoneyTransaction } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
+import { useConfirm } from '../../components/Confirm';
 
 const usd = (n: number): string => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -22,7 +23,7 @@ declare global {
   }
 }
 
-function loadPlaid(): Promise<PlaidGlobal> {
+export function loadPlaid(): Promise<PlaidGlobal> {
   if (window.Plaid) return Promise.resolve(window.Plaid);
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
@@ -57,6 +58,7 @@ export default function Money() {
   const [found, setFound] = useState<MoneyTransaction[] | null>(null);
   const [busy, setBusy] = useState(false);
   const { toast, show } = useToast();
+  const confirm = useConfirm();
 
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
@@ -233,8 +235,12 @@ export default function Money() {
                   <button
                     className="link danger"
                     onClick={() =>
-                      confirm(`Unlink ${i.institution}? Its stored balances and transactions are deleted.`) &&
-                      void run(api<MoneyResponse>(`/api/money/items/${i.id}`, 'DELETE'), 'Unlinked')
+                      void confirm({
+                        title: `Unlink ${i.institution}?`,
+                        body: 'Its stored balances and transactions are deleted from MyDay.',
+                        confirmLabel: 'Unlink',
+                        danger: true,
+                      }).then((ok) => { if (ok) void run(api<MoneyResponse>(`/api/money/items/${i.id}`, 'DELETE'), 'Unlinked'); })
                     }
                   >
                     Unlink

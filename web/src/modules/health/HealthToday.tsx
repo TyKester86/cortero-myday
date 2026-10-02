@@ -4,14 +4,17 @@ import {
   HABITS,
   type CompleteDayResponse,
   type HabitKey,
+  type HealthHistory,
   type HealthToday as HealthTodayData,
   type LogExerciseRequest,
+  type ProgramStatus,
   type ToggleHabitResponse,
   type WorkoutExercise,
 } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
+import { BuildPicker, ProgramCard } from './Program';
 
 function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequest) => Promise<void> }) {
   const [weight, setWeight] = useState('');
@@ -35,11 +38,105 @@ function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequ
   );
 }
 
+/** A4: log any workout (a walk, a game, a class) and keep the baseline notes. */
+function Records({ memberKey }: { memberKey: string }) {
+  const { data, setData } = useLoad<HealthHistory>(withMember('/api/workouts/history', memberKey));
+  const [activity, setActivity] = useState('');
+  const [minutes, setMinutes] = useState('30');
+  const [msg, setMsg] = useState<string | null>(null);
+  if (!data) return null;
+  const logSession = async (): Promise<void> => {
+    try {
+      await api(withMember('/api/workouts/session', memberKey), 'POST', { activity: activity || 'Workout', minutes: Number(minutes) || 20 });
+      setData(await api<HealthHistory>(withMember('/api/workouts/history', memberKey)));
+      setActivity('');
+      setMsg('Logged ✓');
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Could not save');
+    }
+  };
+  const saveBaseline = async (b: HealthHistory['baseline']): Promise<void> => {
+    try {
+      setData(await api<HealthHistory>(withMember('/api/workouts/baseline', memberKey), 'PUT', b));
+      setMsg('Baseline saved ✓');
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Could not save');
+    }
+  };
+  return (
+    <>
+      <div className="card" data-testid="session-log">
+        <h2>Log any workout</h2>
+        <p className="muted small">{data.weekMinutes} active minutes in the last 7 days.</p>
+        <div className="inline">
+          <input placeholder="What did you do? (walk, soccer…)" value={activity} onChange={(e) => setActivity(e.target.value)} maxLength={40} />
+          <input className="qty" inputMode="numeric" value={minutes} onChange={(e) => setMinutes(e.target.value.replace(/\D/g, '').slice(0, 3))} aria-label="Minutes" />
+          <button className="btn small" onClick={() => void logSession()}>
+            Log
+          </button>
+        </div>
+        {data.sessions.length > 0 && (
+          <ul className="plain small">
+            {data.sessions.slice(0, 6).map((s, i) => (
+              <li key={i}>
+                {s.date} · {s.activity} · {s.minutes} min
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <details className="card">
+        <summary>
+          <b>Baseline notes</b> <span className="muted small">where you started</span>
+        </summary>
+        <BaselineForm initial={data.baseline} onSave={(b) => void saveBaseline(b)} />
+        {data.exercises.length > 0 && (
+          <>
+            <h2>Recent lifts</h2>
+            <ul className="plain small">
+              {data.exercises.slice(0, 12).map((x, i) => (
+                <li key={i}>
+                  {x.date} · {x.exercise} {x.weight && `· ${x.weight}`} {x.reps && `× ${x.reps}`}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </details>
+      {msg && <p className="muted small">{msg}</p>}
+    </>
+  );
+}
+
+function BaselineForm({ initial, onSave }: { initial: HealthHistory['baseline']; onSave: (b: HealthHistory['baseline']) => void }) {
+  const [b, setB] = useState(initial);
+  return (
+    <div className="form">
+      <label>
+        Exercise right now
+        <input value={b.exercise} maxLength={100} onChange={(e) => setB({ ...b, exercise: e.target.value })} />
+      </label>
+      <label>
+        Sleep
+        <input value={b.sleep} maxLength={40} onChange={(e) => setB({ ...b, sleep: e.target.value })} />
+      </label>
+      <label>
+        Food
+        <input value={b.food} maxLength={100} onChange={(e) => setB({ ...b, food: e.target.value })} />
+      </label>
+      <button className="btn small" onClick={() => onSave(b)}>
+        Save baseline
+      </button>
+    </div>
+  );
+}
+
 export default function HealthToday() {
   const { viewing } = useSession();
   const path = viewing ? withMember('/api/workouts/today', viewing.key) : null;
   const { data, error, reload, setData } = useLoad<HealthTodayData>(path);
   const [msg, setMsg] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const { toast, earned } = useToast();
 
   if (error) return <p className="error">{error}</p>;
@@ -62,6 +159,53 @@ export default function HealthToday() {
     setMsg(r.choreMarked ? 'Workout done — chore checked off ✓' : 'Workout done ✓');
     reload();
   };
+  const moveTomorrow = async (): Promise<void> => {
+    try {
+      await api(withMember('/api/workouts/move', viewing.key), 'POST', { to: 'tomorrow' });
+      setMsg('Moved to tomorrow — no stress.');
+      reload();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Could not move it');
+    }
+  };
+  const picked = (_p: ProgramStatus | null): void => {
+    setPicking(false);
+    reload();
+  };
+
+  const habits = (
+    <div className="card" data-testid="habits">
+      <h2>Daily habits</h2>
+      <div className="habits">
+        {HABITS.map((h) => (
+          <label key={h.key} className={data.habits[h.key] ? 'habit on' : 'habit'}>
+            <input type="checkbox" checked={data.habits[h.key]} onChange={(e) => void toggleHabit(h.key, e.target.checked)} />
+            {h.label}
+            <small>+{h.points}</small>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+
+  // No plan yet: never a made-up workout — pick a build and the year is planned.
+  if (!data.hasPlan || picking) {
+    return (
+      <section>
+        <h1>{picking ? 'Change your build' : 'Plan your year'}</h1>
+        <p className="muted">Pick the look you're going for. MyDay plans all 52 weeks — phases, sets, food and shakes.</p>
+        <BuildPicker memberKey={viewing.key} current={data.program} onDone={picked} />
+        {picking && (
+          <button className="link" onClick={() => setPicking(false)}>
+            Cancel
+          </button>
+        )}
+        {habits}
+        <Records memberKey={viewing.key} />
+        {toast}
+      </section>
+    );
+  }
 
   return (
     <section>
@@ -72,28 +216,24 @@ export default function HealthToday() {
         {data.focus && ` · ${data.focus}`} · <Link to="/health/plan">Year plan</Link>
       </p>
 
-      <div className="card" data-testid="habits">
-        <h2>Daily habits</h2>
-        <div className="habits">
-          {HABITS.map((h) => (
-            <label key={h.key} className={data.habits[h.key] ? 'habit on' : 'habit'}>
-              <input type="checkbox" checked={data.habits[h.key]} onChange={(e) => void toggleHabit(h.key, e.target.checked)} />
-              {h.label}
-              <small>+{h.points}</small>
-            </label>
-          ))}
-        </div>
-      </div>
+      {data.program && <ProgramCard program={data.program} onChange={() => setPicking(true)} />}
+      {habits}
 
+      {data.moved?.to && (
+        <div className="card" data-testid="moved">
+          Today's session moved to <b>{data.moved.to}</b>. Enjoy the rest.
+        </div>
+      )}
       {data.isRest || !data.session ? (
         <div className="card" data-testid="rest-day">
           <h2>Rest / cardio day</h2>
-          <p>{data.profile?.cardio || 'Recovery day. Walk, stretch, hydrate.'}</p>
+          <p>{data.program?.cardio || data.profile?.cardio || 'Recovery day. Walk, stretch, hydrate.'}</p>
         </div>
       ) : (
         <>
           <h2 data-testid="session-name">
             Day {data.session.dayNum}: {data.session.dayName}
+            {data.moved?.from && <span className="muted small"> · moved from {data.moved.from}</span>}
           </h2>
           {data.session.exercises.map((ex) => {
             const last = data.last[ex.exercise];
@@ -118,14 +258,21 @@ export default function HealthToday() {
               </div>
             );
           })}
-          <button className="btn" disabled={data.dayCompleted} onClick={() => void complete()}>
-            {data.dayCompleted ? 'Done today ✓' : 'Complete workout'}
-          </button>
+          <div className="row">
+            <button className="btn" disabled={data.dayCompleted} onClick={() => void complete()}>
+              {data.dayCompleted ? 'Done today ✓' : 'Complete workout'}
+            </button>
+            {!data.dayCompleted && (
+              <button className="btn ghost" onClick={() => void moveTomorrow()}>
+                Move to tomorrow
+              </button>
+            )}
+          </div>
         </>
       )}
       {msg && <p className="muted">{msg}</p>}
 
-      {data.profile && (
+      {data.profile && !data.program && (
         <div className="card">
           <h2>Fuel</h2>
           <p>
@@ -136,6 +283,7 @@ export default function HealthToday() {
           {data.profile.shake && <p>Shake: {data.profile.shake}</p>}
         </div>
       )}
+      <Records memberKey={viewing.key} />
       {toast}
     </section>
   );

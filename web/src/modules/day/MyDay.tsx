@@ -16,6 +16,7 @@ import {
   type Review,
 } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import QuickNote from '../../components/QuickNote';
 import { XpBar } from '../../components/XpBar';
 import { useToast } from '../../components/useToast';
 
@@ -71,6 +72,7 @@ export default function MyDay() {
   return (
     <section>
       <h1>My day</h1>
+      <QuickNote />
       <XpBar xp={data.xp} />
       <div className="card">
         <div className="ex-head">
@@ -113,6 +115,11 @@ export default function MyDay() {
 
       <div className="card">
         <h2>✅ Tasks</h2>
+        {data.energyNote && (
+          <p className="small muted" data-testid="energy-note">
+            {data.energyNote}
+          </p>
+        )}
         {data.tasks.length === 0 && <p className="muted">No tasks yet. Pick the one thing that matters.</p>}
         <ul className="checklist" data-testid="tasks">
           {data.tasks.map((t) => (

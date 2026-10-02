@@ -15,10 +15,11 @@ import type {
   XpTrack,
 } from '@myday/shared';
 import { config } from '../config.js';
-import { pool } from '../db.js';
+import { asSystem, pool } from '../db.js';
 import { HttpError, idParam, int, str } from '../lib/http.js';
 import { requireAdult } from '../lib/members.js';
 import { currentDevice, deviceLabel, hashToken, rememberKidOnDevice } from '../auth.js';
+import { logEvent } from '../lib/events.js';
 
 export const householdRouter = Router();
 
@@ -123,11 +124,11 @@ async function freeKey(name: string): Promise<string> {
   }
 }
 
+/** Emails are unique across ALL households: an email decides which household you sign into. */
 async function emailTaken(email: string, exceptId: number | null): Promise<boolean> {
-  const { rows } = await pool.query('SELECT 1 FROM household_members WHERE lower(email) = $1 AND id IS DISTINCT FROM $2', [
-    email,
-    exceptId,
-  ]);
+  const { rows } = await asSystem(() =>
+    pool.query('SELECT 1 FROM household_members WHERE lower(email) = $1 AND id IS DISTINCT FROM $2', [email, exceptId]),
+  );
   return rows.length > 0;
 }
 
@@ -139,9 +140,9 @@ householdRouter.post('/api/household/members', async (req, res) => {
   const email = parseEmail(b.email);
   if (email && (await emailTaken(email, null))) throw new HttpError(409, 'Someone already uses that email');
   await pool.query(
-    `INSERT INTO household_members (key, name, kind, age, email, xp_track, sort_order)
-     VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM household_members))`,
-    [await freeKey(name), name, kind, b.age === null || b.age === undefined || b.age === '' ? null : int(b.age, 'age', 0, 120), email, parseTrack(b.xpTrack, kind)],
+    `INSERT INTO household_members (key, name, kind, age, email, xp_track, school, sort_order)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM household_members))`,
+    [await freeKey(name), name, kind, b.age === null || b.age === undefined || b.age === '' ? null : int(b.age, 'age', 0, 120), email, parseTrack(b.xpTrack, kind), str(b.school, 'school', 120) || null],
   );
   res.status(201).json(await adminView(me.id, req));
 });
@@ -165,7 +166,8 @@ householdRouter.patch('/api/household/members/:id', async (req, res) => {
     `UPDATE household_members SET name = $2, kind = $3, age = $4, email = $5, xp_track = $6,
        -- a kid PIN means nothing for a grown-up: drop it (and its sessions)
        pin_hash = CASE WHEN $3 = 'adult' THEN NULL ELSE pin_hash END,
-       pin_version = CASE WHEN $3 = 'adult' AND pin_hash IS NOT NULL THEN pin_version + 1 ELSE pin_version END
+       pin_version = CASE WHEN $3 = 'adult' AND pin_hash IS NOT NULL THEN pin_version + 1 ELSE pin_version END,
+       school = CASE WHEN $7::text IS NULL THEN school ELSE NULLIF($7, '') END
      WHERE id = $1`,
     [
       id,
@@ -174,6 +176,7 @@ householdRouter.patch('/api/household/members/:id', async (req, res) => {
       b.age === undefined ? cur.age : b.age === null || b.age === '' ? null : int(b.age, 'age', 0, 120),
       email,
       track,
+      b.school === undefined ? null : str(b.school, 'school', 120),
     ],
   );
   res.json(await adminView(me.id, req));
@@ -218,6 +221,7 @@ householdRouter.post('/api/household/invites', async (req, res) => {
   );
   let memberId: number;
   const ex = existing[0];
+  if (!ex && (await emailTaken(email, null))) throw new HttpError(409, 'That email already belongs to another household');
   if (ex) {
     if (ex.kind !== 'adult' || ex.archived) throw new HttpError(409, 'That email belongs to someone who can’t be invited');
     memberId = ex.id;
@@ -238,6 +242,7 @@ householdRouter.post('/api/household/invites', async (req, res) => {
      VALUES ($1, $2, $3, $4, now() + make_interval(days => $5::int))`,
     [memberId, email, hashToken(token), req.user?.id ?? null, INVITE_DAYS],
   );
+  await logEvent('invite_sent', { track }, me.id);
   const view = await adminView(me.id, req);
   const member = view.members.find((m) => m.id === memberId);
   if (!member) throw new Error('invited member missing');

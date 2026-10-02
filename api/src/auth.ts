@@ -1,14 +1,18 @@
 /**
  * Sign-in: Google OAuth (authorization code + PKCE) with server-side
- * sessions in Postgres. Identity lives on the server, so the app never asks
- * "who are you / what's your role" again.
+ * sessions in Postgres, plus kid PIN sign-in. Identity lives on the server.
+ *
+ * Multi-household: sign-in lookups run cross-household (asSystem); once the
+ * person is known, every request is pinned to their household (db.ts).
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import type {
   AuthKind,
   DeviceKidsResponse,
+  HouseholdInfo,
   HouseholdMember,
+  HouseholdType,
   InvitePreview,
   KidAccess,
   KidAccessResponse,
@@ -18,7 +22,8 @@ import type {
   XpTrack,
 } from '@myday/shared';
 import { config } from './config.js';
-import { pool } from './db.js';
+import { asSystem, inHousehold, pool, setHousehold } from './db.js';
+import { logEvent } from './lib/events.js';
 import { HttpError, idParam } from './lib/http.js';
 import { memberById, requireAdult } from './lib/members.js';
 import {
@@ -38,6 +43,8 @@ declare module 'express-session' {
     oauthVerifier: string;
     /** Kid PIN sessions: the PIN version they signed in with. */
     pinVersion: number;
+    /** Invite token carried through Google sign-in (joins that household). */
+    inviteToken: string;
   }
 }
 
@@ -47,6 +54,7 @@ const GOOGLE_USERINFO = 'https://openidconnect.googleapis.com/v1/userinfo';
 
 const redirectUri = (): string => `${config.publicUrl}/api/auth/google/callback`;
 const b64url = (b: Buffer): string => b.toString('base64url');
+export const hashToken = (t: string): string => createHash('sha256').update(t).digest('hex');
 
 interface GoogleProfile {
   sub: string;
@@ -66,37 +74,75 @@ function regenerate(req: Request): Promise<void> {
 }
 
 async function startSession(req: Request, userId: number): Promise<void> {
+  const invite = req.session.inviteToken;
   await regenerate(req); // new session id on login (no fixation)
   req.session.userId = userId;
+  if (invite) req.session.inviteToken = invite;
+  await asSystem(() => logEvent('signin', {}, null, null));
 }
 
 /**
- * Find-or-create the user for a Google identity. Only roster emails (or
- * ALLOWED_EMAILS) may sign in — this is a family app, not a public one.
+ * Find-or-create the user for a Google identity. Someone on a roster signs
+ * in as that member. Anyone else may sign up (they'll create a household)
+ * unless SIGNUP_OPEN=false, in which case only roster emails get in.
  */
-async function upsertUser(p: GoogleProfile): Promise<number> {
+async function upsertUser(p: GoogleProfile, inviteToken: string | undefined): Promise<number> {
   const email = p.email.toLowerCase();
-  const { rows: mem } = await pool.query<{ id: number }>(
-    'SELECT id FROM household_members WHERE lower(email) = $1 AND archived_at IS NULL',
-    [email],
+  return asSystem(async () => {
+    let memberId: number | null = null;
+    // Accepting an invite link links this Google account to the invited member,
+    // even if they signed in with a different address than the one invited.
+    if (inviteToken) memberId = await claimInvite(inviteToken, email);
+    if (memberId === null) {
+      const { rows: mem } = await pool.query<{ id: number }>(
+        'SELECT id FROM household_members WHERE lower(email) = $1 AND archived_at IS NULL ORDER BY id LIMIT 1',
+        [email],
+      );
+      memberId = mem[0]?.id ?? null;
+    }
+    if (memberId !== null) await markInviteAccepted(memberId);
+    const existing = await pool.query<{ id: number }>('SELECT id FROM users WHERE google_sub = $1', [p.sub]);
+    if (memberId === null && !existing.rowCount && !config.signupOpen && !config.allowedEmails.includes(email)) {
+      throw new HttpError(403, `${email} is not on a household roster`);
+    }
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO users (google_sub, email, name, member_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (google_sub) DO UPDATE
+         SET email = EXCLUDED.email, name = EXCLUDED.name,
+             member_id = COALESCE(EXCLUDED.member_id, users.member_id), last_login_at = now()
+       RETURNING id`,
+      [p.sub, email, p.name ?? '', memberId],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) throw new Error('user upsert returned nothing');
+    if (!existing.rowCount) await logEvent('signup', { via: 'google', invited: memberId !== null }, memberId, null);
+    return id;
+  });
+}
+
+/** Turn a valid invite token into its member, pointing the member at this email. */
+async function claimInvite(token: string, email: string): Promise<number | null> {
+  const { rows } = await pool.query<{ member_id: number }>(
+    `SELECT i.member_id FROM invites i JOIN household_members m ON m.id = i.member_id
+      WHERE i.token_hash = $1 AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now()
+        AND m.archived_at IS NULL`,
+    [hashToken(token)],
   );
-  const memberId = mem[0]?.id ?? null;
-  if (memberId !== null) await markInviteAccepted(memberId);
-  if (memberId === null && !config.allowedEmails.includes(email)) {
-    throw new HttpError(403, `${email} is not on this household's roster`);
-  }
-  const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO users (google_sub, email, name, member_id)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (google_sub) DO UPDATE
-       SET email = EXCLUDED.email, name = EXCLUDED.name,
-           member_id = COALESCE(EXCLUDED.member_id, users.member_id), last_login_at = now()
-     RETURNING id`,
-    [p.sub, email, p.name ?? '', memberId],
+  const memberId = rows[0]?.member_id;
+  if (memberId === undefined) return null;
+  const taken = await pool.query('SELECT 1 FROM household_members WHERE lower(email) = $1 AND id <> $2', [email, memberId]);
+  if (!taken.rowCount) await pool.query('UPDATE household_members SET email = $2 WHERE id = $1', [memberId, email]);
+  return memberId;
+}
+
+export async function markInviteAccepted(memberId: number): Promise<void> {
+  const r = await pool.query<{ household_id: number }>(
+    'UPDATE invites SET accepted_at = now() WHERE member_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL RETURNING household_id',
+    [memberId],
   );
-  const id = rows[0]?.id;
-  if (id === undefined) throw new Error('user upsert returned nothing');
-  return id;
+  const hh = r.rows[0]?.household_id;
+  if (hh !== undefined) await logEvent('invite_accepted', {}, memberId, hh);
 }
 
 export const authRouter = Router();
@@ -109,6 +155,7 @@ authRouter.get('/api/auth/google', (req, res) => {
   const verifier = b64url(randomBytes(48));
   req.session.oauthState = state;
   req.session.oauthVerifier = verifier;
+  if (typeof req.query.invite === 'string' && req.query.invite.length < 200) req.session.inviteToken = req.query.invite;
   const q = new URLSearchParams({
     client_id: config.googleClientId,
     redirect_uri: redirectUri(),
@@ -159,7 +206,9 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
     return;
   }
   try {
-    await startSession(req, await upsertUser(info));
+    const userId = await upsertUser(info, req.session.inviteToken);
+    await startSession(req, userId);
+    delete req.session.inviteToken;
   } catch (e) {
     if (e instanceof HttpError && e.status === 403) {
       res.redirect('/login?error=roster');
@@ -179,113 +228,159 @@ authRouter.post('/api/auth/logout', (req, res) => {
 
 /*
  * TEMPORARY — verification only. Enabled solely when DEV_LOGIN_TOKEN is set
- * in the droplet .env (default: unset = this route 404s). Remove once Google
- * OAuth is live. /dev-login?token=...&member=<household key>
+ * in the droplet .env (default: unset = this route 404s).
+ *   /dev-login?token=...&member=<household key>[&household=<id>]
+ *   /dev-login?token=...&email=<address>   (a new, household-less user: signup flow)
  */
 authRouter.get('/dev-login', async (req, res) => {
   const token = typeof req.query.token === 'string' ? req.query.token : '';
   const want = config.devLoginToken;
   const ok =
-    want.length > 0 &&
-    token.length === want.length &&
-    timingSafeEqual(Buffer.from(token), Buffer.from(want));
+    want.length > 0 && token.length === want.length && timingSafeEqual(Buffer.from(token), Buffer.from(want));
   if (!ok) {
     res.status(404).send('Not found');
     return;
   }
+  const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+  if (email) {
+    const id = await asSystem(async () => {
+      const { rows } = await pool.query<{ id: number; existed: boolean }>(
+        `INSERT INTO users (google_sub, email, name, auth) VALUES ($1, $2, $3, 'dev')
+         ON CONFLICT (google_sub) DO UPDATE SET last_login_at = now() RETURNING id, (xmax <> 0) AS existed`,
+        [`dev-email:${email}`, email, email.split('@')[0] ?? email],
+      );
+      const r = rows[0];
+      if (r && !r.existed) await logEvent('signup', { via: 'dev' }, null, null);
+      return r?.id;
+    });
+    if (id === undefined) throw new Error('dev user upsert returned nothing');
+    await startSession(req, id);
+    req.session.save(() => res.redirect('/'));
+    return;
+  }
   const key = typeof req.query.member === 'string' ? req.query.member.trim().toLowerCase() : '';
-  const { rows: mem } = await pool.query<{ id: number; name: string }>(
-    key
-      ? 'SELECT id, name FROM household_members WHERE key = $1 AND archived_at IS NULL'
-      : "SELECT id, name FROM household_members WHERE kind = 'adult' AND archived_at IS NULL ORDER BY sort_order, id LIMIT 1",
-    key ? [key] : [],
-  );
-  const m = mem[0];
+  const hh = typeof req.query.household === 'string' && /^\d+$/.test(req.query.household) ? Number(req.query.household) : null;
+  const m = await asSystem(async () => {
+    const { rows } = await pool.query<{ id: number; name: string }>(
+      `SELECT id, name FROM household_members
+        WHERE archived_at IS NULL AND ($1 = '' OR key = $1) AND ($1 <> '' OR kind = 'adult')
+          AND ($2::int IS NULL OR household_id = $2)
+        ORDER BY household_id, sort_order, id LIMIT 1`,
+      [key, hh],
+    );
+    const found = rows[0];
+    if (found) await markInviteAccepted(found.id);
+    return found;
+  });
   if (!m) {
     res.status(404).send('No such household member');
     return;
   }
-  const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO users (google_sub, email, name, member_id, auth) VALUES ($1, $2, $3, $4, 'dev')
-     ON CONFLICT (google_sub) DO UPDATE SET member_id = EXCLUDED.member_id, last_login_at = now()
-     RETURNING id`,
-    [`dev:${m.id}`, `dev-login+${m.id}@invalid`, m.name, m.id],
-  );
-  const id = rows[0]?.id;
+  const id = await asSystem(async () => {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO users (google_sub, email, name, member_id, auth) VALUES ($1, $2, $3, $4, 'dev')
+       ON CONFLICT (google_sub) DO UPDATE SET member_id = EXCLUDED.member_id, last_login_at = now()
+       RETURNING id`,
+      [`dev:${m.id}`, `dev-login+${m.id}@invalid`, m.name, m.id],
+    );
+    return rows[0]?.id;
+  });
   if (id === undefined) throw new Error('dev user upsert returned nothing');
-  await markInviteAccepted(m.id);
   await startSession(req, id);
   req.session.save(() => res.redirect('/'));
 });
 
-/* ---------- kid sign-in: name + parent-managed PIN ---------- */
+/* ---------- kid sign-in: (family code or remembered device) + name + PIN ---------- */
 
 const kidLoginLimit = rateLimiter(20, 15 * 60_000); // per IP
 const BAD_PIN = "That name and PIN didn't match";
+
+/**
+ * Which household a kid is signing into: the family code they typed, else
+ * the household of this remembered device, else the only household there is.
+ */
+async function kidHousehold(req: Request, code: string): Promise<number | null> {
+  return asSystem(async () => {
+    if (code) {
+      const { rows } = await pool.query<{ id: number }>('SELECT id FROM households WHERE code = $1', [code.toUpperCase()]);
+      return rows[0]?.id ?? null;
+    }
+    const dev = await deviceByCookie(req);
+    if (dev) return dev.householdId;
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM households ORDER BY id LIMIT 2');
+    return rows.length === 1 ? (rows[0]?.id ?? null) : null;
+  });
+}
 
 authRouter.post('/api/auth/kid-login', async (req, res) => {
   if (!kidLoginLimit(req.ip ?? 'unknown')) throw new HttpError(429, 'Too many tries. Wait a few minutes.');
   const b = req.body as Record<string, unknown>;
   const name = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '';
   const pin = typeof b.pin === 'string' ? b.pin.trim() : '';
+  const code = typeof b.household === 'string' ? b.household.trim() : '';
   if (!name || !pin) throw new HttpError(400, 'Enter your name and PIN');
+  const householdId = await kidHousehold(req, code);
+  if (householdId === null) {
+    throw new HttpError(code ? 401 : 400, code ? BAD_PIN : 'Enter your family code (a grown-up can find it under Household)');
+  }
 
-  const { rows } = await pool.query<{
-    id: number;
-    name: string;
-    pin_hash: string | null;
-    pin_version: number;
-    pin_failed: number;
-    locked: boolean;
-  }>(
-    `SELECT id, name, pin_hash, pin_version, pin_failed, (pin_locked_until > now()) AS locked
-       FROM household_members
-      WHERE kind = 'kid' AND archived_at IS NULL AND (key = $1 OR lower(name) = $1)
-      ORDER BY id LIMIT 1`,
-    [name],
-  );
-  const kid = rows[0];
-  if (!kid || !kid.pin_hash) throw new HttpError(401, BAD_PIN);
   const device = deviceLabel(req.headers['user-agent']);
-  if (kid.locked) {
-    await logKidSignin(kid.id, false, device);
-    throw new HttpError(429, `Too many wrong PINs. Ask a grown-up, or wait ${PIN_LOCK_MINUTES} minutes.`);
-  }
-
-  if (!(await verifyPin(pin, kid.pin_hash))) {
-    await logKidSignin(kid.id, false, device);
-    const fails = kid.pin_failed + 1;
-    await pool.query(
-      `UPDATE household_members
-          SET pin_failed = CASE WHEN $2::int >= $3::int THEN 0 ELSE $2::int END,
-              pin_locked_until = CASE WHEN $2::int >= $3::int THEN now() + make_interval(mins => $4::int)
-                                      ELSE pin_locked_until END
-        WHERE id = $1`,
-      [kid.id, fails, PIN_MAX_FAILS, PIN_LOCK_MINUTES],
+  const result = await inHousehold(householdId, async () => {
+    const { rows } = await pool.query<{
+      id: number;
+      name: string;
+      pin_hash: string | null;
+      pin_version: number;
+      pin_failed: number;
+      locked: boolean;
+    }>(
+      `SELECT id, name, pin_hash, pin_version, pin_failed, (pin_locked_until > now()) AS locked
+         FROM household_members
+        WHERE kind = 'kid' AND archived_at IS NULL AND (key = $1 OR lower(name) = $1)
+        ORDER BY id LIMIT 1`,
+      [name],
     );
-    throw new HttpError(401, BAD_PIN);
-  }
-
-  await pool.query('UPDATE household_members SET pin_failed = 0, pin_locked_until = NULL WHERE id = $1', [kid.id]);
-  const { rows: u } = await pool.query<{ id: number }>(
-    `INSERT INTO users (google_sub, email, name, member_id, auth) VALUES ($1, '', $2, $3, 'pin')
-     ON CONFLICT (google_sub) DO UPDATE SET name = EXCLUDED.name, member_id = EXCLUDED.member_id, last_login_at = now()
-     RETURNING id`,
-    [`pin:${kid.id}`, kid.name, kid.id],
-  );
-  const userId = u[0]?.id;
-  if (userId === undefined) throw new Error('kid user upsert returned nothing');
-  await logKidSignin(kid.id, true, device);
-  if (b.remember === true) await rememberKidOnDevice(req, res, kid.id, device);
-  await startSession(req, userId);
-  req.session.pinVersion = kid.pin_version;
+    const kid = rows[0];
+    if (!kid || !kid.pin_hash) throw new HttpError(401, BAD_PIN);
+    if (kid.locked) {
+      await logKidSignin(kid.id, false, device);
+      throw new HttpError(429, `Too many wrong PINs. Ask a grown-up, or wait ${PIN_LOCK_MINUTES} minutes.`);
+    }
+    if (!(await verifyPin(pin, kid.pin_hash))) {
+      await logKidSignin(kid.id, false, device);
+      const fails = kid.pin_failed + 1;
+      await pool.query(
+        `UPDATE household_members
+            SET pin_failed = CASE WHEN $2::int >= $3::int THEN 0 ELSE $2::int END,
+                pin_locked_until = CASE WHEN $2::int >= $3::int THEN now() + make_interval(mins => $4::int)
+                                        ELSE pin_locked_until END
+          WHERE id = $1`,
+        [kid.id, fails, PIN_MAX_FAILS, PIN_LOCK_MINUTES],
+      );
+      throw new HttpError(401, BAD_PIN);
+    }
+    await pool.query('UPDATE household_members SET pin_failed = 0, pin_locked_until = NULL WHERE id = $1', [kid.id]);
+    const { rows: u } = await pool.query<{ id: number }>(
+      `INSERT INTO users (google_sub, email, name, member_id, auth) VALUES ($1, '', $2, $3, 'pin')
+       ON CONFLICT (google_sub) DO UPDATE SET name = EXCLUDED.name, member_id = EXCLUDED.member_id, last_login_at = now()
+       RETURNING id`,
+      [`pin:${kid.id}`, kid.name, kid.id],
+    );
+    const userId = u[0]?.id;
+    if (userId === undefined) throw new Error('kid user upsert returned nothing');
+    await logKidSignin(kid.id, true, device);
+    await logEvent('kid_signin', { device }, kid.id);
+    if (b.remember === true) await rememberKidOnDevice(req, res, kid.id, device);
+    return { userId, pinVersion: kid.pin_version };
+  });
+  await startSession(req, result.userId);
+  req.session.pinVersion = result.pinVersion;
   req.session.save(() => res.json({ ok: true }));
 });
 
 /* ---------- "remember this device": the kid picker on a family device ---------- */
 
 const DEVICE_COOKIE = 'myday.kiddev';
-const hashToken = (t: string): string => createHash('sha256').update(t).digest('hex');
 
 function readCookie(req: Request, name: string): string | null {
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -311,7 +406,21 @@ async function logKidSignin(memberId: number, ok: boolean, device: string): Prom
   await pool.query('INSERT INTO kid_signins (member_id, ok, device) VALUES ($1, $2, $3)', [memberId, ok, device]);
 }
 
-/** The device row for this browser's cookie, if valid. */
+/** This browser's device (any household), from its cookie. */
+async function deviceByCookie(req: Request): Promise<{ id: number; householdId: number } | null> {
+  const token = readCookie(req, DEVICE_COOKIE);
+  if (!token) return null;
+  return asSystem(async () => {
+    const { rows } = await pool.query<{ id: number; household_id: number }>(
+      'UPDATE kid_devices SET last_seen_at = now() WHERE token_hash = $1 AND revoked_at IS NULL RETURNING id, household_id',
+      [hashToken(token)],
+    );
+    const r = rows[0];
+    return r ? { id: r.id, householdId: r.household_id } : null;
+  });
+}
+
+/** The device row for this browser's cookie, if it belongs to the current household. */
 export async function currentDevice(req: Request): Promise<number | null> {
   const token = readCookie(req, DEVICE_COOKIE);
   if (!token) return null;
@@ -334,10 +443,10 @@ export async function rememberKidOnDevice(
   let deviceId = knownDeviceId ?? (await currentDevice(req));
   if (deviceId === null) {
     const token = randomBytes(32).toString('base64url');
-    const { rows } = await pool.query<{ id: number }>(
-      'INSERT INTO kid_devices (token_hash, label) VALUES ($1, $2) RETURNING id',
-      [hashToken(token), label],
-    );
+    const { rows } = await pool.query<{ id: number }>('INSERT INTO kid_devices (token_hash, label) VALUES ($1, $2) RETURNING id', [
+      hashToken(token),
+      label,
+    ]);
     deviceId = rows[0]?.id ?? null;
     if (deviceId === null) throw new Error('device insert returned nothing');
     res.cookie(DEVICE_COOKIE, token, {
@@ -356,27 +465,31 @@ export async function rememberKidOnDevice(
 
 /** Public: which kids this device remembers (names only; PIN still required). */
 authRouter.get('/api/auth/kid-device', async (req, res) => {
-  const deviceId = await currentDevice(req);
   const out: DeviceKidsResponse = { kids: [] };
-  if (deviceId !== null) {
-    const { rows } = await pool.query<{ key: string; name: string }>(
-      `SELECT m.key, m.name FROM kid_device_members dm JOIN household_members m ON m.id = dm.member_id
-        WHERE dm.device_id = $1 AND m.archived_at IS NULL AND m.pin_hash IS NOT NULL ORDER BY m.sort_order, m.id`,
-      [deviceId],
-    );
-    out.kids = rows;
+  const dev = await deviceByCookie(req);
+  if (dev) {
+    out.kids = await inHousehold(dev.householdId, async () => {
+      const { rows } = await pool.query<{ key: string; name: string }>(
+        `SELECT m.key, m.name FROM kid_device_members dm JOIN household_members m ON m.id = dm.member_id
+          WHERE dm.device_id = $1 AND m.archived_at IS NULL AND m.pin_hash IS NOT NULL ORDER BY m.sort_order, m.id`,
+        [dev.id],
+      );
+      return rows;
+    });
   }
   res.json(out);
 });
 
 /** Public: "not me" — drop a kid from this device's picker. */
 authRouter.post('/api/auth/kid-device/forget', async (req, res) => {
-  const deviceId = await currentDevice(req);
   const key = typeof (req.body as { key?: unknown }).key === 'string' ? (req.body as { key: string }).key : '';
-  if (deviceId !== null && key) {
-    await pool.query(
-      'DELETE FROM kid_device_members WHERE device_id = $1 AND member_id = (SELECT id FROM household_members WHERE key = $2)',
-      [deviceId, key.toLowerCase()],
+  const dev = await deviceByCookie(req);
+  if (dev && key) {
+    await inHousehold(dev.householdId, () =>
+      pool.query(
+        'DELETE FROM kid_device_members WHERE device_id = $1 AND member_id = (SELECT id FROM household_members WHERE key = $2)',
+        [dev.id, key.toLowerCase()],
+      ),
     );
   }
   res.json({ ok: true });
@@ -384,29 +497,25 @@ authRouter.post('/api/auth/kid-device/forget', async (req, res) => {
 
 /* ---------- invites ---------- */
 
-export async function markInviteAccepted(memberId: number): Promise<void> {
-  await pool.query(
-    'UPDATE invites SET accepted_at = now() WHERE member_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL',
-    [memberId],
-  );
-}
-
 /** Public: what an invite link is for (masked email), so the page can greet them. */
 authRouter.get('/api/invites/:token', async (req, res) => {
-  const { rows } = await pool.query<{ name: string; email: string }>(
-    `SELECT m.name, i.email FROM invites i JOIN household_members m ON m.id = i.member_id
-      WHERE i.token_hash = $1 AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now()
-        AND m.archived_at IS NULL`,
-    [hashToken(String(req.params.token))],
-  );
-  const r = rows[0];
+  const r = await asSystem(async () => {
+    const { rows } = await pool.query<{ name: string; email: string; household: string }>(
+      `SELECT m.name, i.email, h.name AS household FROM invites i
+         JOIN household_members m ON m.id = i.member_id JOIN households h ON h.id = i.household_id
+        WHERE i.token_hash = $1 AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now()
+          AND m.archived_at IS NULL`,
+      [hashToken(String(req.params.token))],
+    );
+    return rows[0];
+  });
   if (!r) throw new HttpError(404, 'This invite link is no longer valid');
   const [user = '', domain = ''] = r.email.split('@');
-  const out: InvitePreview = { name: r.name, email: `${user.slice(0, 1)}***@${domain}` };
+  const out: InvitePreview = { name: r.name, email: `${user.slice(0, 1)}***@${domain}`, household: r.household };
   res.json(out);
 });
 
-export { hashToken };
+/* ---------- the signed-in user, for every request ---------- */
 
 interface UserRow {
   id: number;
@@ -416,24 +525,33 @@ interface UserRow {
   member_id: number | null;
   pin_version: number | null;
   archived: boolean;
+  household_id: number | null;
 }
 
-/** Loads req.user / req.member for every /api request that has a session. */
+/** Loads req.user / req.member and pins the request to the member's household. */
 export async function loadUser(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const id = req.session.userId;
   if (id) {
-    const { rows } = await pool.query<UserRow>(
-      `SELECT u.id, u.email, u.name, u.auth, u.member_id, m.pin_version, (m.archived_at IS NOT NULL) AS archived
-         FROM users u LEFT JOIN household_members m ON m.id = u.member_id WHERE u.id = $1`,
-      [id],
-    );
-    const u = rows[0];
+    const u = await asSystem(async () => {
+      const { rows } = await pool.query<UserRow>(
+        `SELECT u.id, u.email, u.name, u.auth, u.member_id, m.pin_version, (m.archived_at IS NOT NULL) AS archived, m.household_id
+           FROM users u LEFT JOIN household_members m ON m.id = u.member_id WHERE u.id = $1`,
+        [id],
+      );
+      return rows[0];
+    });
     // A parent resetting or removing a kid's PIN ends that kid's existing sessions.
     const stalePin = u?.auth === 'pin' && (u.pin_version === null || u.pin_version !== req.session.pinVersion);
     // Removing someone from the household signs them out everywhere.
     if (u && !stalePin && !u.archived) {
       req.user = { id: u.id, email: u.email, name: u.name, auth: u.auth };
-      req.member = u.member_id === null ? null : await memberById(u.member_id);
+      if (u.household_id !== null && u.member_id !== null) {
+        await setHousehold(u.household_id);
+        req.householdId = u.household_id;
+        req.member = await memberById(u.member_id);
+      } else {
+        req.member = null;
+      }
     }
   }
   next();
@@ -444,19 +562,54 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
   next();
 }
 
+/** Everything except onboarding needs a household. */
+export function requireHousehold(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.member) throw new HttpError(409, 'Create or join a household first');
+  next();
+}
+
+export async function householdInfo(householdId: number): Promise<HouseholdInfo> {
+  const { rows } = await pool.query<{
+    id: number;
+    name: string;
+    type: HouseholdType;
+    code: string;
+    trial_ends_at: Date | null;
+    allow_teen_bank_link: boolean;
+    onboarding: Record<string, boolean>;
+  }>('SELECT id, name, type, code, trial_ends_at, allow_teen_bank_link, onboarding FROM households WHERE id = $1', [householdId]);
+  const h = rows[0];
+  if (!h) throw new HttpError(404, 'Household not found');
+  return {
+    id: h.id,
+    name: h.name,
+    type: h.type,
+    code: h.code,
+    trialEndsAt: h.trial_ends_at ? h.trial_ends_at.toISOString() : null,
+    allowTeenBankLink: h.allow_teen_bank_link,
+    onboarding: h.onboarding,
+  };
+}
+
 export async function meHandler(req: Request, res: Response<Me>): Promise<void> {
   if (!req.user) throw new HttpError(401, 'Not signed in');
   const member = req.member ?? null;
   const { rows } = member
-    ? await pool.query<{ xp_track: XpTrack }>('SELECT xp_track FROM household_members WHERE id = $1', [member.id])
+    ? await pool.query<{ xp_track: XpTrack; theme: 'system' | 'light' | 'dark'; accent: string; first_run_done: boolean }>(
+        'SELECT xp_track, theme, accent, first_run_done FROM household_members WHERE id = $1',
+        [member.id],
+      )
     : { rows: [] };
+  const r = rows[0];
   res.json({
     userId: req.user.id,
     email: req.user.email,
     name: req.user.name,
     auth: req.user.auth,
     member,
-    xpTrack: rows[0]?.xp_track ?? null,
+    xpTrack: r?.xp_track ?? null,
+    household: req.householdId ? await householdInfo(req.householdId) : null,
+    prefs: r ? { theme: r.theme, accent: r.accent, firstRunDone: r.first_run_done } : null,
   });
 }
 
@@ -512,6 +665,7 @@ kidAccessRouter.put('/api/kid-access/:memberId/pin', async (req, res) => {
       WHERE id = $1`,
     [kid.id, await hashPin(pin)],
   );
+  await logEvent('kid_onboarded', { step: 'pin_set' }, kid.id);
   const out: SetKidPinResponse = { pin };
   res.json(out);
 });

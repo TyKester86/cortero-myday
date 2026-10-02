@@ -16,6 +16,7 @@ import type {
 import { pool, tx } from '../db.js';
 import { addDays, today } from '../lib/dates.js';
 import { HttpError, idParam, int, str } from '../lib/http.js';
+import { logEvent } from '../lib/events.js';
 import { requireAdult } from '../lib/members.js';
 import { decryptToken, encryptToken, moneyProvider, type MoneyProvider } from '../lib/money/provider.js';
 import { detectRecurring, safeToSpend, type TxnLite } from '../lib/money/analyze.js';
@@ -31,7 +32,7 @@ function provider(): MoneyProvider {
 }
 
 /** Pull accounts + transactions for one linked item and upsert them. */
-async function syncItem(p: MoneyProvider, itemDbId: number, accessToken: string): Promise<void> {
+export async function syncItem(p: MoneyProvider, itemDbId: number, accessToken: string): Promise<void> {
   try {
     const accounts = await p.accounts(accessToken);
     const t = today();
@@ -94,7 +95,7 @@ interface TxnRow {
 }
 
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
-const toTxn = (r: TxnRow): MoneyTransaction => ({
+export const toTxn = (r: TxnRow): MoneyTransaction => ({
   id: r.id,
   date: r.day,
   name: r.name,
@@ -105,17 +106,23 @@ const toTxn = (r: TxnRow): MoneyTransaction => ({
   accountName: r.account_name,
 });
 
-const TXN_SELECT = `SELECT t.id, t.day::text AS day, t.name, t.merchant, t.amount, t.category, t.pending, a.name AS account_name
-  FROM money_transactions t JOIN money_accounts a ON a.id = t.account_id`;
+export const TXN_SELECT = `SELECT t.id, t.day::text AS day, t.name, t.merchant, t.amount, t.category, t.pending, a.name AS account_name
+  FROM money_transactions t JOIN money_accounts a ON a.id = t.account_id JOIN money_items mi ON mi.id = a.item_id`;
 
-async function moneyView(): Promise<MoneyResponse> {
+/**
+ * The household's money (owner null), or one teen's read-only link. A teen's
+ * bank never shows up in the household view, and vice versa.
+ */
+export async function moneyView(owner: number | null = null): Promise<MoneyResponse> {
   const p = moneyProvider();
   const { rows: items } = await pool.query<{ id: number; institution: string; last_synced_at: Date | null; sync_error: string }>(
-    'SELECT id, institution, last_synced_at, sync_error FROM money_items ORDER BY id',
+    'SELECT id, institution, last_synced_at, sync_error FROM money_items WHERE member_id IS NOT DISTINCT FROM $1 ORDER BY id',
+    [owner],
   );
   const { rows: accts } = await pool.query<AccountRow>(
     `SELECT a.id, a.name, a.mask, a.type, a.subtype, a.current, a.available, i.institution
-       FROM money_accounts a JOIN money_items i ON i.id = a.item_id ORDER BY a.type, a.id`,
+       FROM money_accounts a JOIN money_items i ON i.id = a.item_id WHERE i.member_id IS NOT DISTINCT FROM $1 ORDER BY a.type, a.id`,
+    [owner],
   );
   const accounts = accts.map(
     (a): MoneyAccount => ({
@@ -130,9 +137,10 @@ async function moneyView(): Promise<MoneyResponse> {
     }),
   );
   const t = today();
-  const { rows: all } = await pool.query<TxnRow>(`${TXN_SELECT} WHERE t.day >= $1 ORDER BY t.day DESC, t.id DESC`, [
-    addDays(t, -HISTORY_DAYS),
-  ]);
+  const { rows: all } = await pool.query<TxnRow>(
+    `${TXN_SELECT} WHERE t.day >= $1 AND mi.member_id IS NOT DISTINCT FROM $2 ORDER BY t.day DESC, t.id DESC`,
+    [addDays(t, -HISTORY_DAYS), owner],
+  );
   const lite: TxnLite[] = all.map((r) => ({ date: r.day, name: r.name, merchant: r.merchant, amount: Number(r.amount), pending: r.pending }));
   const subscriptions = detectRecurring(lite, 'out', t);
   const income = detectRecurring(lite, 'in', t);
@@ -184,6 +192,7 @@ moneyRouter.post('/api/money/exchange', async (req, res) => {
   const id = rows[0]?.id;
   if (id === undefined) throw new Error('item insert returned nothing');
   await syncItem(p, id, accessToken);
+  await logEvent('bank_linked', { teen: false }, me.id);
   res.status(201).json(await moneyView());
 });
 
@@ -191,7 +200,7 @@ moneyRouter.post('/api/money/sync', async (req, res) => {
   requireAdult(req);
   const p = provider();
   const { rows } = await pool.query<{ id: number; access_token_enc: string; provider: string }>(
-    'SELECT id, access_token_enc, provider FROM money_items',
+    'SELECT id, access_token_enc, provider FROM money_items WHERE member_id IS NULL',
   );
   for (const r of rows) {
     if (r.provider !== p.kind) continue; // e.g. fake items once Plaid is configured
@@ -207,7 +216,7 @@ moneyRouter.get('/api/money/transactions', async (req, res) => {
   const account = req.query.account ? idParam(req.query.account) : null;
   const { rows } = await pool.query<TxnRow>(
     `${TXN_SELECT}
-      WHERE t.day >= $1 AND ($2::int IS NULL OR a.id = $2)
+      WHERE t.day >= $1 AND mi.member_id IS NULL AND ($2::int IS NULL OR a.id = $2)
         AND ($3 = '' OR t.name ILIKE '%' || $3 || '%' OR t.merchant ILIKE '%' || $3 || '%')
       ORDER BY t.day DESC, t.id DESC LIMIT 500`,
     [addDays(today(), -days), account, q],
@@ -220,11 +229,17 @@ moneyRouter.delete('/api/money/items/:id', async (req, res) => {
   requireAdult(req);
   const id = idParam(req.params.id);
   const { rows } = await pool.query<{ access_token_enc: string; provider: string }>(
-    'SELECT access_token_enc, provider FROM money_items WHERE id = $1',
+    'SELECT access_token_enc, provider FROM money_items WHERE id = $1 AND member_id IS NULL',
     [id],
   );
   const item = rows[0];
   if (!item) throw new HttpError(404, 'No such bank link');
+  await revokeItem(id, item);
+  res.json(await moneyView());
+});
+
+/** Revoke at the provider (best effort) and delete the item's accounts + transactions. */
+export async function revokeItem(id: number, item: { access_token_enc: string; provider: string }): Promise<void> {
   const p = moneyProvider();
   if (p && p.kind === item.provider) {
     try {
@@ -234,5 +249,4 @@ moneyRouter.delete('/api/money/items/:id', async (req, res) => {
     }
   }
   await pool.query('DELETE FROM money_items WHERE id = $1', [id]);
-  res.json(await moneyView());
-});
+}

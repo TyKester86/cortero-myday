@@ -44,7 +44,8 @@ export function SessionProvider({ signedOut, children }: { signedOut: ReactNode;
     api<Me>('/api/me')
       .then(async (m) => {
         setMe(m);
-        setMembers((await api<HouseholdResponse>('/api/household')).members);
+        // Signed in but no household yet → onboarding (nothing to list).
+        if (m.household) setMembers((await api<HouseholdResponse>('/api/household')).members);
         setStatus('in');
       })
       .catch((e: unknown) => setStatus(e instanceof ApiFail && e.status === 401 ? 'out' : 'error'));

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { KID_PIN_LENGTH, type KidAccessResponse, type SetKidPinRequest, type SetKidPinResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 
 /**
@@ -13,6 +14,7 @@ export default function KidAccess() {
   const [custom, setCustom] = useState<Record<number, string>>({});
   const [shown, setShown] = useState<{ name: string; pin: string } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   if (!isAdult) return <p className="muted">Only grown-ups can manage kid sign-in.</p>;
   if (error) return <p className="error">{error}</p>;
@@ -31,7 +33,7 @@ export default function KidAccess() {
     }
   };
   const turnOff = async (memberId: number, name: string): Promise<void> => {
-    if (!confirm(`Turn off PIN sign-in for ${name}? They'll be signed out.`)) return;
+    if (!(await confirm({ title: `Turn off PIN sign-in for ${name}?`, body: "They'll be signed out on every device.", confirmLabel: 'Turn off', danger: true }))) return;
     setData(await api<KidAccessResponse>(`/api/kid-access/${memberId}/pin`, 'DELETE'));
   };
 

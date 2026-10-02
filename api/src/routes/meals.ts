@@ -22,6 +22,7 @@ import {
   type MealPlanEntry,
   type MealPlanResponse,
   type MealSummary,
+  type NutritionMode,
   type Weekday,
 } from '@myday/shared';
 import { pool, tx, type Db } from '../db.js';
@@ -30,6 +31,7 @@ import { formatQty, mergeIngredientLines, parseIngredient } from '../lib/ingredi
 import { bool, HttpError, idParam, str } from '../lib/http.js';
 import { self, targetMember } from '../lib/members.js';
 import { GROCERY_CHAINS } from '../lib/stores.js';
+import { programStatus } from './program.js';
 
 export const mealsRouter = Router();
 
@@ -43,16 +45,47 @@ interface MealRow {
   fat: number | null;
   ingredients: string[];
   steps: string[];
+  image_url: string | null;
+  prep_min: number | null;
+  servings: number | null;
+  phase_tags: NutritionMode[];
 }
 
+/** Every meal has a picture; anything imported without one gets the placeholder. */
+const picture = (url: string | null): string => url ?? '/meals/_placeholder.svg';
+
+const toSummary = (r: MealRow): MealSummary => ({
+  id: r.id,
+  title: r.title,
+  cuisine: r.cuisine,
+  calories: r.calories,
+  protein: r.protein,
+  imageUrl: picture(r.image_url),
+  prepMin: r.prep_min,
+  phaseTags: r.phase_tags,
+});
+
+/**
+ * The library. ?cuisine= filters; ?phase=mine (or a phase name) keeps the meals
+ * that suit that nutrition phase, highest protein density first.
+ */
 mealsRouter.get('/api/meals', async (req, res) => {
   const cuisine = typeof req.query.cuisine === 'string' ? req.query.cuisine : '';
-  const { rows } = await pool.query<MealRow>('SELECT id, title, cuisine, calories, protein FROM meals ORDER BY id');
+  const { rows } = await pool.query<MealRow>(
+    'SELECT id, title, cuisine, calories, protein, image_url, prep_min, phase_tags FROM meals ORDER BY id',
+  );
   const cuisines = [...new Set(rows.map((r) => r.cuisine))].sort();
-  const meals: MealSummary[] = rows
-    .filter((r) => !cuisine || r.cuisine === cuisine)
-    .map((r) => ({ id: r.id, title: r.title, cuisine: r.cuisine, calories: r.calories, protein: r.protein }));
-  const out: MealListResponse = { meals, cuisines };
+  const me = req.member ? await programStatus(req.member.id) : null;
+  const myPhase: NutritionMode | null = me?.phase.nutrition ?? null;
+  const q = typeof req.query.phase === 'string' ? req.query.phase : '';
+  const phase = q === 'mine' ? myPhase : (['gaining', 'cutting', 'recomp', 'maintenance'] as const).find((p) => p === q) ?? null;
+  let list = rows.filter((r) => !cuisine || r.cuisine === cuisine);
+  if (phase) {
+    list = list
+      .filter((r) => r.phase_tags.includes(phase))
+      .sort((a, b) => (b.protein ?? 0) / (b.calories || 1) - (a.protein ?? 0) / (a.calories || 1));
+  }
+  const out: MealListResponse = { meals: list.map(toSummary), cuisines, phase: myPhase };
   res.json(out);
 });
 
@@ -60,7 +93,7 @@ mealsRouter.get('/api/meals/:id', async (req, res) => {
   const { rows } = await pool.query<MealRow>('SELECT * FROM meals WHERE id = $1', [idParam(req.params.id)]);
   const r = rows[0];
   if (!r) throw new HttpError(404, 'Meal not found');
-  const out: MealDetail = { ...r };
+  const out: MealDetail = { ...toSummary(r), carbs: r.carbs, fat: r.fat, servings: r.servings, ingredients: r.ingredients, steps: r.steps };
   res.json(out);
 });
 
@@ -200,6 +233,7 @@ async function grocery(req: Request, db: Db = pool): Promise<GroceryState> {
       (c): GroceryChain => ({
         name: c.name,
         shopUrl: c.shop_url,
+        orderUrl: c.shop_url,
         acctUrl: c.shop_url,
         pickup: 'check',
         delivery: 'check',
@@ -249,7 +283,7 @@ mealsRouter.post('/api/grocery/clear-done', async (req, res) => {
 
 mealsRouter.post('/api/grocery/staples', async (req, res) => {
   const item = str((req.body as { item?: unknown }).item, 'item', 80, true);
-  await pool.query('INSERT INTO grocery_staples (item) VALUES ($1) ON CONFLICT (lower(item)) DO NOTHING', [item]);
+  await pool.query('INSERT INTO grocery_staples (item) VALUES ($1) ON CONFLICT (household_id, lower(item)) DO NOTHING', [item]);
   res.json(await grocery(req));
 });
 
@@ -264,7 +298,7 @@ mealsRouter.put('/api/grocery/zip', async (req, res) => {
   if (zip.length !== 5) throw new HttpError(400, 'Enter a 5-digit ZIP');
   await pool.query(
     `INSERT INTO app_settings (key, value) VALUES ('household_zip', $1)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+     ON CONFLICT (household_id, key) DO UPDATE SET value = EXCLUDED.value`,
     [zip],
   );
   res.json(await grocery(req));
@@ -335,7 +369,7 @@ mealsRouter.post('/api/grocery/stores', async (req, res) => {
     throw new HttpError(409, 'That store is already on the list');
   }
   const r = await pool.query(
-    'INSERT INTO custom_stores (name, shop_url) VALUES ($1, $2) ON CONFLICT (lower(name)) DO NOTHING',
+    'INSERT INTO custom_stores (name, shop_url) VALUES ($1, $2) ON CONFLICT (household_id, lower(name)) DO NOTHING',
     [name, parsed.toString()],
   );
   if (!r.rowCount) throw new HttpError(409, 'That store is already on the list');

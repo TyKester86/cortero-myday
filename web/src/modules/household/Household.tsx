@@ -12,6 +12,7 @@ import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 import KidAccess from '../kids/KidAccess';
+import { useConfirm } from '../../components/Confirm';
 
 const TRACK_LABEL: Record<XpTrack, string> = {
   leader: 'Family Leader',
@@ -114,6 +115,7 @@ export default function Household() {
   const [inv, setInv] = useState<NewInvite>({ name: '', email: '', xpTrack: 'woman' });
   const [link, setLink] = useState<string | null>(null);
   const [deviceKids, setDeviceKids] = useState<number[]>([]);
+  const confirm = useConfirm();
 
   if (!isAdult) return <p className="muted">Only grown-ups can manage the household.</p>;
   if (error) return <p className="error">{error}</p>;
@@ -157,8 +159,12 @@ export default function Household() {
             m={m}
             onSave={(f) => void run(api<HouseholdAdminResponse>(`/api/household/members/${m.id}`, 'PATCH', f), 'Saved')}
             onArchive={() =>
-              confirm(`Remove ${m.name}? Their history stays; they can't sign in. You can restore them later.`) &&
-              void run(api<HouseholdAdminResponse>(`/api/household/members/${m.id}/archive`, 'POST'), `${m.name} removed`)
+              void confirm({
+                title: `Remove ${m.name}?`,
+                body: "Their history stays; they can't sign in. You can restore them later.",
+                confirmLabel: 'Remove',
+                danger: true,
+              }).then((ok) => { if (ok) void run(api<HouseholdAdminResponse>(`/api/household/members/${m.id}/archive`, 'POST'), `${m.name} removed`); })
             }
             onRestore={() => void run(api<HouseholdAdminResponse>(`/api/household/members/${m.id}/restore`, 'POST'), `${m.name} restored`)}
           />

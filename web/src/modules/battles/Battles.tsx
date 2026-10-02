@@ -2,17 +2,19 @@ import { useState } from 'react';
 import type { BattlesResponse, EarnResult } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
+import { useConfirm } from '../../components/Confirm';
 
 /** Boss battles: pick one big avoided thing, beat it, earn the XP. */
 export default function Battles() {
   const { data, error, setData } = useLoad<BattlesResponse>('/api/battles');
   const [custom, setCustom] = useState('');
   const { toast, show, earned } = useToast();
+  const confirm = useConfirm();
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
 
   const start = async (name: string): Promise<void> => {
-    if (data.active && !confirm(`Replace "${data.active.name}"?`)) return;
+    if (data.active && !(await confirm({ title: `Replace "${data.active.name}"?`, body: 'Your current battle ends without XP.', confirmLabel: 'Replace' }))) return;
     setData(await api<BattlesResponse>('/api/battles', 'POST', { name }));
     show('Battle started ⚔️');
   };

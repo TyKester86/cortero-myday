@@ -21,6 +21,7 @@ import { memberById, requireAdult, targetMember } from '../lib/members.js';
 import { totalPoints, withEarn, xpStatus } from '../lib/xp.js';
 import { tryPerfectWeek } from './score.js';
 import { tonightCurfew } from './family.js';
+import { logEvent } from '../lib/events.js';
 
 export const choresRouter = Router();
 
@@ -121,6 +122,7 @@ choresRouter.post('/api/chores/:id/toggle', async (req, res) => {
     }
   }));
 
+  if (done) await logEvent('chore_done', { chore: choreId }, owner.id);
   const day = await todayFor(owner);
   const allDone = day.chores.length > 0 && day.chores.every((c) => c.done);
   const perfectWeek = done && allDone ? await tryPerfectWeek(owner) : null;

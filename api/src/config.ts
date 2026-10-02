@@ -22,6 +22,8 @@ export const config = {
     .split(',')
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean),
+  /** New Google accounts may sign up and create a household (SIGNUP_OPEN=false: roster emails only). */
+  signupOpen: opt('SIGNUP_OPEN', 'true') !== 'false',
   /** TEMPORARY verification backdoor. Empty = disabled (the default). */
   devLoginToken: opt('DEV_LOGIN_TOKEN'),
 };

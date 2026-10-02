@@ -1,30 +1,37 @@
 /**
- * Health: today's workout + the year plan. Ported from apiHealthToday,
- * apiHealthPlan, apiHealthLogExercise, apiHealthCompleteDay. The plan rows
- * and profile are per household member (no hard-coded people).
+ * Health: today's workout (always from the member's loaded plan — never a
+ * made-up default), the 52-week plan, moving a workout, the workout log and
+ * history (A4), daily habits. Ported from apiHealthToday / apiHealthPlan /
+ * apiHealthLogExercise / apiHealthCompleteDay / apiAdultLogWorkout /
+ * apiAdultHealth / apiAdultSaveHealthBase.
  */
 import { Router } from 'express';
 import {
   HABITS,
   type CompleteDayResponse,
   type DateStr,
+  type ExerciseLog,
   type HabitKey,
+  type HealthHistory,
   type HealthPlan,
   type HealthProfile,
   type HealthToday,
   type HouseholdMember,
   type LastLift,
   type PlanPhase,
+  type PlanWeek,
+  type SessionLog,
   type ToggleHabitResponse,
   type WorkoutExercise,
   type WorkoutSession,
   type XpTrack,
 } from '@myday/shared';
 import { pool, tx } from '../db.js';
-import { daysBetween, isoToWeekday, isoWeekday, today } from '../lib/dates.js';
+import { addDays, isoToWeekday, isoWeekday, today } from '../lib/dates.js';
 import { bool, HttpError, int, str } from '../lib/http.js';
 import { targetMember } from '../lib/members.js';
 import { awardXpOnce, withEarn, XP_ACTIONS } from '../lib/xp.js';
+import { phasesFor, programStatus, weekNum } from './program.js';
 
 export const healthRouter = Router();
 
@@ -39,9 +46,13 @@ interface ProfileRow {
   shake: string;
   cardio: string;
   workout_chore_name: string;
+  build: string | null;
+  baseline_exercise: string;
+  baseline_sleep: string;
+  baseline_food: string;
 }
 
-async function profileFor(memberId: number): Promise<ProfileRow | null> {
+export async function profileFor(memberId: number): Promise<ProfileRow | null> {
   const { rows } = await pool.query<ProfileRow>('SELECT * FROM health_profiles WHERE member_id = $1', [memberId]);
   return rows[0] ?? null;
 }
@@ -60,12 +71,6 @@ function toProfile(p: ProfileRow): HealthProfile {
   };
 }
 
-/** Week 1..52 of the year plan (mhWeekNum_). */
-function weekNum(planStart: DateStr | undefined, t: DateStr): number {
-  if (!planStart) return 1;
-  return Math.max(1, Math.min(52, Math.floor(daysBetween(planStart, t) / 7) + 1));
-}
-
 interface WorkoutRow {
   phase_name: string;
   focus: string;
@@ -80,17 +85,23 @@ interface WorkoutRow {
   subs: string;
 }
 
-healthRouter.get('/api/workouts/today', async (req, res) => {
-  const member: HouseholdMember = await targetMember(req);
-  const t = today();
-  const prof = await profileFor(member.id);
-  const wk = weekNum(prof?.plan_start, t);
+async function hasPlan(memberId: number): Promise<boolean> {
+  const { rows } = await pool.query('SELECT 1 FROM workouts WHERE member_id = $1 LIMIT 1', [memberId]);
+  return rows.length > 0;
+}
 
+/** The planned session for a calendar day (ignoring moves), from the plan rows. */
+export async function plannedSession(
+  memberId: number,
+  prof: ProfileRow | null,
+  date: DateStr,
+): Promise<{ session: WorkoutSession | null; phaseName: string; focus: string; week: number }> {
+  const week = weekNum(prof?.plan_start, date);
   const { rows } = await pool.query<WorkoutRow>(
     `SELECT phase_name, focus, day_num, day_name, exercise, sets, reps, rest, equipment, cues, subs
        FROM workouts WHERE member_id = $1 AND $2 BETWEEN week_start AND week_end
       ORDER BY day_num, sort_order, id`,
-    [member.id, wk],
+    [memberId, week],
   );
   let phaseName = '';
   let focus = '';
@@ -99,22 +110,36 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
     phaseName = r.phase_name;
     focus = r.focus;
     const d = days.get(r.day_num) ?? { name: r.day_name, ex: [] };
-    d.ex.push({
-      exercise: r.exercise,
-      sets: r.sets,
-      reps: r.reps,
-      rest: r.rest,
-      equipment: r.equipment,
-      cues: r.cues,
-      subs: r.subs,
-    });
+    d.ex.push({ exercise: r.exercise, sets: r.sets, reps: r.reps, rest: r.rest, equipment: r.equipment, cues: r.cues, subs: r.subs });
     days.set(r.day_num, d);
   }
-  // Training weekdays map in order to plan days 1..n (Mon,Tue,Thu,Fri -> 1..4).
+  // Training weekdays map in order to plan days 1..n (e.g. Mon,Tue,Thu,Fri -> 1..4).
   const trainDays = prof?.train_weekdays ?? [1, 2, 4, 5];
-  const di = trainDays.indexOf(isoWeekday(t));
+  const di = trainDays.indexOf(isoWeekday(date));
   const day = di >= 0 ? days.get(di + 1) : undefined;
-  const session: WorkoutSession | null = day ? { dayNum: di + 1, dayName: day.name, exercises: day.ex } : null;
+  return { session: day ? { dayNum: di + 1, dayName: day.name, exercises: day.ex } : null, phaseName, focus, week };
+}
+
+healthRouter.get('/api/workouts/today', async (req, res) => {
+  const member: HouseholdMember = await targetMember(req);
+  const t = today();
+  const prof = await profileFor(member.id);
+  const planned = await plannedSession(member.id, prof, t);
+  let session = planned.session;
+  let moved: HealthToday['moved'] = null;
+  const { rows: moves } = await pool.query<{ from_day: DateStr; to_day: DateStr }>(
+    'SELECT from_day::text AS from_day, to_day::text AS to_day FROM workout_moves WHERE member_id = $1 AND (from_day = $2 OR to_day = $2)',
+    [member.id, t],
+  );
+  const away = moves.find((m) => m.from_day === t);
+  const here = moves.find((m) => m.to_day === t && m.from_day !== t);
+  if (here) {
+    session = (await plannedSession(member.id, prof, here.from_day)).session;
+    moved = { from: here.from_day };
+  } else if (away) {
+    session = null;
+    moved = { to: away.to_day };
+  }
 
   const { rows: logs } = await pool.query<{ exercise: string; weight: string; reps: string; logged_on: DateStr }>(
     `SELECT DISTINCT ON (exercise) exercise, weight, reps, logged_on::text AS logged_on
@@ -134,50 +159,141 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
     member,
     habits: await habitsFor(member.id, t),
     date: t,
-    weekNum: wk,
-    phaseName,
-    focus,
+    weekNum: planned.week,
+    phaseName: planned.phaseName,
+    focus: planned.focus,
     session,
     isRest: session === null,
     profile: prof ? toProfile(prof) : null,
     last,
     dayCompleted: done.length > 0,
+    hasPlan: await hasPlan(member.id),
+    moved,
+    program: await programStatus(member.id),
   };
   res.json(out);
 });
 
+/** The whole year: phases + all 52 weeks with the current one flagged. */
 healthRouter.get('/api/workouts/plan', async (req, res) => {
   const member = await targetMember(req);
   const prof = await profileFor(member.id);
-  const { rows } = await pool.query<{
-    phase_id: string;
-    phase_name: string;
-    week_start: number;
-    week_end: number;
-    focus: string;
-    day_name: string;
-  }>(
-    `SELECT phase_id, phase_name, week_start, week_end, focus, day_name
-       FROM workouts WHERE member_id = $1 ORDER BY week_start, day_num, sort_order, id`,
+  const current = weekNum(prof?.plan_start, today());
+  const phaseRows = await phasesFor(member.id);
+  const { rows } = await pool.query<{ week_start: number; week_end: number; day_num: number; day_name: string; phase_name: string }>(
+    `SELECT DISTINCT week_start, week_end, day_num, day_name, phase_name FROM workouts WHERE member_id = $1 ORDER BY day_num`,
     [member.id],
   );
-  const phases = new Map<string, PlanPhase>();
-  for (const r of rows) {
-    const p = phases.get(r.phase_id) ?? {
-      id: r.phase_id,
-      name: r.phase_name,
-      weekStart: r.week_start,
-      weekEnd: r.week_end,
-      focus: r.focus,
-      days: [],
+  const phases: PlanPhase[] = phaseRows.map((p, i) => ({
+    id: `P${i + 1}`,
+    name: p.name,
+    kind: p.kind,
+    nutrition: p.nutrition,
+    weekStart: p.weekStart,
+    weekEnd: p.weekEnd,
+    focus: p.focus,
+    cardio: p.cardio,
+    days: [...new Set(rows.filter((r) => r.week_start === p.weekStart).map((r) => r.day_name))],
+  }));
+  const start = prof?.plan_start ?? today();
+  const weeks: PlanWeek[] = Array.from({ length: 52 }, (_, i) => {
+    const week = i + 1;
+    const p = phaseRows.find((x) => week >= x.weekStart && week <= x.weekEnd) ?? null;
+    return {
+      week,
+      starts: addDays(start, i * 7),
+      phase: p?.name ?? null,
+      kind: p?.kind ?? null,
+      isCurrent: week === current,
+      days: [...new Set(rows.filter((r) => week >= r.week_start && week <= r.week_end).map((r) => r.day_name))],
     };
-    if (!p.days.includes(r.day_name)) p.days.push(r.day_name);
-    phases.set(r.phase_id, p);
-  }
-  const out: HealthPlan = { member, currentWeek: weekNum(prof?.plan_start, today()), phases: [...phases.values()] };
+  });
+  const out: HealthPlan = { member, currentWeek: current, phases, weeks, hasPlan: rows.length > 0, build: (prof?.build as HealthPlan['build']) ?? null };
   res.json(out);
 });
 
+/** Move a day's workout (default today) to another day — e.g. "move my workout to tomorrow". */
+healthRouter.post('/api/workouts/move', async (req, res) => {
+  const member = await targetMember(req);
+  const b = req.body as Record<string, unknown>;
+  const t = today();
+  const from = typeof b.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.from) ? b.from : t;
+  const to = b.to === 'tomorrow' ? addDays(from, 1) : typeof b.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.to) ? b.to : null;
+  if (!to || to === from) throw new HttpError(400, "Say where to move it: 'tomorrow' or a date");
+  const prof = await profileFor(member.id);
+  const { session } = await plannedSession(member.id, prof, from);
+  if (!session) throw new HttpError(409, 'There is no workout planned that day to move');
+  await pool.query(
+    `INSERT INTO workout_moves (member_id, from_day, to_day) VALUES ($1, $2, $3)
+     ON CONFLICT (member_id, from_day) DO UPDATE SET to_day = EXCLUDED.to_day, created_at = now()`,
+    [member.id, from, to],
+  );
+  res.json({ ok: true, from, to, session: session.dayName });
+});
+
+/** A4: log any workout (activity + minutes), like the script's FamWorkout. */
+healthRouter.post('/api/workouts/session', async (req, res) => {
+  const member = await targetMember(req);
+  const b = req.body as Record<string, unknown>;
+  const t = today();
+  const { rows: tr } = await pool.query<{ xp_track: XpTrack }>('SELECT xp_track FROM household_members WHERE id = $1', [member.id]);
+  const { earn } = await withEarn(member.id, async () => {
+    await pool.query(
+      `INSERT INTO workout_logs (member_id, logged_on, kind, activity, minutes) VALUES ($1, $2, 'session', $3, $4)`,
+      [member.id, t, str(b.activity, 'activity', 40) || 'Workout', int(b.minutes ?? 20, 'minutes', 1, 600)],
+    );
+    await awardXpOnce(member.id, t, XP_ACTIONS.workoutCompleted(tr[0]?.xp_track ?? 'leader'), 'Workout completed', `workout:${t}`);
+  });
+  res.status(201).json({ ...earn, history: await historyFor(member.id) });
+});
+
+async function historyFor(memberId: number): Promise<HealthHistory> {
+  const t = today();
+  const { rows: s } = await pool.query<{ d: DateStr; activity: string; minutes: number }>(
+    `SELECT logged_on::text AS d, activity, minutes FROM workout_logs WHERE member_id = $1 AND kind = 'session'
+      ORDER BY logged_on DESC, id DESC LIMIT 30`,
+    [memberId],
+  );
+  const { rows: e } = await pool.query<{ d: DateStr; exercise: string; sets: number | null; reps: string; weight: string }>(
+    `SELECT logged_on::text AS d, exercise, sets, reps, weight FROM workout_logs WHERE member_id = $1 AND kind = 'exercise'
+      ORDER BY logged_on DESC, id DESC LIMIT 60`,
+    [memberId],
+  );
+  const { rows: c } = await pool.query<{ d: DateStr }>(
+    `SELECT DISTINCT logged_on::text AS d FROM workout_logs WHERE member_id = $1 AND kind = 'day_complete' ORDER BY d DESC LIMIT 60`,
+    [memberId],
+  );
+  const { rows: m } = await pool.query<{ n: number }>(
+    `SELECT COALESCE(SUM(minutes), 0)::int AS n FROM workout_logs WHERE member_id = $1 AND kind = 'session' AND logged_on > $2`,
+    [memberId, addDays(t, -7)],
+  );
+  const prof = await profileFor(memberId);
+  return {
+    sessions: s.map((r): SessionLog => ({ date: r.d, activity: r.activity, minutes: r.minutes })),
+    exercises: e.map((r): ExerciseLog => ({ date: r.d, exercise: r.exercise, sets: r.sets, reps: r.reps, weight: r.weight })),
+    completedDays: c.map((r) => r.d),
+    weekMinutes: m[0]?.n ?? 0,
+    baseline: { exercise: prof?.baseline_exercise ?? '', sleep: prof?.baseline_sleep ?? '', food: prof?.baseline_food ?? '' },
+  };
+}
+
+healthRouter.get('/api/workouts/history', async (req, res) => {
+  res.json(await historyFor((await targetMember(req)).id));
+});
+
+/** A4: the health baseline notes (the script's FamHealthBase: exercise / sleep / food). */
+healthRouter.put('/api/workouts/baseline', async (req, res) => {
+  const member = await targetMember(req);
+  const b = req.body as Record<string, unknown>;
+  await pool.query(
+    `INSERT INTO health_profiles (member_id, plan_start, baseline_exercise, baseline_sleep, baseline_food)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (member_id) DO UPDATE SET baseline_exercise = EXCLUDED.baseline_exercise,
+       baseline_sleep = EXCLUDED.baseline_sleep, baseline_food = EXCLUDED.baseline_food`,
+    [member.id, today(), str(b.exercise, 'exercise', 100), str(b.sleep, 'sleep', 40), str(b.food, 'food', 100)],
+  );
+  res.json(await historyFor(member.id));
+});
 healthRouter.post('/api/workouts/log', async (req, res) => {
   const member = await targetMember(req);
   const b = req.body as Record<string, unknown>;

@@ -1,17 +1,47 @@
 import { useState } from 'react';
-import { Link } from 'react-router';
-import { MEAL_SLOTS, WEEKDAYS, type AddMealPlanRequest, type MealListResponse, type MealPlanResponse, type MealSlot, type Weekday } from '@myday/shared';
+import { Link, useSearchParams } from 'react-router';
+import {
+  MEAL_SLOTS,
+  WEEKDAYS,
+  type AddMealPlanRequest,
+  type MealListResponse,
+  type MealPlanResponse,
+  type MealSlot,
+  type NutritionMode,
+  type Weekday,
+} from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 
-/** The meal library. Add a meal to the week, or straight onto a day. */
+const PHASES: Array<{ key: '' | 'mine' | NutritionMode; label: string }> = [
+  { key: '', label: 'All phases' },
+  { key: 'mine', label: 'My phase' },
+  { key: 'cutting', label: 'Cutting' },
+  { key: 'gaining', label: 'Gaining' },
+  { key: 'recomp', label: 'Recomp' },
+  { key: 'maintenance', label: 'Maintenance' },
+];
+
+/** Placeholder if a picture ever fails to load: never a broken image. */
+export const onImgError = (e: React.SyntheticEvent<HTMLImageElement>): void => {
+  const img = e.currentTarget;
+  if (!img.src.endsWith('/meals/_placeholder.svg')) img.src = '/meals/_placeholder.svg';
+};
+
+/** The meal library: browse by picture, filter by cuisine and program phase, add to the week. */
 export default function Meals() {
   const { viewing } = useSession();
+  const [params, setParams] = useSearchParams();
+  const phase = params.get('phase') ?? '';
   const [cuisine, setCuisine] = useState('');
   const [day, setDay] = useState<Weekday | ''>('');
   const [slot, setSlot] = useState<MealSlot | ''>('');
-  const library = useLoad<MealListResponse>(`/api/meals${cuisine ? `?cuisine=${encodeURIComponent(cuisine)}` : ''}`);
+  const q = new URLSearchParams();
+  if (cuisine) q.set('cuisine', cuisine);
+  if (phase) q.set('phase', phase);
+  const libPath = `/api/meals${q.size ? `?${q.toString()}` : ''}`;
+  const library = useLoad<MealListResponse>(viewing ? withMember(libPath, viewing.key) : libPath);
   const plan = useLoad<MealPlanResponse>(viewing ? withMember('/api/meal-plan', viewing.key) : null);
   const { toast, show } = useToast();
   if (!viewing) return null;
@@ -19,10 +49,20 @@ export default function Meals() {
 
   const add = async (mealId: number, title: string): Promise<void> => {
     const body: AddMealPlanRequest = { mealId, day: day || null, slot: slot || null };
-    plan.setData(await api<MealPlanResponse>(withMember('/api/meal-plan', key), 'POST', body));
-    show(day ? `${title} → ${day}${slot ? ` ${slot}` : ''}` : `${title} added to the week`);
+    try {
+      plan.setData(await api<MealPlanResponse>(withMember('/api/meal-plan', key), 'POST', body));
+      show(day ? `${title} → ${day}${slot ? ` ${slot}` : ''}` : `${title} added to the week`);
+    } catch (e) {
+      show(e instanceof Error ? e.message : 'Could not add');
+    }
   };
   const count = (mealId: number): number => plan.data?.meals.filter((m) => m.mealId === mealId).length ?? 0;
+  const setPhase = (p: string): void => {
+    const next = new URLSearchParams(params);
+    if (p) next.set('phase', p);
+    else next.delete('phase');
+    setParams(next, { replace: true });
+  };
 
   return (
     <section>
@@ -32,7 +72,26 @@ export default function Meals() {
         <Link to="/meals/grocery">Grocery list →</Link>
       </p>
 
-      <h2>Meal library</h2>
+      <h2>Meal library {library.data && <span className="muted small">· {library.data.meals.length} meals</span>}</h2>
+      <div className="chips" data-testid="phase-filter">
+        {PHASES.filter((p) => p.key !== 'mine' || library.data?.phase).map((p) => (
+          <button key={p.key} className={phase === p.key ? 'chip on' : 'chip'} onClick={() => setPhase(p.key)}>
+            {p.key === 'mine' && library.data?.phase ? `My phase (${library.data.phase})` : p.label}
+          </button>
+        ))}
+      </div>
+      {library.data && (
+        <div className="chips">
+          <button className={cuisine === '' ? 'chip on' : 'chip'} onClick={() => setCuisine('')}>
+            All cuisines
+          </button>
+          {library.data.cuisines.map((c) => (
+            <button key={c} className={cuisine === c ? 'chip on' : 'chip'} onClick={() => setCuisine(c)}>
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
       <label className="inline-label">
         Add to{' '}
         <select value={day} onChange={(e) => setDay(WEEKDAYS.find((d) => d === e.target.value) ?? '')}>
@@ -52,38 +111,31 @@ export default function Meals() {
           ))}
         </select>
       </label>
-      {library.data && (
-        <div className="chips">
-          <button className={cuisine === '' ? 'chip on' : 'chip'} onClick={() => setCuisine('')}>
-            All
-          </button>
-          {library.data.cuisines.map((c) => (
-            <button key={c} className={cuisine === c ? 'chip on' : 'chip'} onClick={() => setCuisine(c)}>
-              {c}
-            </button>
-          ))}
-        </div>
-      )}
       {library.error && <p className="error">{library.error}</p>}
-      {library.data?.meals.length === 0 && <p className="muted">No meals loaded yet.</p>}
-      <ul className="plain rows" data-testid="meal-library">
+      {library.data?.meals.length === 0 && <p className="muted">No meals match.</p>}
+      <div className="mealgrid" data-testid="meal-library">
         {library.data?.meals.map((m) => (
-          <li key={m.id}>
-            <span>
-              <Link to={`/meals/${m.id}`}>{m.title}</Link>{' '}
-              <span className="muted">
-                · {m.cuisine}
+          <div key={m.id} className="mealcard">
+            <Link to={`/meals/${m.id}`}>
+              <img src={m.imageUrl} alt="" loading="lazy" onError={onImgError} />
+            </Link>
+            <div>
+              <Link to={`/meals/${m.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                <b>{m.title}</b>
+              </Link>
+              <small>
+                {m.cuisine}
                 {m.calories !== null && ` · ${m.calories} cal`}
                 {m.protein !== null && ` · ${m.protein}g protein`}
-                {count(m.id) > 0 && ` · in plan ×${count(m.id)}`}
-              </span>
-            </span>
-            <button className="btn small" onClick={() => void add(m.id, m.title)}>
-              Add
-            </button>
-          </li>
+              </small>
+              {count(m.id) > 0 && <small>in plan ×{count(m.id)}</small>}
+              <button className="btn small" onClick={() => void add(m.id, m.title)}>
+                Add
+              </button>
+            </div>
+          </div>
         ))}
-      </ul>
+      </div>
       {toast}
     </section>
   );

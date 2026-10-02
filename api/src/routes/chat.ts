@@ -5,16 +5,19 @@
  * stored server-side and the model sees the last 10 turns.
  */
 import { Router, type Request } from 'express';
-import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HouseholdMember } from '@myday/shared';
+import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction, HouseholdMember } from '@myday/shared';
 import { pool } from '../db.js';
 import { today } from '../lib/dates.js';
-import { HttpError, str } from '../lib/http.js';
+import { logEvent } from '../lib/events.js';
+import { decideAction, hanaKit, pendingActions } from '../lib/hana.js';
+import { HttpError, idParam, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
 import { rateLimiter } from '../lib/pin.js';
 import { chatModel, type ChatTurn } from '../lib/ai.js';
 import { dailyScore, trackOf } from '../lib/adult.js';
 import { activeDates, computeStreak } from '../lib/streak.js';
 import { isoToWeekday } from '../lib/dates.js';
+import { lectureMaterial } from './lectures.js';
 
 export const chatRouter = Router();
 
@@ -60,8 +63,8 @@ async function dayContext(me: HouseholdMember, mode: ChatMode): Promise<string> 
     if (rows.length) bits.push(rows.map((r) => `${r.assignment} (${r.subject || 'general'})`).join('; '));
     return bits.join('. ');
   }
-  const { rows: open } = await pool.query<{ task: string }>(
-    'SELECT task FROM tasks WHERE member_id = $1 AND day = $2 AND NOT done ORDER BY id LIMIT 6',
+  const { rows: open } = await pool.query<{ id: number; task: string }>(
+    'SELECT id, task FROM tasks WHERE member_id = $1 AND day = $2 AND NOT done ORDER BY id LIMIT 12',
     [me.id, t],
   );
   if (mode === 'tutor') {
@@ -73,7 +76,11 @@ async function dayContext(me: HouseholdMember, mode: ChatMode): Promise<string> 
   bits.push(`Today score ${score.total}/100`);
   const streak = computeStreak(await activeDates(me.id), t);
   if (streak.current) bits.push(`streak ${streak.current} days`);
-  if (open.length) bits.push(`Open tasks today: ${open.map((r) => r.task).join('; ')}`);
+  if (open.length) bits.push(`Open tasks today: ${open.map((r) => `#${r.id} ${r.task}`).join('; ')}`);
+  const { rows: bills } = await pool.query<{ id: number; name: string; amount: string }>('SELECT id, name, amount FROM bills WHERE member_id = $1 ORDER BY id LIMIT 20', [me.id]);
+  if (bills.length) bits.push(`Tracked bills: ${bills.map((b) => `#${b.id} ${b.name} $${Number(b.amount)}`).join('; ')}`);
+  const kids = (await pool.query<{ name: string }>("SELECT name FROM household_members WHERE kind = 'kid' AND archived_at IS NULL ORDER BY sort_order")).rows;
+  if (kids.length) bits.push(`Kids in the household: ${kids.map((k) => k.name).join(', ')}`);
   // The shared grocery list + this week's meals, so anyone can ask about them.
   const { rows: groc } = await pool.query<{ item: string }>('SELECT item FROM grocery_items WHERE NOT done ORDER BY id LIMIT 12');
   if (groc.length) bits.push(`Shared grocery list still to get: ${groc.map((g) => g.item).join('; ')}`);
@@ -119,19 +126,28 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     `You are talking to ${me.name} (${role}). Today is ${day}. ` +
     (ctx ? `What you can see of their day: ${ctx}. ` : '') +
     'Be brief (under 120 words unless they ask for more), concrete, encouraging. ADHD-friendly: one clear next step, no ' +
-    'lectures, no shame. Reference their day when useful. Never invent data you were not given.'
+    'lectures, no shame. Reference their day when useful. Never invent data you were not given. ' +
+    'You can act in MyDay with your tools (tasks, groceries, notes, homework, workouts, bills) — when they ask you to do ' +
+    'something, do it rather than telling them how. Deleting or clearing anything only happens after they tap Confirm, so ' +
+    'never say a delete is done until it is.'
   );
 }
 
 chatRouter.get('/api/chat/:mode', async (req, res) => {
   const { me, mode } = await modeFor(req);
-  const out: ChatState = { mode, available: chatModel() !== null, history: await history(me.id, mode) };
+  const out: ChatState = {
+    mode,
+    available: chatModel() !== null,
+    history: await history(me.id, mode),
+    pending: mode === 'companion' ? await pendingActions(me.id) : [],
+  };
   res.json(out);
 });
 
 chatRouter.post('/api/chat/:mode', async (req, res) => {
   const { me, mode } = await modeFor(req);
-  const msg = str((req.body as { message?: unknown }).message, 'message', 2000, true);
+  const body = req.body as { message?: unknown; lectureId?: unknown };
+  const msg = str(body.message, 'message', 2000, true);
   const model = chatModel();
   if (!model) throw new HttpError(503, 'Ask Hana needs a grown-up to finish setting it up');
   if (!chatLimit(String(me.id))) throw new HttpError(429, "That's a lot of questions — take a breather and try again soon");
@@ -143,14 +159,40 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   // The API wants the first turn from the user.
   while (turns[0]?.role === 'assistant') turns.shift();
 
-  const system = await systemPrompt(me, mode, await dayContext(me, mode));
-  const text = await model.reply(system, turns, mode === 'tutor' ? 450 : 600);
+  let system = await systemPrompt(me, mode, await dayContext(me, mode));
+  // B3: the tutor can quiz from one of the student's own lectures.
+  if (mode === 'tutor' && body.lectureId !== undefined && body.lectureId !== null) {
+    const material = await lectureMaterial(me.id, idParam(body.lectureId));
+    if (material) {
+      system +=
+        ' QUIZ MODE: quiz them on this lecture from their class, one question at a time, waiting for their answer; ' +
+        `explain simply when they miss, and never just list the answers. Lecture material: ${material}`;
+    }
+  }
+  const actions: HanaAction[] = [];
+  const text =
+    mode === 'companion'
+      ? await model.act(system, turns, hanaKit(me, actions), 600)
+      : await model.reply(system, turns, mode === 'tutor' ? 450 : 600);
+  await logEvent('hana_asked', { mode, actions: actions.length }, me.id);
   const { rows } = await pool.query<MsgRow>(
     "INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING id, who, text, created_at",
     [me.id, mode, text],
   );
   const reply = rows[0];
   if (!reply) throw new Error('reply insert returned nothing');
-  const out: ChatSendResponse = { reply: toMsg(reply), history: await history(me.id, mode) };
+  const out: ChatSendResponse = { reply: toMsg(reply), history: await history(me.id, mode), actions };
   res.json(out);
 });
+
+/** Confirm or cancel an action Hana proposed; her note about it lands in the chat. */
+for (const verb of ['confirm', 'cancel'] as const) {
+  chatRouter.post(`/api/hana/actions/:id/${verb}`, async (req, res) => {
+    const me = self(req);
+    if (me.kind !== 'adult') throw new HttpError(403, 'Hana actions are for grown-ups');
+    const action = await decideAction(me, idParam(req.params.id), verb === 'confirm');
+    const note = action.status === 'done' ? `Done: ${action.result}` : action.status === 'failed' ? `That didn't work: ${action.result}` : 'Okay — I left it alone.';
+    await pool.query("INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, 'companion', 'hana', $2)", [me.id, note]);
+    res.json({ action, history: await history(me.id, 'companion'), pending: await pendingActions(me.id) });
+  });
+}

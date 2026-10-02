@@ -3,6 +3,7 @@ import { MEAL_SLOTS, WEEKDAYS, type MealPlanEntry, type MealPlanResponse, type M
 
 export const SLOT_LABEL: Record<MealSlot, string> = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner' };
 import { api, useLoad, withMember } from '../../api';
+import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 
 /** The week, day by day: what's for dinner Monday..Sunday, with daily totals. */
@@ -10,6 +11,7 @@ export default function MealPlan() {
   const { viewing } = useSession();
   const path = viewing ? withMember('/api/meal-plan', viewing.key) : null;
   const { data, error, setData } = useLoad<MealPlanResponse>(path);
+  const confirm = useConfirm();
   if (error) return <p className="error">{error}</p>;
   if (!data || !viewing) return <p className="muted">Loading…</p>;
   const key = viewing.key;
@@ -26,7 +28,7 @@ export default function MealPlan() {
     setData(await api<MealPlanResponse>(withMember(`/api/meal-plan/${m.id}`, key), 'DELETE'));
   };
   const clear = async (): Promise<void> => {
-    if (!confirm('Clear all of this week’s meals?')) return;
+    if (!(await confirm({ title: 'Clear all of this week’s meals?', confirmLabel: 'Clear week', danger: true }))) return;
     setData(await api<MealPlanResponse>(withMember('/api/meal-plan', key), 'DELETE'));
   };
 

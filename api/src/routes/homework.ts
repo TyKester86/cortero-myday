@@ -16,6 +16,7 @@ import { addDays, today } from '../lib/dates.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { memberById, requireAdult, targetMember } from '../lib/members.js';
 import { withEarn } from '../lib/xp.js';
+import { logEvent } from '../lib/events.js';
 
 export const homeworkRouter = Router();
 
@@ -106,6 +107,7 @@ homeworkRouter.post('/api/homework/:id/toggle', async (req, res) => {
       }
     }),
   );
+  if (done) await logEvent('homework_done', { homework: id }, member.id);
   const out: ToggleHomeworkResponse = { ...earn, homework: await homeworkFor(member) };
   res.json(out);
 });

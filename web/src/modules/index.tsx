@@ -19,6 +19,22 @@ import BrainDump from './dump/BrainDump';
 import Family from './family/Family';
 import Household from './household/Household';
 import Chat from './chat/Chat';
+import School from './school/School';
+import Recorder from './school/Recorder';
+import Lecture from './school/Lecture';
+import Study from './school/Study';
+import ClassroomMode from './school/ClassroomMode';
+import Identity from './identity/Identity';
+import Bills from './money/Bills';
+import KidMoney from './kidmoney/KidMoney';
+import Wins from './engagement/Wins';
+import Focus from './engagement/Focus';
+import Private from './engagement/Private';
+import Settings from './settings/Settings';
+import Records from './records/Records';
+import CommandCenter from './desk/CommandCenter';
+import Setup from '../Onboarding';
+import Home from './desk/Home';
 
 /** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
 export type Audience = 'all' | 'adult' | 'kid' | 'tutor';
@@ -36,7 +52,8 @@ export interface ModuleRoute {
 }
 
 export const MODULES: ModuleRoute[] = [
-  { path: '/', element: <HomeChores />, audience: 'all', nav: { label: 'Today', icon: '✅', tabFor: ['kid', 'adult'] } },
+  { path: '/', element: <Home />, audience: 'all', nav: { label: 'Today', icon: '✅', tabFor: ['kid', 'adult'] } },
+  { path: '/chores', element: <HomeChores />, audience: 'all' },
   { path: '/day', element: <MyDay />, audience: 'adult', nav: { label: 'My day', icon: '🌅', tabFor: ['adult'] } },
   { path: '/family', element: <Family />, audience: 'adult', nav: { label: 'Family', icon: '💛', tabFor: ['adult'] } },
   { path: '/money', element: <Money />, audience: 'adult', nav: { label: 'Money', icon: '💵', tabFor: ['adult'] } },
@@ -57,6 +74,21 @@ export const MODULES: ModuleRoute[] = [
   { path: '/red-alert', element: <RedAlert />, audience: 'adult', nav: { label: 'Red Alert', icon: '🚨' } },
   { path: '/chores/manage', element: <ManageChores />, audience: 'adult', nav: { label: 'Manage chores', icon: '🧹' } },
   { path: '/household', element: <Household />, audience: 'adult', nav: { label: 'Household', icon: '🏠' } },
+  { path: '/school', element: <School />, audience: 'all', nav: { label: 'School', icon: '🎒' } },
+  { path: '/record', element: <Recorder />, audience: 'all' },
+  { path: '/lectures/:id', element: <Lecture />, audience: 'all' },
+  { path: '/study/:classId', element: <Study />, audience: 'all' },
+  { path: '/classroom-mode', element: <ClassroomMode />, audience: 'all' },
+  { path: '/wins', element: <Wins />, audience: 'all', nav: { label: 'Family wins', icon: '🏆' } },
+  { path: '/my-money', element: <KidMoney />, audience: 'all', nav: { label: 'Kid money', icon: '🐷' } },
+  { path: '/focus', element: <Focus />, audience: 'kid', nav: { label: 'Focus timer', icon: '⏱' } },
+  { path: '/private', element: <Private />, audience: 'kid', nav: { label: 'My space', icon: '🔒' } },
+  { path: '/bills', element: <Bills />, audience: 'adult', nav: { label: 'Bills & income', icon: '🧾' } },
+  { path: '/identity', element: <Identity />, audience: 'adult', nav: { label: 'Identity', icon: '🪞' } },
+  { path: '/records', element: <Records />, audience: 'adult', nav: { label: 'Records', icon: '🗂' } },
+  { path: '/command', element: <CommandCenter />, audience: 'adult', nav: { label: 'Command center', icon: '🖥' } },
+  { path: '/setup', element: <Setup />, audience: 'adult' },
+  { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️' } },
   // Old link from build 2; kid PINs now live on the Household page.
   { path: '/kids', element: <Household />, audience: 'adult' },
 ];
