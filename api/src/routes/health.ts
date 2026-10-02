@@ -4,22 +4,27 @@
  * and profile are per household member (no hard-coded people).
  */
 import { Router } from 'express';
-import type {
-  CompleteDayResponse,
-  DateStr,
-  HealthPlan,
-  HealthProfile,
-  HealthToday,
-  HouseholdMember,
-  LastLift,
-  PlanPhase,
-  WorkoutExercise,
-  WorkoutSession,
+import {
+  HABITS,
+  type CompleteDayResponse,
+  type DateStr,
+  type HabitKey,
+  type HealthPlan,
+  type HealthProfile,
+  type HealthToday,
+  type HouseholdMember,
+  type LastLift,
+  type PlanPhase,
+  type ToggleHabitResponse,
+  type WorkoutExercise,
+  type WorkoutSession,
+  type XpTrack,
 } from '@myday/shared';
 import { pool, tx } from '../db.js';
 import { daysBetween, isoToWeekday, isoWeekday, today } from '../lib/dates.js';
-import { int, str } from '../lib/http.js';
+import { bool, HttpError, int, str } from '../lib/http.js';
 import { targetMember } from '../lib/members.js';
+import { awardXpOnce, withEarn, XP_ACTIONS } from '../lib/xp.js';
 
 export const healthRouter = Router();
 
@@ -127,6 +132,7 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
 
   const out: HealthToday = {
     member,
+    habits: await habitsFor(member.id, t),
     date: t,
     weekNum: wk,
     phaseName,
@@ -202,6 +208,10 @@ healthRouter.post('/api/workouts/complete-day', async (req, res) => {
   const t = today();
   const prof = await profileFor(member.id);
   const choreName = prof?.workout_chore_name ?? 'Indoor workout (AM)';
+  const { rows: tr } = await pool.query<{ xp_track: XpTrack }>('SELECT xp_track FROM household_members WHERE id = $1', [
+    member.id,
+  ]);
+  const track = tr[0]?.xp_track ?? 'leader';
   const choreMarked = await tx(async (c) => {
     await c.query(
       `INSERT INTO workout_logs (member_id, logged_on, kind)
@@ -209,6 +219,8 @@ healthRouter.post('/api/workouts/complete-day', async (req, res) => {
         WHERE NOT EXISTS (SELECT 1 FROM workout_logs WHERE member_id = $1 AND logged_on = $2 AND kind = 'day_complete')`,
       [member.id, t],
     );
+    // The script's "Workout Completed" XP (15; 10 on the student track), once a day.
+    await awardXpOnce(member.id, t, XP_ACTIONS.workoutCompleted(track), 'Workout completed', `workout:${t}`, c);
     const { rows } = await c.query<{ id: number; points: number; name: string }>(
       `SELECT id, points, name FROM chores
         WHERE member_id = $1 AND active AND lower(name) = lower($2) AND $3 = ANY (days)`,
@@ -232,5 +244,48 @@ healthRouter.post('/api/workouts/complete-day', async (req, res) => {
     return true;
   });
   const out: CompleteDayResponse = { choreMarked };
+  res.json(out);
+});
+
+/* ---------- daily habits: water, shake, creatine (was "MH Habits") ---------- */
+
+async function habitsFor(memberId: number, day: DateStr): Promise<Record<HabitKey, boolean>> {
+  const { rows } = await pool.query<{ habit: HabitKey }>(
+    'SELECT habit FROM health_habits WHERE member_id = $1 AND day = $2',
+    [memberId, day],
+  );
+  const done = new Set(rows.map((r) => r.habit));
+  return { water: done.has('water'), shake: done.has('shake'), creatine: done.has('creatine') };
+}
+
+/** Toggle today's habit. Each one pays its points (HABITS) and XP; un-ticking takes them back. */
+healthRouter.post('/api/habits/:habit', async (req, res) => {
+  const habit = HABITS.find((h) => h.key === req.params.habit);
+  if (!habit) throw new HttpError(404, 'No such habit');
+  const done = bool((req.body as { done?: unknown }).done, 'done');
+  const member = await targetMember(req);
+  const t = today();
+  const { earn } = await withEarn(member.id, () =>
+    tx(async (c) => {
+      if (done) {
+        const ins = await c.query<{ id: number }>(
+          `INSERT INTO health_habits (member_id, day, habit) VALUES ($1, $2, $3)
+           ON CONFLICT (member_id, day, habit) DO NOTHING RETURNING id`,
+          [member.id, t, habit.key],
+        );
+        const id = ins.rows[0]?.id;
+        if (id !== undefined) {
+          await c.query(
+            `INSERT INTO scores (member_id, earned_on, points, source, note, habit_id) VALUES ($1, $2, $3, 'habit', $4, $5)`,
+            [member.id, t, habit.points, habit.label, id],
+          );
+        }
+      } else {
+        // Its ledger row goes with it (ON DELETE CASCADE).
+        await c.query('DELETE FROM health_habits WHERE member_id = $1 AND day = $2 AND habit = $3', [member.id, t, habit.key]);
+      }
+    }),
+  );
+  const out: ToggleHabitResponse = { ...earn, habits: await habitsFor(member.id, t) };
   res.json(out);
 });

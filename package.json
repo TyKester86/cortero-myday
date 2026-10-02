@@ -12,7 +12,8 @@
     "typecheck": "npm run build -w shared && npm run typecheck -w shared && npm run typecheck -w api && npm run typecheck -w web",
     "dev:api": "npm run dev -w api",
     "dev:web": "npm run dev -w web",
-    "migrate": "npm run migrate -w api"
+    "migrate": "npm run migrate -w api",
+    "e2e": "node scripts/e2e.mjs"
   },
   "engines": {
     "node": ">=22"

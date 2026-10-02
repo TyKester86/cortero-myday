@@ -1,71 +1,48 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { WEEKDAYS, type MealListResponse, type MealPlanResponse, type Weekday } from '@myday/shared';
+import { WEEKDAYS, type AddMealPlanRequest, type MealListResponse, type MealPlanResponse, type Weekday } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
+import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 
-/** The meal library + this week's meals (per person). */
+/** The meal library. Add a meal to the week, or straight onto a day. */
 export default function Meals() {
   const { viewing } = useSession();
   const [cuisine, setCuisine] = useState('');
+  const [day, setDay] = useState<Weekday | ''>('');
   const library = useLoad<MealListResponse>(`/api/meals${cuisine ? `?cuisine=${encodeURIComponent(cuisine)}` : ''}`);
   const plan = useLoad<MealPlanResponse>(viewing ? withMember('/api/meal-plan', viewing.key) : null);
+  const { toast, show } = useToast();
   if (!viewing) return null;
   const key = viewing.key;
 
-  const call = async (path: string, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown): Promise<void> => {
-    plan.setData(await api<MealPlanResponse>(withMember(path, key), method, body));
+  const add = async (mealId: number, title: string): Promise<void> => {
+    const body: AddMealPlanRequest = { mealId, day: day || null };
+    plan.setData(await api<MealPlanResponse>(withMember('/api/meal-plan', key), 'POST', body));
+    show(day ? `${title} → ${day}` : `${title} added to the week`);
   };
-  const inWeek = new Set(plan.data?.meals.map((m) => m.mealId));
+  const count = (mealId: number): number => plan.data?.meals.filter((m) => m.mealId === mealId).length ?? 0;
 
   return (
     <section>
       <h1>Meals</h1>
       <p>
+        <Link to="/meals/plan">This week's plan ({plan.data?.meals.length ?? 0}) →</Link> ·{' '}
         <Link to="/meals/grocery">Grocery list →</Link>
       </p>
 
-      <div className="card" data-testid="meal-week">
-        <h2>This week</h2>
-        {plan.error && <p className="error">{plan.error}</p>}
-        {plan.data && plan.data.meals.length === 0 && <p className="muted">No meals picked yet — add some below.</p>}
-        <ul className="plain rows">
-          {plan.data?.meals.map((m) => (
-            <li key={m.mealId}>
-              <Link to={`/meals/${m.mealId}`}>{m.title}</Link>
-              <span>
-                <select
-                  value={m.day ?? ''}
-                  onChange={(e) => {
-                    const day: Weekday | null = WEEKDAYS.find((d) => d === e.target.value) ?? null;
-                    void call(`/api/meal-plan/${m.mealId}`, 'PATCH', { day });
-                  }}
-                >
-                  <option value="">Any day</option>
-                  {WEEKDAYS.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-                <button className="link danger" onClick={() => void call(`/api/meal-plan/${m.mealId}`, 'DELETE')}>
-                  ✕
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-        {plan.data && plan.data.meals.length > 0 && (
-          <button
-            className="link"
-            onClick={() => confirm('Clear all of this week’s meals?') && void call('/api/meal-plan', 'DELETE')}
-          >
-            Clear week
-          </button>
-        )}
-      </div>
-
       <h2>Meal library</h2>
+      <label className="inline-label">
+        Add to{' '}
+        <select value={day} onChange={(e) => setDay(WEEKDAYS.find((d) => d === e.target.value) ?? '')}>
+          <option value="">the week (no day yet)</option>
+          {WEEKDAYS.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+      </label>
       {library.data && (
         <div className="chips">
           <button className={cuisine === '' ? 'chip on' : 'chip'} onClick={() => setCuisine('')}>
@@ -89,18 +66,16 @@ export default function Meals() {
                 · {m.cuisine}
                 {m.calories !== null && ` · ${m.calories} cal`}
                 {m.protein !== null && ` · ${m.protein}g protein`}
+                {count(m.id) > 0 && ` · in plan ×${count(m.id)}`}
               </span>
             </span>
-            {inWeek.has(m.id) ? (
-              <span className="muted">In week ✓</span>
-            ) : (
-              <button className="btn small" onClick={() => void call('/api/meal-plan', 'POST', { mealId: m.id })}>
-                Add
-              </button>
-            )}
+            <button className="btn small" onClick={() => void add(m.id, m.title)}>
+              Add
+            </button>
           </li>
         ))}
       </ul>
+      {toast}
     </section>
   );
 }

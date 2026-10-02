@@ -123,3 +123,41 @@ input, select { font-size: 16px; padding: 9px 10px; border: 1px solid var(--line
 .login .muted { color: #c9cbe6; }
 .login .btn { background: #fff; color: var(--navy); }
 .login img { border-radius: 22px; }
+
+/* ---------- build 2 ---------- */
+.small-link { font-size: 13px; font-weight: 400; }
+.small { font-size: 13px; }
+.top .menu {
+  position: absolute; right: 12px; top: 100%; z-index: 30; min-width: 200px;
+  background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 14px;
+  display: flex; flex-direction: column; padding: 6px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+.top .menu a { color: var(--text); text-decoration: none; padding: 10px 12px; border-radius: 10px; }
+.top .menu a:hover { background: var(--bg); }
+.top .menu .link { text-align: left; padding: 10px 12px; }
+.tabs a { max-width: 90px; }
+.tabs small { font-size: 11px; }
+.xp { margin: 10px 0; }
+.xp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.xpbar { height: 8px; background: var(--line); border-radius: 99px; margin-top: 6px; overflow: hidden; }
+.xpfill { height: 100%; background: linear-gradient(90deg, var(--navy-2), var(--sun)); border-radius: 99px; }
+.habits { display: flex; gap: 8px; flex-wrap: wrap; }
+.habit {
+  flex: 1; min-width: 90px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: 14px; padding: 10px; cursor: pointer;
+}
+.habit input { width: 22px; height: 22px; accent-color: var(--good); }
+.habit.on { border-color: var(--good); }
+.habit small { color: var(--muted); }
+.week { display: grid; gap: 0; }
+.day.today { border-color: var(--sun); }
+.day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.day .rows li { padding: 6px 0; }
+.inline-label { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--muted); }
+.fav { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.fav:last-child { border-bottom: 0; }
+a.chip { text-decoration: none; }
+.pin { font-size: 40px; font-weight: 800; letter-spacing: 0.25em; text-align: center; margin: 8px 0; font-variant-numeric: tabular-nums; }
+.kidlogin { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 300px; }
+.kidlogin input { text-align: center; font-size: 18px; }
+.error-light { color: #ffb4ab; margin: 0; }

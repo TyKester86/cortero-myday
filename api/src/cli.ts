@@ -94,18 +94,24 @@ const commands: Record<string, (pos: string[], flags: Flags) => Promise<void>> =
     const key = (f.key ?? name).toLowerCase().replace(/\s+/g, '');
     const age = f.age ? Math.max(0, Math.round(Number(f.age))) : null;
     const email = f.email ? f.email.trim().toLowerCase() : null;
+    // XP level table: leader | woman | student (the script's adult roles) | kid.
+    const tracks = ['leader', 'woman', 'student', 'kid'];
+    const track = f.track ?? (kind === 'kid' ? 'kid' : 'leader');
+    if (!tracks.includes(track)) throw new Error(`--track must be one of ${tracks.join(', ')}`);
     await pool.query(
-      `INSERT INTO household_members (key, name, kind, age, email, sort_order)
-       VALUES ($1, $2, $3, $4, $5, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM household_members))
-       ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind,
+      `INSERT INTO household_members (key, name, kind, age, email, xp_track, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM household_members))
+       ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind, xp_track = EXCLUDED.xp_track,
          age = COALESCE(EXCLUDED.age, household_members.age), email = COALESCE(EXCLUDED.email, household_members.email)`,
-      [key, name, kind, age, email],
+      [key, name, kind, age, email, track],
     );
-    console.log(`member ${key} (${kind}) saved`);
+    console.log(`member ${key} (${kind}, ${track} levels) saved`);
   },
 
   async 'member:list'() {
-    const { rows } = await pool.query('SELECT key, name, kind, age, email FROM household_members ORDER BY sort_order, id');
+    const { rows } = await pool.query(
+      'SELECT key, name, kind, xp_track, age, email, (pin_hash IS NOT NULL) AS has_pin FROM household_members ORDER BY sort_order, id',
+    );
     console.table(rows);
   },
 

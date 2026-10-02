@@ -1,8 +1,15 @@
-import type { ScoreSummary } from '@myday/shared';
+import type { ScoreSource, ScoreSummary } from '@myday/shared';
 import { useLoad, withMember } from '../../api';
+import { XpBar } from '../../components/XpBar';
 import { useSession } from '../../session';
 
-const SOURCE_LABEL = { chore: 'Chore', homework: 'Homework', perfect_week: 'Perfect week', bonus: 'Bonus' } as const;
+const SOURCE_LABEL: Record<ScoreSource, string> = {
+  chore: 'Chore',
+  homework: 'Homework',
+  perfect_week: 'Perfect week',
+  bonus: 'Bonus',
+  habit: 'Habit',
+};
 
 export default function Score() {
   const { viewing } = useSession();
@@ -16,8 +23,9 @@ export default function Score() {
       <h1>{data.member.name}'s points</h1>
       <div className="bigscore">
         <b data-testid="score-total">{data.totalPoints}</b>
-        <small>total points</small>
+        <small>points earned</small>
       </div>
+      <XpBar xp={data.xp} />
       <div className="stats">
         <div className="stat">
           <b>{data.todayPoints}</b>
@@ -26,6 +34,10 @@ export default function Score() {
         <div className="stat">
           <b>{data.weekPoints}</b>
           <small>this week</small>
+        </div>
+        <div className="stat">
+          <b data-testid="bank">{data.bank}</b>
+          <small>to spend</small>
         </div>
       </div>
 

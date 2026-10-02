@@ -1,0 +1,68 @@
+import { useState, type FormEvent } from 'react';
+import { KID_PIN_LENGTH, type KidPinLoginRequest } from '@myday/shared';
+import { api } from './api';
+
+const LOGIN_ERRORS: Record<string, string> = {
+  roster: "That Google account isn't on this household's roster yet. Ask a parent to add your email.",
+  google: 'Google sign-in did not finish. Try again.',
+  state: 'Sign-in expired. Try again.',
+};
+
+export default function Login() {
+  const err = new URLSearchParams(window.location.search).get('error');
+  const [kid, setKid] = useState(false);
+  const [name, setName] = useState('');
+  const [pin, setPin] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const kidLogin = async (e: FormEvent): Promise<void> => {
+    e.preventDefault();
+    const body: KidPinLoginRequest = { name, pin };
+    try {
+      await api('/api/auth/kid-login', 'POST', body);
+      window.location.href = '/';
+    } catch (e2) {
+      setPin('');
+      setMsg(e2 instanceof Error ? e2.message : 'Could not sign in');
+    }
+  };
+
+  return (
+    <div className="login">
+      <img src="/icons/myday-icon-192.png" alt="" width={96} height={96} />
+      <h1>MyDay</h1>
+      <p className="muted">One app for the whole family.</p>
+      {err && <p className="error">{LOGIN_ERRORS[err] ?? 'Sign-in failed.'}</p>}
+      {!kid ? (
+        <>
+          <a className="btn" href="/api/auth/google">
+            Sign in with Google
+          </a>
+          <button className="link light" onClick={() => setKid(true)}>
+            I'm a kid — sign in with my PIN
+          </button>
+        </>
+      ) : (
+        <form className="kidlogin" onSubmit={(e) => void kidLogin(e)}>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your first name" autoComplete="username" required />
+          <input
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, KID_PIN_LENGTH))}
+            placeholder={`${KID_PIN_LENGTH}-digit PIN`}
+            inputMode="numeric"
+            type="password"
+            autoComplete="current-password"
+            required
+          />
+          <button className="btn" disabled={pin.length !== KID_PIN_LENGTH}>
+            Sign in
+          </button>
+          {msg && <p className="error-light">{msg}</p>}
+          <button type="button" className="link light" onClick={() => setKid(false)}>
+            Grown-up? Use Google
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}

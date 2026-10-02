@@ -1,0 +1,8 @@
+PhaseId,Phase,WeekStart,WeekEnd,Person,DayNum,DayName,Exercise,Sets,Reps,Rest,Equipment,Cues,Subs,Focus
+P1,Foundation,1,8,ty,1,Upper A,Bench press,4,6-8,2 min,Barbell,"Shoulder blades pinned, feet planted",DB press,Build the base
+P1,Foundation,1,8,ty,1,Upper A,Barbell row,4,8-10,90 s,Barbell,Flat back,Cable row,Build the base
+P1,Foundation,1,8,ty,2,Lower A,Back squat,4,6-8,2 min,Barbell,Brace and sit between hips,Goblet squat,Build the base
+P1,Foundation,1,8,ty,3,Upper B,Overhead press,4,6-8,2 min,Barbell,Squeeze glutes,DB press,Build the base
+P1,Foundation,1,8,ty,3,Upper B,Pull-up,3,AMRAP,90 s,Bar,Full hang to chin over,Lat pulldown,Build the base
+P1,Foundation,1,8,ty,4,Lower B,Romanian deadlift,4,8,2 min,Barbell,Hinge; soft knees,DB RDL,Build the base
+P2,Strength,9,20,ty,1,Upper A,Bench press,5,5,3 min,Barbell,Heavier triples,DB press,Get strong

@@ -1,31 +1,13 @@
-import { BrowserRouter, NavLink, Route, Routes } from 'react-router';
+import { useState } from 'react';
+import { BrowserRouter, Link, NavLink, Route, Routes } from 'react-router';
 import { api } from './api';
+import Login from './Login';
 import { MODULES } from './modules';
 import { SessionProvider, useSession } from './session';
 
-const LOGIN_ERRORS: Record<string, string> = {
-  roster: "That Google account isn't on this household's roster yet. Ask a parent to add your email.",
-  google: 'Google sign-in did not finish. Try again.',
-  state: 'Sign-in expired. Try again.',
-};
-
-function Login() {
-  const err = new URLSearchParams(window.location.search).get('error');
-  return (
-    <div className="login">
-      <img src="/icons/myday-icon-192.png" alt="" width={96} height={96} />
-      <h1>MyDay</h1>
-      <p className="muted">One app for the whole family.</p>
-      {err && <p className="error">{LOGIN_ERRORS[err] ?? 'Sign-in failed.'}</p>}
-      <a className="btn" href="/api/auth/google">
-        Sign in with Google
-      </a>
-    </div>
-  );
-}
-
 function Shell() {
   const { me, members, viewing, setViewing, isAdult } = useSession();
+  const [menu, setMenu] = useState(false);
   const routes = MODULES.filter((m) => !m.adultOnly || isAdult);
   const signOut = async (): Promise<void> => {
     await api('/api/auth/logout', 'POST');
@@ -47,9 +29,23 @@ function Shell() {
         ) : (
           <span className="who">{me.member?.name ?? me.name}</span>
         )}
-        <button className="link light" onClick={() => void signOut()}>
-          Sign out
+        <button className="link light" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>
+          ☰
         </button>
+        {menu && (
+          <nav className="menu" onClick={() => setMenu(false)}>
+            {routes
+              .filter((m) => m.nav?.place === 'menu')
+              .map((m) => (
+                <Link key={m.path} to={m.path}>
+                  {m.nav?.icon} {m.nav?.label}
+                </Link>
+              ))}
+            <button className="link" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          </nav>
+        )}
       </header>
       <main>
         <Routes>
@@ -61,7 +57,7 @@ function Shell() {
       </main>
       <nav className="tabs">
         {routes
-          .filter((m) => m.nav)
+          .filter((m) => m.nav?.place === 'tab')
           .map((m) => (
             <NavLink key={m.path} to={m.path} end={m.path === '/'}>
               <span>{m.nav?.icon}</span>

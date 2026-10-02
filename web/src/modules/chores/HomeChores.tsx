@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router';
 import type { PerfectWeekResult, TodayResponse, ToggleChoreResponse } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useSession } from '../../session';
@@ -24,7 +25,7 @@ export default function HomeChores() {
       setData(r.today);
       setTotal(r.totalPoints);
       const pts = r.today.chores.find((c) => c.id === id)?.points ?? 0;
-      if (done) setToast(`+${pts} points`);
+      if (done) setToast(r.leveledUp ? `Level up! Lv ${r.xp.level} · ${r.xp.title} 🎉` : `+${pts} points`);
       if (r.perfectWeek?.awarded) setPerfect(r.perfectWeek);
       else if (r.perfectWeek?.clean) setToast('Perfect week so far.');
     } catch (e) {
@@ -88,7 +89,9 @@ export default function HomeChores() {
 
       {data.homework.length > 0 && (
         <>
-          <h2>Homework</h2>
+          <h2>
+            Homework <Link to="/homework" className="small-link">open →</Link>
+          </h2>
           <ul className="plain">
             {data.homework.map((h) => (
               <li key={h.id} className={h.overdue ? 'warn' : ''}>

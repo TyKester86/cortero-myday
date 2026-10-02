@@ -18,7 +18,8 @@ import { pool, tx, type Db } from '../db.js';
 import { isoToWeekday, isoWeekday, today, weekdayName, weekdayToIso } from '../lib/dates.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { memberById, requireAdult, targetMember } from '../lib/members.js';
-import { totalPoints, tryPerfectWeek } from './score.js';
+import { totalPoints, withEarn, xpStatus } from '../lib/xp.js';
+import { tryPerfectWeek } from './score.js';
 
 export const choresRouter = Router();
 
@@ -96,7 +97,7 @@ choresRouter.post('/api/chores/:id/toggle', async (req, res) => {
   }
   if (!chore.days.includes(isoWeekday(date))) throw new HttpError(400, 'That chore is not scheduled today');
 
-  await tx(async (c) => {
+  const { earn } = await withEarn(owner.id, () => tx(async (c) => {
     if (done) {
       const ins = await c.query<{ id: number }>(
         `INSERT INTO chore_completions (chore_id, completed_on, points, completed_by)
@@ -116,12 +117,20 @@ choresRouter.post('/api/chores/:id/toggle', async (req, res) => {
       // The ledger row goes with it (ON DELETE CASCADE).
       await c.query('DELETE FROM chore_completions WHERE chore_id = $1 AND completed_on = $2', [choreId, date]);
     }
-  });
+  }));
 
   const day = await todayFor(owner);
   const allDone = day.chores.length > 0 && day.chores.every((c) => c.done);
   const perfectWeek = done && allDone ? await tryPerfectWeek(owner) : null;
-  const out: ToggleChoreResponse = { today: day, totalPoints: await totalPoints(owner.id), perfectWeek };
+  // A Perfect Week bonus is points too, so re-read the totals after it.
+  const after = perfectWeek?.awarded ? await xpStatus(owner.id) : earn.xp;
+  const out: ToggleChoreResponse = {
+    today: day,
+    perfectWeek,
+    totalPoints: perfectWeek?.awarded ? await totalPoints(owner.id) : earn.totalPoints,
+    xp: after,
+    leveledUp: earn.leveledUp || after.level > earn.xp.level,
+  };
   res.json(out);
 });
 

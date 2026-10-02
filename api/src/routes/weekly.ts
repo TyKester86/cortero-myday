@@ -4,7 +4,8 @@
  * apiAdultSaveWeekly, with the original field length limits.
  */
 import { Router } from 'express';
-import type { DateStr, WeeklyPlan, WeeklyPlanResponse } from '@myday/shared';
+import type { DateStr, WeeklyPlan, WeeklyPlanResponse, XpTrack } from '@myday/shared';
+import { awardXpOnce, XP_ACTIONS } from '../lib/xp.js';
 import { pool } from '../db.js';
 import { addDays, today, weekStart } from '../lib/dates.js';
 import { str } from '../lib/http.js';
@@ -67,5 +68,11 @@ weeklyRouter.put('/api/weekly-plan', async (req, res) => {
       str(b.review, 'review', 500),
     ],
   );
+  // The script's "Weekly Plan Completed" XP: first save of the week only.
+  const { rows } = await pool.query<{ xp_track: XpTrack }>('SELECT xp_track FROM household_members WHERE id = $1', [
+    member.id,
+  ]);
+  const ws = weekStart(today());
+  await awardXpOnce(member.id, today(), XP_ACTIONS.weeklyPlanCompleted(rows[0]?.xp_track ?? 'leader'), 'Weekly plan completed', `weekly:${ws}`);
   res.json({ ok: true });
 });

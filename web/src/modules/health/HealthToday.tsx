@@ -1,7 +1,16 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import type { CompleteDayResponse, HealthToday as HealthTodayData, LogExerciseRequest, WorkoutExercise } from '@myday/shared';
+import {
+  HABITS,
+  type CompleteDayResponse,
+  type HabitKey,
+  type HealthToday as HealthTodayData,
+  type LogExerciseRequest,
+  type ToggleHabitResponse,
+  type WorkoutExercise,
+} from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
+import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 
 function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequest) => Promise<void> }) {
@@ -29,8 +38,9 @@ function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequ
 export default function HealthToday() {
   const { viewing } = useSession();
   const path = viewing ? withMember('/api/workouts/today', viewing.key) : null;
-  const { data, error, reload } = useLoad<HealthTodayData>(path);
+  const { data, error, reload, setData } = useLoad<HealthTodayData>(path);
   const [msg, setMsg] = useState<string | null>(null);
+  const { toast, earned } = useToast();
 
   if (error) return <p className="error">{error}</p>;
   if (!data || !viewing) return <p className="muted">Loading…</p>;
@@ -41,6 +51,11 @@ export default function HealthToday() {
       phaseName: data.phaseName,
       dayName: data.session?.dayName ?? '',
     });
+  };
+  const toggleHabit = async (key: HabitKey, done: boolean): Promise<void> => {
+    const r = await api<ToggleHabitResponse>(withMember(`/api/habits/${key}`, viewing.key), 'POST', { done });
+    setData({ ...data, habits: r.habits });
+    if (done) earned(r, HABITS.find((h) => h.key === key)?.points ?? 0);
   };
   const complete = async (): Promise<void> => {
     const r = await api<CompleteDayResponse>(withMember('/api/workouts/complete-day', viewing.key), 'POST');
@@ -56,6 +71,19 @@ export default function HealthToday() {
         {data.phaseName && ` · ${data.phaseName}`}
         {data.focus && ` · ${data.focus}`} · <Link to="/health/plan">Year plan</Link>
       </p>
+
+      <div className="card" data-testid="habits">
+        <h2>Daily habits</h2>
+        <div className="habits">
+          {HABITS.map((h) => (
+            <label key={h.key} className={data.habits[h.key] ? 'habit on' : 'habit'}>
+              <input type="checkbox" checked={data.habits[h.key]} onChange={(e) => void toggleHabit(h.key, e.target.checked)} />
+              {h.label}
+              <small>+{h.points}</small>
+            </label>
+          ))}
+        </div>
+      </div>
 
       {data.isRest || !data.session ? (
         <div className="card" data-testid="rest-day">
@@ -108,6 +136,7 @@ export default function HealthToday() {
           {data.profile.shake && <p>Shake: {data.profile.shake}</p>}
         </div>
       )}
+      {toast}
     </section>
   );
 }

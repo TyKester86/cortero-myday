@@ -1,6 +1,16 @@
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
-import type { AddGroceryRequest, GroceryFromWeekResult, GroceryState } from '@myday/shared';
+import type {
+  AddCustomStoreRequest,
+  AddGroceryRequest,
+  GroceryChain,
+  GroceryFavorite,
+  GroceryFromWeekResult,
+  GroceryState,
+  SetFavoriteRequest,
+  StoreAvailability,
+  UpdateFavoriteRequest,
+} from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useSession } from '../../session';
 
@@ -27,7 +37,10 @@ export default function Grocery() {
   const fromWeek = async (): Promise<void> => {
     const r = await api<GroceryFromWeekResult>(withMember('/api/grocery/from-week', viewing?.key ?? null), 'POST');
     setData(r.grocery);
-    setMsg(`${r.meals} meals → ${r.added} added, ${r.merged} merged, ${r.skipped} already there, ${r.staples} staples`);
+    setMsg(
+      `${r.meals} meals → ${r.added} added, ${r.merged} updated, ${r.skipped} already there, ` +
+        `${r.removed} no longer needed, ${r.staples} staples`,
+    );
   };
 
   if (error) return <p className="error">{error}</p>;
@@ -60,7 +73,7 @@ export default function Grocery() {
                 <input
                   type="checkbox"
                   checked={it.done}
-                  onChange={(e) => void run(api<GroceryState>(`/api/grocery/${it.id}`, 'PATCH', { done: e.target.checked }))}
+                  onChange={(e) => void run(api<GroceryState>(`/api/grocery/items/${it.id}`, 'PATCH', { done: e.target.checked }))}
                 />
                 <span className="name">
                   {it.item} {it.qty && <span className="muted">{it.qty}</span>}
@@ -68,7 +81,7 @@ export default function Grocery() {
                 <button
                   type="button"
                   className="link danger"
-                  onClick={() => void run(api<GroceryState>(`/api/grocery/${it.id}`, 'DELETE'))}
+                  onClick={() => void run(api<GroceryState>(`/api/grocery/items/${it.id}`, 'DELETE'))}
                 >
                   ✕
                 </button>
@@ -82,6 +95,8 @@ export default function Grocery() {
           Clear checked items
         </button>
       )}
+
+      <Stores state={data} onChange={setData} />
 
       <div className="card">
         <h2>Staples</h2>
@@ -108,5 +123,142 @@ export default function Grocery() {
         </form>
       </div>
     </section>
+  );
+}
+
+const AVAIL: Record<StoreAvailability, string> = { advertised: '✓', check: 'check', no: '—' };
+
+/** Household ZIP, my favorite stores (with pickup/delivery + signed-in), all stores. */
+function Stores({ state, onChange }: { state: GroceryState; onChange: (s: GroceryState) => void }) {
+  const [zip, setZip] = useState(state.zip);
+  const [name, setName] = useState('');
+  const [url, setUrl] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const run = async (p: Promise<GroceryState>): Promise<void> => {
+    try {
+      onChange(await p);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save');
+    }
+  };
+  const fav = (store: string): GroceryFavorite | undefined => state.favorites.find((f) => f.store === store);
+  const chain = (store: string): GroceryChain | undefined => state.chains.find((c) => c.name === store);
+  const near = (q: string): string => `https://www.google.com/maps/search/${encodeURIComponent(q)}+near+${encodeURIComponent(state.zip)}`;
+  const setFav = (store: string, favorite: boolean): Promise<void> => {
+    const body: SetFavoriteRequest = { store, favorite };
+    return run(api<GroceryState>('/api/grocery/favorites', 'POST', body));
+  };
+  const update = (body: UpdateFavoriteRequest): Promise<void> => run(api<GroceryState>('/api/grocery/favorites', 'PATCH', body));
+  const addStore = (e: FormEvent): void => {
+    e.preventDefault();
+    const body: AddCustomStoreRequest = { name, url };
+    void run(api<GroceryState>('/api/grocery/stores', 'POST', body)).then(() => {
+      setName('');
+      setUrl('');
+    });
+  };
+
+  return (
+    <>
+      <div className="card">
+        <h2>Household ZIP</h2>
+        <p className="muted">Used to find stores near you.</p>
+        <form
+          className="inline"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(api<GroceryState>('/api/grocery/zip', 'PUT', { zip }));
+          }}
+        >
+          <input value={zip} onChange={(e) => setZip(e.target.value)} placeholder="ZIP" inputMode="numeric" maxLength={10} />
+          <button className="btn small">Save ZIP</button>
+        </form>
+        {state.zip && (
+          <a href={near('grocery stores')} target="_blank" rel="noreferrer">
+            See all stores near {state.zip} →
+          </a>
+        )}
+      </div>
+
+      {state.favorites.length > 0 && (
+        <div className="card" data-testid="favorites">
+          <h2>My stores</h2>
+          {state.favorites.map((f) => {
+            const c = chain(f.store);
+            return (
+              <div key={f.store} className="fav">
+                <div className="ex-head">
+                  <b>{f.store}</b>
+                  <button className="link danger" onClick={() => void setFav(f.store, false)}>
+                    ★ Unfavorite
+                  </button>
+                </div>
+                <div className="chips">
+                  {(['instore', 'pickup', 'delivery'] as const).map((m) => (
+                    <button key={m} className={f.fulfillment === m ? 'chip on' : 'chip'} onClick={() => void update({ store: f.store, fulfillment: m })}>
+                      {m === 'instore' ? 'In store' : m === 'pickup' ? 'Pickup' : 'Delivery'}
+                    </button>
+                  ))}
+                </div>
+                <div className="chips">
+                  {c && (
+                    <a className="chip" href={c.shopUrl} target="_blank" rel="noreferrer">
+                      Shop online
+                    </a>
+                  )}
+                  {c && (
+                    <a className="chip" href={c.acctUrl} target="_blank" rel="noreferrer">
+                      Sign in
+                    </a>
+                  )}
+                  <button className={f.signedIn ? 'chip on' : 'chip'} onClick={() => void update({ store: f.store, signedIn: !f.signedIn })}>
+                    {f.signedIn ? 'Signed in ✓' : 'Not signed in'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Stores near {state.zip || 'you'}</h2>
+        <p className="muted">Major chains plus your own. Availability and fees are set by the store, not MyDay.</p>
+        <ul className="plain rows" data-testid="stores">
+          {state.chains.map((c) => (
+            <li key={c.name}>
+              <span>
+                <b>{c.name}</b>{' '}
+                <small className="muted">
+                  pickup {AVAIL[c.pickup]} · delivery {AVAIL[c.delivery]} · {c.note}
+                </small>
+              </span>
+              <span>
+                {state.zip && (
+                  <a className="small-link" href={near(c.name)} target="_blank" rel="noreferrer">
+                    Map
+                  </a>
+                )}{' '}
+                <button className="link" aria-label={fav(c.name) ? 'Unfavorite' : 'Favorite'} onClick={() => void setFav(c.name, !fav(c.name))}>
+                  {fav(c.name) ? '★' : '☆'}
+                </button>
+                {c.custom && (
+                  <button className="link danger" onClick={() => void run(api<GroceryState>(`/api/grocery/stores/${encodeURIComponent(c.name)}`, 'DELETE'))}>
+                    ✕
+                  </button>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <form className="inline" onSubmit={addStore}>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your store" required />
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="store website" required />
+          <button className="btn small">Add</button>
+        </form>
+        {err && <p className="error">{err}</p>}
+      </div>
+    </>
   );
 }

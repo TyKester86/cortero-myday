@@ -8,16 +8,10 @@ import type { DateStr, HouseholdMember, PerfectWeekResult, ScoreEntry, ScoreSour
 import { pool } from '../db.js';
 import { addDays, isoWeekday, today, weekStart } from '../lib/dates.js';
 import { targetMember } from '../lib/members.js';
+import { xpStatus } from '../lib/xp.js';
+import { bankFor } from './rewards.js';
 
 export const scoreRouter = Router();
-
-export async function totalPoints(memberId: number): Promise<number> {
-  const { rows } = await pool.query<{ total: number }>(
-    'SELECT COALESCE(SUM(points), 0)::int AS total FROM scores WHERE member_id = $1',
-    [memberId],
-  );
-  return rows[0]?.total ?? 0;
-}
 
 /**
  * Perfect Week: every scheduled chore Mon..today done and no hanging
@@ -161,6 +155,8 @@ scoreRouter.get('/api/score', async (req, res) => {
   const out: ScoreSummary = {
     member,
     totalPoints: s?.total ?? 0,
+    bank: await bankFor(member.id),
+    xp: await xpStatus(member.id),
     weekPoints: s?.week ?? 0,
     todayPoints: s?.today ?? 0,
     weekStart: ws,
