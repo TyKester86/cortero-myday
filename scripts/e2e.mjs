@@ -1265,6 +1265,43 @@ async function billingAdmin() {
   eq('the ZZZ member’s session now has no household (back to signup)', (await zzz.get('/api/me')).data.household, null);
 }
 
+async function investments() {
+  section('4. investments / retirement (manual accounts, target vs actual, projection)');
+  eq('kids get 403', (await avery.get('/api/invest')).status, 403);
+  let v = (await ty.get('/api/invest')).data;
+  eq('empty to start, default plan 80/15/5', [v.accounts.length, v.total, v.plan.target], [0, 0, { stocks: 80, bonds: 15, cash: 5, other: 0 }]);
+  eq('unknown account type → 400', (await ty.post('/api/invest/accounts', { name: 'X', kind: 'crypto' })).status, 400);
+  v = (await ty.post('/api/invest/accounts', { name: 'Work 401k', kind: '401k', owner: 'ty', monthlyContribution: 500, employerMatch: 250 })).data;
+  const k401 = v.accounts[0];
+  v = (await ty.post('/api/invest/accounts', { name: 'Roth', kind: 'roth_ira', owner: 'kayla', monthlyContribution: '$250' })).data;
+  const roth = v.accounts.find((a) => a.name === 'Roth');
+  eq('mix must add to 100', (await ty.post(`/api/invest/accounts/${k401.id}/balances`, { balance: 60000, stocksPct: 90, bondsPct: 5 })).status, 400);
+  eq('no future-dated balances', (await ty.post(`/api/invest/accounts/${k401.id}/balances`, { balance: 1, asOf: '2027-01-01', stocksPct: 100 })).status, 400);
+  await ty.post(`/api/invest/accounts/${k401.id}/balances`, { balance: 50000, asOf: '2026-09-01', stocksPct: 100 });
+  await ty.post(`/api/invest/accounts/${k401.id}/balances`, { balance: 60000, stocksPct: 90, bondsPct: 10 });
+  v = (await ty.post(`/api/invest/accounts/${roth.id}/balances`, { balance: 20000, stocksPct: 50, bondsPct: 30, cashPct: 20 })).data;
+  const a = v.accounts.find((x) => x.name === 'Work 401k');
+  eq('latest snapshot is the balance; history kept', [a.balance, a.asOf, a.history.map((h) => h.balance)], [60000, '2026-10-04', [50000, 60000]]);
+  eq('total + monthly in (contributions + match)', [v.total, v.monthlyContributions], [80000, 1000]);
+  eq('balance-weighted actual mix', v.actual, { stocks: 80, bonds: 15, cash: 5, other: 0 });
+  eq('…on target: no drift', v.drift, { stocks: 0, bonds: 0, cash: 0, other: 0 });
+  v = (await ty.put('/api/invest/plan', { targetStocks: 60, targetBonds: 30, targetCash: 10, targetOther: 0, expectedReturnPct: 6, inflationPct: 2.5, yearsToRetire: 30, withdrawalPct: 4 })).data;
+  eq('new target → drift shows (stocks +20 pts)', v.drift, { stocks: 20, bonds: -15, cash: -5, other: 0 });
+  const shared = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
+  const want = shared.projectInvestments(80000, 1000, 30, 6, 2.5);
+  eq('projection: 31 points, matches the formula', [v.projection.length, v.projection[30].nominal], [31, want[30].nominal]);
+  // closed form: FV = P(1+i)^n + PMT((1+i)^n − 1)/i with monthly i
+  const i = Math.pow(1.06, 1 / 12) - 1;
+  const fv = 80000 * Math.pow(1 + i, 360) + (1000 * (Math.pow(1 + i, 360) - 1)) / i;
+  check('…and the closed-form future value (±$1)', Math.abs(v.projection[30].nominal - fv) <= 1, `${v.projection[30].nominal} vs ${Math.round(fv)}`);
+  eq('retirement income at 4% of the real balance', v.atRetirement.yearlyIncomeReal, Math.round((v.atRetirement.real * 4) / 100));
+  eq('bad plan mix → 400', (await ty.put('/api/invest/plan', { targetStocks: 90, targetBonds: 30 })).status, 400);
+  eq('Kayla shares the household view', (await kayla.get('/api/invest')).data.total, 80000);
+  eq("Sam's household can't see it", (await sam.get('/api/invest')).data.total, 0);
+  v = (await ty.del(`/api/invest/accounts/${roth.id}`)).data;
+  eq('remove an account (history goes with it)', [v.accounts.length, (await sql('SELECT COUNT(*)::int AS n FROM invest_balances WHERE account_id = $1', [roth.id]))[0].n], [1, 0]);
+}
+
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
 async function uiGate() {
@@ -1391,7 +1428,7 @@ async function uiGate() {
     eq('billing page renders for a grown-up', await page.getByTestId('billing-status').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest'];
     const notFound = [];
     for (const p of pages) {
       await page.goto(BASE + p);
@@ -1465,6 +1502,7 @@ try {
   await pinRotation();
   await bigBuild();
   await billingAdmin();
+  await investments();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);

@@ -37,6 +37,7 @@ import Setup from '../Onboarding';
 import Home from './desk/Home';
 import Billing from './billing/Billing';
 import Admin from './billing/Admin';
+import Invest from './invest/Invest';
 
 /** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
 export type Audience = 'all' | 'adult' | 'kid' | 'tutor' | 'admin';
@@ -90,6 +91,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/records', element: <Records />, audience: 'adult', nav: { label: 'Records', icon: '🗂' } },
   { path: '/command', element: <CommandCenter />, audience: 'adult', nav: { label: 'Command center', icon: '🖥' } },
   { path: '/setup', element: <Setup />, audience: 'adult' },
+  { path: '/invest', element: <Invest />, audience: 'adult', nav: { label: 'Investments', icon: '📈' } },
   { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: '💳' } },
   { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: '🛠' } },
   { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️' } },

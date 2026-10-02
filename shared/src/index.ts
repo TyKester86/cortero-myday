@@ -1646,3 +1646,87 @@ export interface AdminDashboard {
   };
   provider: 'none' | 'stub';
 }
+
+/* ================= investments / retirement (manual) ================= */
+
+export const INVEST_KINDS = ['401k', '403b', 'ira', 'roth_ira', 'brokerage', 'hsa', '529', 'pension', 'other'] as const;
+export type InvestKind = (typeof INVEST_KINDS)[number];
+export const INVEST_KIND_LABEL: Record<InvestKind, string> = {
+  '401k': '401(k)',
+  '403b': '403(b)',
+  ira: 'Traditional IRA',
+  roth_ira: 'Roth IRA',
+  brokerage: 'Brokerage',
+  hsa: 'HSA',
+  '529': '529 college',
+  pension: 'Pension',
+  other: 'Other',
+};
+
+export const ASSET_CLASSES = ['stocks', 'bonds', 'cash', 'other'] as const;
+export type AssetClass = (typeof ASSET_CLASSES)[number];
+export type Allocation = Record<AssetClass, number>;
+
+export interface InvestAccount {
+  id: number;
+  name: string;
+  kind: InvestKind;
+  owner: string | null;
+  balance: number;
+  asOf: DateStr | null;
+  allocation: Allocation;
+  monthlyContribution: number;
+  employerMatch: number;
+  history: Array<{ asOf: DateStr; balance: number }>;
+}
+
+export interface InvestPlan {
+  target: Allocation;
+  expectedReturnPct: number;
+  inflationPct: number;
+  yearsToRetire: number;
+  withdrawalPct: number;
+}
+
+export interface ProjectionPoint {
+  year: number;
+  /** Future dollars. */
+  nominal: number;
+  /** Today's dollars (after inflation). */
+  real: number;
+  contributed: number;
+}
+
+export interface InvestResponse {
+  accounts: InvestAccount[];
+  total: number;
+  /** Balance-weighted mix across all accounts (percent). */
+  actual: Allocation;
+  plan: InvestPlan;
+  /** actual − target, percentage points. */
+  drift: Allocation;
+  monthlyContributions: number;
+  projection: ProjectionPoint[];
+  /** At retirement, today's dollars: balance and the yearly income it supports at the withdrawal rate. */
+  atRetirement: { real: number; nominal: number; yearlyIncomeReal: number };
+}
+
+/**
+ * Simple long-range projection: monthly compounding at the expected return,
+ * monthly contributions (+ employer match) added at month end, inflation
+ * stripped out for the "today's dollars" line. Not advice — a planning sketch.
+ */
+export function projectInvestments(start: number, monthly: number, years: number, returnPct: number, inflationPct: number): ProjectionPoint[] {
+  const r = Math.pow(1 + returnPct / 100, 1 / 12) - 1;
+  const out: ProjectionPoint[] = [{ year: 0, nominal: Math.round(start), real: Math.round(start), contributed: Math.round(start) }];
+  let bal = start;
+  let put = start;
+  for (let y = 1; y <= years; y++) {
+    for (let m = 0; m < 12; m++) {
+      bal = bal * (1 + r) + monthly;
+      put += monthly;
+    }
+    out.push({ year: y, nominal: Math.round(bal), real: Math.round(bal / Math.pow(1 + inflationPct / 100, y)), contributed: Math.round(put) });
+  }
+  return out;
+}
