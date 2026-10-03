@@ -13,6 +13,7 @@ import { decideAction, hanaKit, pendingActions } from '../lib/hana.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
 import { rateLimiter } from '../lib/pin.js';
+import { checkAiMonthly } from '../lib/limits.js';
 import { requireAiConsent } from './account.js';
 import { chatModel, type ChatTurn } from '../lib/ai.js';
 import { dailyScore, trackOf } from '../lib/adult.js';
@@ -151,6 +152,7 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   const msg = str(body.message, 'message', 2000, true);
   // Under 13: a parent turns the homework helper on first (it sends the child's words to an AI provider).
   if (mode === 'tutor') await requireAiConsent(me);
+  await checkAiMonthly();
   const model = chatModel();
   if (!model) throw new HttpError(503, 'Ask Hana needs a grown-up to finish setting it up');
   if (!chatLimit(String(me.id))) throw new HttpError(429, "That's a lot of questions — take a breather and try again soon");

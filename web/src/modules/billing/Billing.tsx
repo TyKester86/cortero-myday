@@ -33,9 +33,19 @@ export default function Billing() {
     }
   };
   const plan = data.plan;
+  const go = async (path: string): Promise<void> => {
+    try {
+      const r = await api<{ url: string }>(path, 'POST');
+      window.location.href = r.url;
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Could not open billing');
+    }
+  };
+  const paid = new URLSearchParams(window.location.search).has('paid');
   return (
     <section>
       <h1>Billing</h1>
+      {paid && <p className="good" role="status">Thank you! Your subscription is set up — it can take a moment to show here.</p>}
       {msg && <p className="muted" role="status">{msg}</p>}
       <div className="bigscore" data-testid="billing-status">
         <b>{STATUS[data.status]}</b>
@@ -60,6 +70,33 @@ export default function Billing() {
         )}
       </div>
 
+      {data.provider === 'stripe' && data.status !== 'comped' && (
+        <div className="card" data-testid="billing-stripe">
+          <h2>Subscription</h2>
+          {data.status === 'active' || data.status === 'past_due' ? (
+            <>
+              {data.status === 'past_due' && <p className="warn small">Your last payment didn’t go through. Update your card to keep things running smoothly.</p>}
+              <button className="btn small" onClick={() => void go('/api/billing/portal')}>
+                Manage billing
+              </button>
+              <p className="small muted">Change your card, see invoices, or cancel — on Stripe’s secure page.</p>
+            </>
+          ) : (
+            <>
+              <p className="small">
+                {data.status === 'trialing' ? 'Subscribe now and you won’t be charged until your free trial ends.' : 'Pick up where you left off — one price for the whole household.'}
+              </p>
+              <button className="btn" disabled={plan?.priceCents == null} onClick={() => void go('/api/billing/checkout')}>
+                Subscribe{plan?.priceCents != null ? ` · ${money(plan.priceCents, plan.currency)} / ${plan.interval}` : ''}
+              </button>
+              {data.status === 'canceled' && data.paidThrough && <p className="small muted">Paid through {data.paidThrough.slice(0, 10)}.</p>}
+              <p className="small muted">Secure checkout by Stripe — MyDay never sees your card number.</p>
+            </>
+          )}
+        </div>
+      )}
+
+      {data.provider !== 'stripe' && (
       <div className="card" data-testid="billing-payment">
         <h2>Payment method</h2>
         {data.provider === 'none' && <p className="muted small">Payments aren’t live yet. You won’t be asked for a card or charged during your trial.</p>}
@@ -86,6 +123,8 @@ export default function Billing() {
           </button>
         )}
       </div>
+
+      )}
 
       {data.provider === 'stub' && data.status !== 'comped' && (
         <div className="card">

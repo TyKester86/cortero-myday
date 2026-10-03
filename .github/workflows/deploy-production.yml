@@ -1,0 +1,78 @@
+# MyDay PRODUCTION deploy — manual only (Actions → Deploy to production → Run).
+# Never runs on push: staging (deploy.yml) is where every change lands first.
+# Needs repository secrets PROD_HOST and PROD_SSH_KEY. /opt/myday-prod/.env on
+# the server is NEVER touched by this pipeline. See docs/PRODUCTION.md.
+
+name: Deploy to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "production" to deploy main to production'
+        required: true
+
+concurrency:
+  group: myday-production-deploy
+  cancel-in-progress: false
+
+env:
+  REMOTE_DIR: /opt/myday-prod
+  PROD_URL: https://conquermyday.app
+
+jobs:
+  deploy:
+    if: github.event.inputs.confirm == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Typecheck (shared, api, web)
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Snapshot current release (rollback point)
+        run: |
+          ssh -i ~/.ssh/deploy_key "root@${{ secrets.PROD_HOST }}" \
+            "mkdir -p $REMOTE_DIR /opt/myday-prod-snapshots && cp -al $REMOTE_DIR /opt/myday-prod-snapshots/\$(date +%Y%m%d-%H%M%S) && ls -dt /opt/myday-prod-snapshots/*/ | tail -n +11 | xargs -r rm -rf"
+
+      - name: Back up the database first
+        run: |
+          ssh -i ~/.ssh/deploy_key "root@${{ secrets.PROD_HOST }}" "cd $REMOTE_DIR && ENV_FILE=$REMOTE_DIR/deploy/production/.env bash deploy/backup.sh"
+
+      - name: Rsync source
+        run: |
+          rsync -az --delete \
+            --exclude "node_modules/" --exclude "dist/" --exclude ".git/" --exclude ".github/" \
+            --exclude "deploy/production/.env" \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ "root@${{ secrets.PROD_HOST }}:$REMOTE_DIR/"
+
+      - name: Build + restart (migrations run on start)
+        run: |
+          ssh -i ~/.ssh/deploy_key "root@${{ secrets.PROD_HOST }}" \
+            "set -euo pipefail; cd $REMOTE_DIR/deploy/production && test -f .env && docker compose build api && docker compose up -d"
+
+      - name: Health check (database included)
+        run: |
+          for i in $(seq 1 18); do
+            BODY=$(curl -s --max-time 10 "$PROD_URL/api/health/deep" || true)
+            case "$BODY" in *'"ok":true'*) echo "OK $BODY"; exit 0;; esac
+            echo "waiting ($i): ${BODY:-no response}"; sleep 10
+          done
+          echo "::error::Production failed its health check. Roll back from /opt/myday-prod-snapshots."
+          exit 1

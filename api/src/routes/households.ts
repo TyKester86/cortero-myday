@@ -20,6 +20,7 @@ import { asSystem, pool, setHousehold } from '../db.js';
 import { logEvent } from '../lib/events.js';
 import { HttpError, str } from '../lib/http.js';
 import { requireAdult, self } from '../lib/members.js';
+import { rateLimiter } from '../lib/pin.js';
 import { householdInfo } from '../auth.js';
 
 export const householdsRouter = Router();
@@ -35,8 +36,11 @@ function newCode(): string {
 const TRIAL_DAYS = 30;
 
 /** Create a household and become its first grown-up. */
+const signupLimit = rateLimiter(Number(process.env.SIGNUPS_PER_HOUR) || 5, 60 * 60_000); // households created per IP per hour
+
 householdsRouter.post('/api/households', async (req, res) => {
   if (!req.user) throw new HttpError(401, 'Not signed in');
+  if (!signupLimit(req.ip ?? 'unknown')) throw new HttpError(429, 'Too many new households from here — try again in an hour.');
   if (req.member) throw new HttpError(409, 'You already belong to a household');
   const b = req.body as Record<string, unknown>;
   const type = HOUSEHOLD_TYPES.find((t) => t === b.type);

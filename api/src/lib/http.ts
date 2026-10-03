@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { ApiError } from '@myday/shared';
+import { reportError } from './report.js';
 
 export class HttpError extends Error {
   constructor(
@@ -11,12 +12,18 @@ export class HttpError extends Error {
   }
 }
 
-export function errorHandler(err: unknown, _req: Request, res: Response<ApiError>, _next: NextFunction): void {
+export function errorHandler(err: unknown, req: Request, res: Response<ApiError>, _next: NextFunction): void {
   if (err instanceof HttpError) {
     res.status(err.status).json(err.code ? { error: err.message, code: err.code } : { error: err.message });
     return;
   }
-  console.error(err);
+  // Body too large / bad JSON from the parsers: the caller's mistake, not ours.
+  const status = (err as { status?: unknown }).status;
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    res.status(status).json({ error: status === 413 ? 'That’s too big to upload' : 'Bad request' });
+    return;
+  }
+  reportError(err, { route: req.route?.path ?? req.path, method: req.method });
   res.status(500).json({ error: 'Something went wrong' });
 }
 

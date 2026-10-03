@@ -29,8 +29,8 @@ export const config = {
     .split(',')
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean),
-  /** Payment provider: none (default — payments not live) | stub (test card, never charges). */
-  billingProvider: (opt('BILLING_PROVIDER', 'none') === 'stub' ? 'stub' : 'none') as 'none' | 'stub',
+  /** Payment provider: none (default — payments not live) | stub (test card, never charges) | stripe (real). */
+  billingProvider: (['stub', 'stripe'].includes(opt('BILLING_PROVIDER', 'none')) ? opt('BILLING_PROVIDER') : 'none') as 'none' | 'stub' | 'stripe',
   /** TEMPORARY verification backdoor. Empty = disabled (the default). */
   devLoginToken: opt('DEV_LOGIN_TOKEN'),
 };

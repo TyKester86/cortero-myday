@@ -3,14 +3,15 @@
  *
  * The price is NOT in code: plans live in billing_plans and staff set the
  * price (or leave it "not decided"). Every household gets a 30-day trial at
- * signup. No real charges anywhere: BILLING_PROVIDER=none (default) means
- * payments aren't live; =stub records a test card and never charges. A real
- * provider plugs in behind the same flag later.
+ * signup. BILLING_PROVIDER=none (default) means payments aren't live; =stub
+ * records a test card and never charges; =stripe takes real payments through
+ * Stripe Checkout (cards never touch MyDay) and keeps the household's status
+ * in sync from Stripe's signed webhooks.
  *
  * Admin = a signed-in user whose email is in ADMIN_EMAILS. Admin routes read
  * across households (system scope) and work without a household of your own.
  */
-import { Router, type Request } from 'express';
+import express, { Router, type Request } from 'express';
 import type {
   AdminDashboard,
   AdminHousehold,
@@ -26,9 +27,14 @@ import { logEvent } from '../lib/events.js';
 import { mergeHouseholds, planMerge as mergePlan } from '../lib/householdMove.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { requireAdult } from '../lib/members.js';
+import { mailOn, sendMail } from '../lib/mail.js';
+import { registerJob } from '../lib/schedulers.js';
+import { statusFrom, stripe, verifyWebhook } from '../lib/stripe.js';
 
 export const billingRouter = Router();
 export const adminRouter = Router();
+/** Stripe's webhook needs the raw body (signature), so it mounts before the JSON parser. */
+export const billingWebhookRouter = Router();
 
 interface PlanRow {
   id: number;
@@ -62,15 +68,21 @@ export function displayStatus(status: BillingStatus, trialEndsAt: Date | null, n
 
 interface HhRow {
   id: number;
+  name: string;
   plan_id: number | null;
   billing_status: BillingStatus;
   trial_ends_at: Date | null;
   payment_method: { brand: string; last4: string; test: boolean } | null;
+  stripe_customer_id: string | null;
+  paid_through: Date | null;
 }
 
 async function billingFor(householdId: number, canManage: boolean): Promise<BillingResponse> {
   return asSystem(async () => {
-    const { rows } = await pool.query<HhRow>('SELECT id, plan_id, billing_status, trial_ends_at, payment_method FROM households WHERE id = $1', [householdId]);
+    const { rows } = await pool.query<HhRow>(
+      'SELECT id, name, plan_id, billing_status, trial_ends_at, payment_method, stripe_customer_id, paid_through FROM households WHERE id = $1',
+      [householdId],
+    );
     const h = rows[0];
     if (!h) throw new HttpError(404, 'No household');
     const { rows: p } = await pool.query<PlanRow>(
@@ -85,6 +97,7 @@ async function billingFor(householdId: number, canManage: boolean): Promise<Bill
       trialDaysLeft: h.billing_status === 'trialing' ? left : null,
       paymentMethod: h.payment_method,
       provider: config.billingProvider,
+      paidThrough: h.paid_through?.toISOString() ?? null,
       canManage,
     };
   });
@@ -141,6 +154,103 @@ billingRouter.post('/api/billing/subscribe', async (req, res) => {
   res.json(await billingFor(hh, true));
 });
 
+/* ---------- Stripe (real payments) ---------- */
+
+async function hhRow(householdId: number): Promise<HhRow> {
+  const { rows } = await asSystem(() =>
+    pool.query<HhRow>('SELECT id, name, plan_id, billing_status, trial_ends_at, payment_method, stripe_customer_id, paid_through FROM households WHERE id = $1', [householdId]),
+  );
+  const h = rows[0];
+  if (!h) throw new HttpError(404, 'No household');
+  return h;
+}
+
+/** Start (or restart) the subscription: Stripe's hosted checkout. The trial's days are honored. */
+billingRouter.post('/api/billing/checkout', async (req, res) => {
+  const me = requireAdult(req);
+  const hh = householdOf(req);
+  if (config.billingProvider !== 'stripe') throw new HttpError(503, 'Payments aren’t live yet');
+  const b = await billingFor(hh, true);
+  if (b.status === 'comped') throw new HttpError(409, 'This household is complimentary — nothing to pay');
+  if (b.status === 'active') throw new HttpError(409, 'You’re already subscribed — use “Manage billing”');
+  const plan = b.plan;
+  if (!plan || plan.priceCents == null) throw new HttpError(409, 'The plan price hasn’t been set yet');
+  const h = await hhRow(hh);
+  let customer = h.stripe_customer_id;
+  if (!customer) {
+    const c = await stripe<{ id: string }>('customers', { email: req.user?.email, name: h.name, metadata: { household_id: hh } });
+    customer = c.id;
+    await setBilling(hh, 'stripe_customer_id = $2', [customer]);
+  }
+  // Charging starts when the free trial ends (Stripe needs at least 2 days of trial left).
+  const trialEnd = h.trial_ends_at && h.billing_status === 'trialing' && h.trial_ends_at.getTime() - Date.now() > 2 * 86_400_000 ? Math.floor(h.trial_ends_at.getTime() / 1000) : undefined;
+  const session = await stripe<{ id: string; url: string }>('checkout/sessions', {
+    mode: 'subscription',
+    customer,
+    client_reference_id: hh,
+    line_items: [{ quantity: 1, price_data: { currency: plan.currency, unit_amount: plan.priceCents, recurring: { interval: plan.interval }, product_data: { name: `MyDay ${plan.name}` } } }],
+    subscription_data: { metadata: { household_id: hh }, trial_end: trialEnd },
+    success_url: `${config.publicUrl}/billing?paid=1`,
+    cancel_url: `${config.publicUrl}/billing`,
+    allow_promotion_codes: true,
+  });
+  await logEvent('billing_change', { action: 'checkout_started', provider: 'stripe' }, me.id);
+  res.json({ url: session.url });
+});
+
+/** Stripe's billing portal: change card, see invoices, cancel. */
+billingRouter.post('/api/billing/portal', async (req, res) => {
+  requireAdult(req);
+  const hh = householdOf(req);
+  if (config.billingProvider !== 'stripe') throw new HttpError(503, 'Payments aren’t live yet');
+  const h = await hhRow(hh);
+  if (!h.stripe_customer_id) throw new HttpError(409, 'Nothing to manage yet — subscribe first');
+  const session = await stripe<{ url: string }>('billing_portal/sessions', { customer: h.stripe_customer_id, return_url: `${config.publicUrl}/billing` });
+  res.json({ url: session.url });
+});
+
+interface StripeEvent {
+  id: string;
+  type: string;
+  data: { object: Record<string, unknown> };
+}
+
+/** Stripe → MyDay: keep the household's billing status in sync. Signed; replay-safe. */
+billingWebhookRouter.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET ?? '';
+  const raw = req.body as unknown;
+  if (!Buffer.isBuffer(raw) || !verifyWebhook(raw, req.headers['stripe-signature'] as string | undefined, secret)) {
+    res.status(400).json({ error: 'Bad signature' });
+    return;
+  }
+  const ev = JSON.parse(raw.toString('utf8')) as StripeEvent;
+  const o = ev.data.object;
+  const byCustomer = async (customer: unknown): Promise<number | null> => {
+    if (typeof customer !== 'string') return null;
+    const { rows } = await asSystem(() => pool.query<{ id: number }>('SELECT id FROM households WHERE stripe_customer_id = $1', [customer]));
+    return rows[0]?.id ?? null;
+  };
+  let hh: number | null = null;
+  if (ev.type === 'checkout.session.completed') {
+    hh = Number(o.client_reference_id) || (await byCustomer(o.customer));
+    if (hh) {
+      await setBilling(hh, "billing_status = 'active', stripe_customer_id = COALESCE(stripe_customer_id, $2), stripe_subscription_id = $3", [o.customer, o.subscription]);
+    }
+  } else if (ev.type === 'customer.subscription.created' || ev.type === 'customer.subscription.updated' || ev.type === 'customer.subscription.deleted') {
+    hh = await byCustomer(o.customer);
+    if (hh) {
+      const status = ev.type === 'customer.subscription.deleted' ? 'canceled' : statusFrom(String(o.status));
+      const end = typeof o.current_period_end === 'number' ? new Date(o.current_period_end * 1000) : null;
+      await setBilling(hh, 'billing_status = $2, stripe_subscription_id = $3, paid_through = $4', [status, o.id, end]);
+    }
+  } else if (ev.type === 'invoice.payment_failed') {
+    hh = await byCustomer(o.customer);
+    if (hh) await setBilling(hh, "billing_status = 'past_due'", []);
+  }
+  if (hh) await asSystem(() => logEvent('billing_change', { action: ev.type, provider: 'stripe' }, null, hh));
+  res.json({ received: true });
+});
+
 billingRouter.post('/api/billing/cancel', async (req, res) => {
   const me = requireAdult(req);
   const hh = householdOf(req);
@@ -150,6 +260,40 @@ billingRouter.post('/api/billing/cancel', async (req, res) => {
   await logEvent('billing_change', { action: 'canceled' }, me.id);
   res.json(await billingFor(hh, true));
 });
+
+/* ---------- trial reminder (email, once, ~2 days before the trial ends) ---------- */
+
+export async function sendTrialReminders(): Promise<number> {
+  if (!mailOn()) return 0;
+  return asSystem(async () => {
+    const { rows } = await pool.query<{ id: number; name: string; trial_ends_at: Date }>(
+      `SELECT id, name, trial_ends_at FROM households
+        WHERE billing_status = 'trialing' AND trial_notice_at IS NULL
+          AND trial_ends_at BETWEEN now() + interval '1 day' AND now() + interval '3 days'`,
+    );
+    let sent = 0;
+    for (const h of rows) {
+      const { rows: people } = await pool.query<{ email: string }>(
+        `SELECT DISTINCT u.email FROM users u JOIN household_members m ON m.id = u.member_id
+          WHERE m.household_id = $1 AND m.kind = 'adult' AND m.archived_at IS NULL`,
+        [h.id],
+      );
+      const when = h.trial_ends_at.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+      for (const p of people) {
+        const ok = await sendMail({
+          to: p.email,
+          subject: 'Your MyDay trial ends soon',
+          text: `Your household’s free trial (${h.name}) ends ${when}.\n\nTo keep going, subscribe from Settings → Billing in the app — one price for the whole household. Nothing changes until you decide.\n\n${config.publicUrl}/billing`,
+        });
+        if (ok) sent++;
+      }
+      await pool.query('UPDATE households SET trial_notice_at = now() WHERE id = $1', [h.id]);
+    }
+    return sent;
+  });
+}
+
+registerJob({ name: 'trial-reminders', everyMs: 6 * 60 * 60 * 1000, run: async () => void (await sendTrialReminders()) });
 
 /* ---------- admin ---------- */
 

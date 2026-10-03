@@ -1,0 +1,56 @@
+# MyDay PRODUCTION — its own server, its own database, nothing shared with
+# Opsentra or staging. See docs/PRODUCTION.md. Secrets live only in
+# /opt/myday-prod/.env on the server (never in git).
+name: myday-prod
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ['80:80', '443:443']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [api]
+
+  api:
+    build:
+      context: ../..
+    restart: unless-stopped
+    mem_limit: 512m
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - uploads:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:4000/api/health/deep']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_SUPERUSER:-postgres}']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  caddy-data:
+  caddy-config:
+  uploads:
+  pgdata:

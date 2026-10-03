@@ -4,7 +4,7 @@
  */
 import type { Router } from 'express';
 import { accountRouter } from './account.js';
-import { adminRouter, billingRouter } from './billing.js';
+import { adminRouter, billingRouter, billingWebhookRouter } from './billing.js';
 import { billsRouter } from './bills.js';
 import { careRouter, proRouter } from './care.js';
 import { circlesRouter, circlesStaffRouter } from './circles.js';
@@ -17,6 +17,7 @@ import { lecturesRouter, lectureUploadRouter } from './lectures.js';
 import { notificationsRouter } from './notifications.js';
 import { photosRouter, photoUploadRouter } from './photos.js';
 import { programRouter } from './program.js';
+import { appleCallbackRouter } from './signin.js';
 import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
@@ -27,4 +28,4 @@ export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRout
 export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, proRouter, joinRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
-export const uploadRoutes: Router[] = [lectureUploadRouter, photoUploadRouter];
+export const uploadRoutes: Router[] = [lectureUploadRouter, photoUploadRouter, billingWebhookRouter, appleCallbackRouter];

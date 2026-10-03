@@ -16,6 +16,7 @@ import { config } from '../config.js';
 import { pool, tx } from '../db.js';
 import { daysBetween, today } from '../lib/dates.js';
 import { HttpError, bool, idParam } from '../lib/http.js';
+import { checkPhotoUpload } from '../lib/limits.js';
 import { isTeen } from '../lib/planload.js';
 
 export const photosRouter = Router();
@@ -139,6 +140,7 @@ photoUploadRouter.post(
     const pose = PROGRESS_POSES.find((p) => p.key === req.params.pose)?.key;
     if (!pose) throw new HttpError(400, 'Pose must be front, back, left or right');
     if (!(await enabled(me))) throw new HttpError(409, 'Turn progress photos on first', 'photos_off');
+    await checkPhotoUpload(me);
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length < 100) throw new HttpError(400, 'The photo was empty');
     const mime = imageType(body);

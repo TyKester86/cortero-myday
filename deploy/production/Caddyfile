@@ -1,0 +1,6 @@
+# Production front door: HTTPS (automatic certificates), compression, and the
+# app. Replace the host if production lives somewhere other than conquermyday.app.
+conquermyday.app, www.conquermyday.app {
+	encode zstd gzip
+	reverse_proxy api:4000
+}

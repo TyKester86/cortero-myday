@@ -79,9 +79,19 @@ The first deploy needs three things set up first:
 2. Add the `deploy/Caddyfile.snippet` block to Opsentra's Caddyfile.
 3. Add a Cloudflare DNS `A` record: `staging` → `159.223.163.99`, set to DNS only (grey cloud).
 
+**Production** is a separate server and database with a manual deploy. See [docs/PRODUCTION.md](docs/PRODUCTION.md): setup, Stripe, email, Apple, monitoring, backups, and the paperwork to start early.
+
 ## Sign-in
 
-Sign-in uses Google OAuth with sessions stored in Postgres; the cookie lasts 180 days and renews with use. Only emails on the household roster (`household_members.email`) or in `ALLOWED_EMAILS` can sign in.
+Grown-ups can sign in three ways. Sessions are stored in Postgres; the cookie lasts 180 days and renews with use.
+
+- **Google** OAuth.
+- **A one-time email link**, valid 15 minutes, when `MAIL_PROVIDER=resend` is set.
+- **Sign in with Apple**, when `APPLE_CLIENT_ID` is set.
+
+New people can sign up and create a household unless `SIGNUP_OPEN=false`. With that set, only emails on the roster or in `ALLOWED_EMAILS` get in.
+
+A grown-up can open their own day and their kids' days, but never another grown-up's.
 
 **Other grown-ups** join by invite: ☰ → *Household* → *Invite a grown-up* adds them to the roster with their Google email and gives you a one-time link (valid 14 days; only its hash is stored). Their first sign-in marks the invite accepted.
 
@@ -96,6 +106,19 @@ Sign-in uses Google OAuth with sessions stored in Postgres; the cookie lasts 180
 - Parents see each kid's last sign-ins, including wrong PINs, with a coarse device label (iPhone, Android, Windows…).
 
 **Removing** someone from the household archives them. Their history and points stay, but they can't sign in and drop out of every list. *Restore* brings them back.
+
+## Production settings (all optional on staging)
+
+| Setting | What it turns on |
+|---|---|
+| `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Real payments through Stripe Checkout, plus the customer portal |
+| `MAIL_PROVIDER=resend`, `RESEND_API_KEY`, `MAIL_FROM` | Email sign-in links, invites by email and trial reminders |
+| `APPLE_CLIENT_ID` | Sign in with Apple |
+| `PHOTO_KEY` | Dedicated encryption key for progress photos |
+| `SENTRY_DSN`, `ERROR_WEBHOOK_URL` | Error alerts |
+| `AI_MONTHLY_MESSAGES`, `LECTURE_MONTHLY_MINUTES`, `LECTURES_PER_DAY`, `PHOTOS_PER_DAY`, `SIGNUPS_PER_HOUR` | Fair-use limits (defaults: 1500 / 1200 / 8 / 24 / 5) |
+
+Uptime monitors should check `/api/health/deep`, which also tests the database.
 
 ## AI (Ask Hana + homework tutor)
 

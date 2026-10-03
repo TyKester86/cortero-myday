@@ -20,6 +20,7 @@ import { HttpError, idParam, int, str } from '../lib/http.js';
 import { requireAdult } from '../lib/members.js';
 import { currentDevice, deviceLabel, hashToken, rememberKidOnDevice } from '../auth.js';
 import { logEvent } from '../lib/events.js';
+import { mailOn, sendMail } from '../lib/mail.js';
 
 export const householdRouter = Router();
 
@@ -255,7 +256,21 @@ householdRouter.post('/api/household/invites', async (req, res) => {
   const view = await adminView(me.id, req);
   const member = view.members.find((m) => m.id === memberId);
   if (!member) throw new Error('invited member missing');
-  const out: InviteCreated = { link: `${config.publicUrl}/join/${token}`, member };
+  const link = `${config.publicUrl}/join/${token}`;
+  // Email it too, when email is set up (the link + QR still work for texting it yourself).
+  const emailed = mailOn()
+    ? await sendMail({
+        to: email,
+        subject: `${me.name} invited you to MyDay`,
+        text: `${me.name} invited you to join your household on MyDay — one app for the family’s day.
+
+Join here (the link works for ${INVITE_DAYS} days):
+${link}
+
+If you weren’t expecting this, you can ignore it.`,
+      })
+    : false;
+  const out: InviteCreated = { link, member, emailed };
   res.status(201).json(out);
 });
 

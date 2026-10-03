@@ -342,6 +342,12 @@ async function resolveHousehold(flags: Flags): Promise<number> {
 
 async function main(): Promise<void> {
   const { cmd, pos, flags } = parseArgs(process.argv.slice(2));
+  // Every household at once: send the "trial ends soon" emails now (normally a background job).
+  if (cmd === 'billing:trial-reminders') {
+    const { sendTrialReminders } = await import('./routes/billing.js');
+    console.log(`trial reminders sent: ${await sendTrialReminders()}`);
+    return;
+  }
   if (cmd === 'household:list') {
     await asSystem(async () => {
       const { rows } = await pool.query('SELECT id, name, type, code, created_at FROM households ORDER BY id');

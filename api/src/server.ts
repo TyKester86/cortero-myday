@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { rawPool, requestScope } from './db.js';
 import { authRouter, kidAccessRouter, loadUser, meHandler, requireAuth, requireHousehold } from './auth.js';
 import { errorHandler, HttpError } from './lib/http.js';
+import { reportError } from './lib/report.js';
 import { securityHeaders } from './lib/security.js';
 import { listMembers } from './lib/members.js';
 import { idempotency, moduleUsed } from './lib/requestlog.js';
@@ -27,6 +28,7 @@ import { householdsRouter } from './routes/households.js';
 import { chatRouter } from './routes/chat.js';
 import { moneyRouter } from './routes/money.js';
 import { extraRouters, preHouseholdRouters, uploadRoutes } from './routes/index.js';
+import { signinRouter } from './routes/signin.js';
 import { startSchedulers } from './lib/schedulers.js';
 
 if (!config.sessionSecret || config.sessionSecret.length < 32) {
@@ -40,6 +42,31 @@ app.use(securityHeaders(config.production));
 
 app.get('/api/health', (_req, res: Response<HealthCheck>) => {
   res.json({ ok: true });
+});
+
+/** For uptime monitors: also proves the database answers (503 if not). */
+app.get('/api/health/deep', async (_req, res) => {
+  const started = Date.now();
+  try {
+    await Promise.race([rawPool.query('SELECT 1'), new Promise((_r, reject) => setTimeout(() => reject(new Error('db timeout')), 3000))]);
+    res.set('Cache-Control', 'no-store').json({ ok: true, db: 'ok', ms: Date.now() - started, uptimeS: Math.round(process.uptime()) });
+  } catch (e) {
+    reportError(e, { route: '/api/health/deep', method: 'GET' });
+    res.status(503).set('Cache-Control', 'no-store').json({ ok: false, db: 'down' });
+  }
+});
+
+/** Local/tests only: a deliberate 500, to prove error reporting works. */
+app.get('/api/dev/boom', (req) => {
+  if (config.production || !config.devLoginToken || req.query.token !== config.devLoginToken) throw new HttpError(404, 'Not found');
+  throw new Error('Deliberate test error (dev only)');
+});
+
+process.on('unhandledRejection', (e) => reportError(e, { route: 'unhandledRejection' }));
+process.on('uncaughtException', (e) => {
+  // State may be broken: report, then let Docker restart a clean process.
+  reportError(e, { route: 'uncaughtException' });
+  setTimeout(() => process.exit(1), 1000);
 });
 
 // Every API request runs on its own connection, pinned to the caller's household.
@@ -82,6 +109,7 @@ app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
 });
 
 app.use(authRouter);
+app.use(signinRouter);
 
 app.get('/api/me', requireAuth, meHandler);
 
@@ -124,7 +152,8 @@ app.get('/sw.js', (_req, res) => {
 });
 // Hashed build files never change under the same name: cache them for a year.
 app.use('/assets', express.static(path.join(webDist, 'assets'), { index: false, maxAge: '365d', immutable: true }));
-app.use(express.static(webDist, { index: false, maxAge: '1h' }));
+// redirect: false — /meals and /exercises are both app pages and picture folders; never bounce to "/meals/".
+app.use(express.static(webDist, { index: false, maxAge: '1h', redirect: false }));
 app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });
 });

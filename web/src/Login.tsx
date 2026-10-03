@@ -3,10 +3,64 @@ import { KID_PIN_LENGTH, type DeviceKidsResponse, type KidPinLoginRequest } from
 import { api, useLoad } from './api';
 
 const LOGIN_ERRORS: Record<string, string> = {
-  roster: "That Google account isn't on this household's roster yet. Ask a parent to add your email.",
+  roster: "That account isn't on this household's roster yet. Ask a parent to add your email.",
   google: 'Google sign-in did not finish. Try again.',
+  apple: 'Sign in with Apple did not finish. Try again.',
   state: 'Sign-in expired. Try again.',
+  link: 'That sign-in link has expired or was already used. Send yourself a new one.',
 };
+
+interface Methods {
+  google: boolean;
+  email: boolean;
+  apple: boolean;
+}
+
+/** Google, Apple, or a one-time email link — whichever the server has turned on. */
+function SignInChoices({ primary = false }: { primary?: boolean }) {
+  const { data } = useLoad<Methods>('/api/auth/methods');
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const invite = new URLSearchParams(window.location.search).get('invite');
+  const send = async (e: FormEvent): Promise<void> => {
+    e.preventDefault();
+    setErr(null);
+    try {
+      await api('/api/auth/email', 'POST', { email, ...(invite ? { invite } : {}) });
+      setSent(email);
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : 'Could not send the link');
+    }
+  };
+  const m = data ?? { google: true, email: false, apple: false };
+  return (
+    <div className="signin-choices" data-testid="signin-choices">
+      {m.google && (
+        <a className="btn" href="/api/auth/google" data-testid={primary ? 'start-trial' : undefined}>
+          {primary ? 'Start free with Google' : 'Continue with Google'}
+        </a>
+      )}
+      {m.apple && (
+        <a className="btn" href="/api/auth/apple" data-testid="apple-signin">
+          Continue with Apple
+        </a>
+      )}
+      {m.email &&
+        (sent ? (
+          <p className="lp-fine" role="status" data-testid="email-sent">
+            Check {sent} — tap the link we sent to sign in (it works once, for 15 minutes).
+          </p>
+        ) : (
+          <form className="email-signin" onSubmit={(e) => void send(e)}>
+            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" aria-label="Email address" autoComplete="email" />
+            <button className="btn ghost light">Email me a sign-in link</button>
+          </form>
+        ))}
+      {err && <p className="error-light">{err}</p>}
+    </div>
+  );
+}
 
 export default function Login() {
   const qs = new URLSearchParams(window.location.search);
@@ -153,7 +207,7 @@ const FAQ: Array<[string, string]> = [
 /** The signed-out front door: what MyDay is, who it's for, and how to start. */
 function Landing({ err, onKid }: { err: string | null; onKid: () => void }) {
   return (
-    <div className="lp" data-testid="landing">
+    <div className="lp" data-testid="landing" id="top">
       <header className="lp-top">
         <span className="lp-brand">
           <img src="/icons/myday-mark.svg" alt="" width={28} height={28} />
@@ -171,9 +225,7 @@ function Landing({ err, onKid }: { err: string | null; onKid: () => void }) {
         </p>
         {err && <p className="error-light">{LOGIN_ERRORS[err] ?? 'Sign-in failed.'}</p>}
         <div className="lp-cta">
-          <a className="btn" href="/api/auth/google" data-testid="start-trial">
-            Start free with Google
-          </a>
+          <SignInChoices primary />
           <button className="btn ghost light" onClick={onKid}>
             I’m a kid — sign in with my PIN
           </button>
@@ -228,8 +280,8 @@ function Landing({ err, onKid }: { err: string | null; onKid: () => void }) {
 
       <section className="lp-hero lp-end">
         <h2>Try it with your family this week.</h2>
-        <a className="btn" href="/api/auth/google">
-          Start free with Google
+        <a className="btn" href="#top">
+          Start free
         </a>
       </section>
 

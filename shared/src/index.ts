@@ -894,6 +894,8 @@ export interface InviteCreated {
   /** Shown once; only a hash is stored. */
   link: string;
   member: RosterMember;
+  /** Also sent by email (when email is set up on the server). */
+  emailed?: boolean;
 }
 
 export interface InvitePreview {
@@ -1864,8 +1866,10 @@ export interface BillingResponse {
   trialEndsAt: string | null;
   trialDaysLeft: number | null;
   paymentMethod: { brand: string; last4: string; test: boolean } | null;
-  /** none = payments not live; stub = test card only, never charges. */
-  provider: 'none' | 'stub';
+  /** none = payments not live; stub = test card only, never charges; stripe = real payments. */
+  provider: 'none' | 'stub' | 'stripe';
+  /** Stripe: the paid period runs until this date (shown after canceling). */
+  paidThrough: string | null;
   canManage: boolean;
 }
 
@@ -1898,7 +1902,7 @@ export interface AdminDashboard {
     /** Active households whose plan has no price yet. */
     unpriced: number;
   };
-  provider: 'none' | 'stub';
+  provider: 'none' | 'stub' | 'stripe';
 }
 
 /* ================= investments / retirement (manual) ================= */

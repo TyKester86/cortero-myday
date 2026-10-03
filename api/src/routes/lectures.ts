@@ -11,10 +11,13 @@
  * and from the 6th the key points, BEFORE the AI notes are revealed.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { mkdir, readFile, unlink } from 'node:fs/promises';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import express, { Router, type Request } from 'express';
+import { Router, type Request } from 'express';
 import type {
   DateStr,
   DetectedAssignment,
@@ -32,6 +35,7 @@ import { detached, inHousehold, pool, tx } from '../db.js';
 import { addDays, today } from '../lib/dates.js';
 import { logEvent } from '../lib/events.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
+import { checkLectureUpload } from '../lib/limits.js';
 import { self } from '../lib/members.js';
 import { structureLecture } from '../lib/lecturenotes.js';
 import { transcriber } from '../lib/transcribe.js';
@@ -137,7 +141,7 @@ async function processLecture(householdId: number, lectureId: number, age: numbe
 /** Raw audio upload (mounted before the JSON parser). */
 lectureUploadRouter.post(
   '/api/lectures/upload',
-  express.raw({ type: ['audio/*', 'video/webm', 'application/octet-stream'], limit: MAX_AUDIO }),
+  // Streamed straight to disk (never the whole recording in memory); every check runs before a byte is read.
   async (req: Request, res) => {
     if (req.headers['x-myday-upload'] !== '1') throw new HttpError(400, 'Missing upload header');
     if (!req.user || !req.member || !req.householdId) throw new HttpError(401, 'Not signed in');
@@ -149,6 +153,7 @@ lectureUploadRouter.post(
     await requireAiConsent(me);
     const classId = idParam(req.query.classId);
     const durationS = int(req.query.durationS ?? 0, 'durationS', 0, 6 * 3600);
+    if (Number(req.headers['content-length'] ?? 0) > MAX_AUDIO) throw new HttpError(413, 'That recording is too big to upload (25 MB max — about 2 hours).');
     const { rows: cls } = await pool.query<{ id: number }>('SELECT id FROM classes WHERE id = $1 AND member_id = $2', [classId, me.id]);
     if (!cls[0]) throw new HttpError(404, 'Pick one of your classes');
     // Offline recordings carry the phone's id: a retried upload returns the lecture it already made.
@@ -161,13 +166,31 @@ lectureUploadRouter.post(
         return;
       }
     }
-    const body = req.body as unknown;
-    if (!Buffer.isBuffer(body) || body.length < 10) throw new HttpError(400, 'The recording was empty');
+    await checkLectureUpload(me.id, durationS);
     const mime = (req.headers['content-type'] ?? 'audio/webm').split(';')[0] ?? 'audio/webm';
     const dir = path.join(UPLOAD_DIR, String(householdId));
     await mkdir(dir, { recursive: true });
     const file = path.join(dir, `${randomUUID()}.${EXT[mime] ?? 'webm'}`);
-    await writeFile(file, body);
+    let size = 0;
+    try {
+      await pipeline(
+        req,
+        new Transform({
+          transform(chunk: Buffer, _enc, done) {
+            size += chunk.length;
+            done(size > MAX_AUDIO ? new HttpError(413, 'That recording is too big to upload (25 MB max — about 2 hours).') : null, chunk);
+          },
+        }),
+        createWriteStream(file),
+      );
+    } catch (e) {
+      await unlink(file).catch(() => undefined);
+      throw e;
+    }
+    if (size < 10) {
+      await unlink(file).catch(() => undefined);
+      throw new HttpError(400, 'The recording was empty');
+    }
     const t = today();
     // Recorded offline and uploaded later: keep the day it was actually recorded (up to 2 weeks back).
     const rq = typeof req.query.recordedOn === 'string' ? req.query.recordedOn : '';

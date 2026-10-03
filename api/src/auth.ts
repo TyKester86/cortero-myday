@@ -60,7 +60,7 @@ const redirectUri = (): string => `${config.publicUrl}/api/auth/google/callback`
 const b64url = (b: Buffer): string => b.toString('base64url');
 export const hashToken = (t: string): string => createHash('sha256').update(t).digest('hex');
 
-interface GoogleProfile {
+export interface GoogleProfile {
   sub: string;
   email: string;
   email_verified: boolean;
@@ -77,7 +77,7 @@ function regenerate(req: Request): Promise<void> {
   return new Promise((resolve, reject) => req.session.regenerate((e: unknown) => (e ? reject(e) : resolve())));
 }
 
-async function startSession(req: Request, userId: number): Promise<void> {
+export async function startSession(req: Request, userId: number): Promise<void> {
   const invite = req.session.inviteToken;
   await regenerate(req); // new session id on login (no fixation)
   req.session.userId = userId;
@@ -104,7 +104,7 @@ export async function peekInvite(token: string): Promise<{ memberId: number; hou
   return r ? { memberId: r.member_id, householdId: r.household_id, household: r.household, name: r.name } : null;
 }
 
-async function upsertUser(p: GoogleProfile, inviteToken: string | undefined): Promise<{ userId: number; pendingInvite: string | null }> {
+export async function upsertUser(p: GoogleProfile, inviteToken: string | undefined, via: 'google' | 'email' | 'apple' = 'google'): Promise<{ userId: number; pendingInvite: string | null }> {
   const email = p.email.toLowerCase();
   return asSystem(async () => {
     let memberId: number | null = null;
@@ -146,7 +146,7 @@ async function upsertUser(p: GoogleProfile, inviteToken: string | undefined): Pr
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('user upsert returned nothing');
-    if (!existing.rowCount) await logEvent('signup', { via: 'google', invited: memberId !== null }, memberId, null);
+    if (!existing.rowCount) await logEvent('signup', { via, invited: memberId !== null }, memberId, null);
     return { userId: id, pendingInvite };
   });
 }

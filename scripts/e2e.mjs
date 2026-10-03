@@ -54,6 +54,23 @@ const adminDbUrl = (() => {
   return u.toString();
 })();
 const SECRET = randomBytes(32).toString('hex');
+// Error alerts go to this local "chat webhook" (stands in for Slack/Discord/Sentry).
+const alerts = [];
+const { createServer: createHttp } = await import('node:http');
+const alertHook = createHttp((req, res) => {
+  let b = '';
+  req.on('data', (c) => (b += c));
+  req.on('end', () => {
+    alerts.push(b);
+    res.end('ok');
+  });
+});
+await new Promise((r) => alertHook.listen(0, r));
+const ALERT_URL = `http://127.0.0.1:${alertHook.address().port}/hook`;
+// Sign in with Apple, locally: our own RSA key stands in for Apple's signing key.
+const { generateKeyPairSync, createHash: sha, sign: rsaSign } = await import('node:crypto');
+const APPLE_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const APPLE_JWKS = JSON.stringify({ keys: [{ ...APPLE_KEY.publicKey.export({ format: 'jwk' }), kid: 'test1', alg: 'RS256', use: 'sig' }] });
 const DEV_TOKEN = randomBytes(24).toString('hex');
 const serverEnv = (fakeNow) => ({
   PATH: process.env.PATH,
@@ -77,6 +94,13 @@ const serverEnv = (fakeNow) => ({
   EXERCISE_IMAGES: path.join(root, 'scripts', 'fixtures', 'exercise-images.e2e.json'),
   ADMIN_EMAILS: 'admin@example.com',
   BILLING_PROVIDER: 'stub',
+  // Email sign-in links go to an in-memory outbox; Apple tokens are checked against our test key.
+  MAIL_PROVIDER: 'stub',
+  ERROR_WEBHOOK_URL: ALERT_URL,
+  // The walk creates dozens of households from one machine; the real default is 5 an hour.
+  SIGNUPS_PER_HOUR: '500',
+  APPLE_CLIENT_ID: 'app.myday.test',
+  APPLE_JWKS_JSON: APPLE_JWKS,
   ...(fakeNow ? { FAKE_NOW: fakeNow } : {}),
 });
 
@@ -1839,8 +1863,167 @@ async function privacyRules() {
     (await sql("SELECT COUNT(*)::int AS n FROM users WHERE email = 'pair-del@example.com'"))[0].n,
   ], [1, 0, 0, 0]);
 
+  section('audit: households choose what’s in their MyDay; no kids → no kid tools; a setup checklist');
+  const inv = await ty.patch('/api/household/info', { modulesOff: ['invest', 'circles', 'nonsense'] });
+  eq('turn modules off (unknown names ignored)', inv.data.modulesOff, ['invest', 'circles']);
+  eq('…and back on', (await ty.patch('/api/household/info', { modulesOff: [] })).data.modulesOff, []);
+  const duo = new Client('duo-mod');
+  await duo.get(`/dev-login?token=${DEV_TOKEN}&email=duo-mod@example.com`);
+  await duo.post('/api/households', { householdName: 'Just Two', type: 'couple', yourName: 'Dana' });
+  const dm = (await duo.get('/api/me')).data.household;
+  eq('a couple starts without School and has no kids', [dm.modulesOff, dm.hasKids], [['school'], false]);
+  eq('the setup checklist can be hidden for good', (await duo.post('/api/onboarding/checklist', { skipped: true })).data.onboarding.checklist, true);
+
+  section('audit: sign in without Google — a one-time email link, or Sign in with Apple');
+  eq('the sign-in methods on (email + Apple here)', (await anon.get('/api/auth/methods')).data, { google: false, email: true, apple: true });
+  const mailer = new Client('mail-user');
+  eq('ask for a link: the same answer whether or not the address has an account', (await mailer.post('/api/auth/email', { email: 'Mail.User@example.com' })).data, { sent: true });
+  const box = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail;
+  const msg = box.filter((m) => m.to === 'mail.user@example.com').at(-1);
+  const link = msg?.text.match(/https?:\/\/\S+callback\?token=\S+/)?.[0];
+  check('the email has a one-time sign-in link', !!link, msg?.subject);
+  const path1 = new URL(link).pathname + new URL(link).search;
+  const r1 = await mailer.get(path1);
+  eq('tapping it signs you in (new person → household setup next)', [r1.status, r1.location, (await mailer.get('/api/me')).data.email], [302, '/', 'mail.user@example.com']);
+  const again = await new Client('mail-again').get(path1);
+  eq('the link works only once', again.location, '/?error=link');
+  for (let i = 0; i < 3; i++) await anon.post('/api/auth/email', { email: 'flood@example.com' });
+  eq('…and can’t be used to flood someone’s inbox', (await anon.post('/api/auth/email', { email: 'flood@example.com' })).status, 429);
+
+  const ap = new Client('apple-user');
+  const start = await ap.get('/api/auth/apple');
+  const to = new URL(start.location);
+  const [cv] = decodeURIComponent(ap.jar.get('myday.apple') ?? '').split('~');
+  const [st, nonce] = cv.split('.');
+  eq('“Continue with Apple” goes to Apple with state + a hashed nonce', [to.origin, to.searchParams.get('client_id'), to.searchParams.get('state') === st, to.searchParams.get('nonce') === sha('sha256').update(nonce).digest('hex')], ['https://appleid.apple.com', 'app.myday.test', true, true]);
+  const jwt = (claims) => {
+    const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const head = enc({ alg: 'RS256', kid: 'test1' });
+    const body = enc({ iss: 'https://appleid.apple.com', aud: 'app.myday.test', sub: 'apple-001', email: 'Ada@privaterelay.appleid.com', exp: Math.floor(Date.now() / 1000) + 7 * 86400, nonce: sha('sha256').update(nonce).digest('hex'), ...claims });
+    return `${head}.${body}.${rsaSign('RSA-SHA256', Buffer.from(`${head}.${body}`), APPLE_KEY.privateKey).toString('base64url')}`;
+  };
+  const post = (c, token) => c.req('POST', '/api/auth/apple/callback', new URLSearchParams({ state: st, id_token: token, user: JSON.stringify({ name: { firstName: 'Ada', lastName: 'Apple' } }) }).toString(), { json: false, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  eq('an answer without this browser’s own sign-in cookie is refused (no login CSRF)', (await post(new Client('apple-x'), jwt({}))).location, '/?error=state');
+  eq('a token minted for another app is refused', (await post(ap, jwt({ aud: 'someone.else' }))).location, '/?error=apple');
+  const ap2 = new Client('apple-user2');
+  await ap2.get('/api/auth/apple');
+  const [cv2] = decodeURIComponent(ap2.jar.get('myday.apple') ?? '').split('~');
+  const [st2, nonce2] = cv2.split('.');
+  const good = (() => {
+    const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const head = enc({ alg: 'RS256', kid: 'test1' });
+    const body = enc({ iss: 'https://appleid.apple.com', aud: 'app.myday.test', sub: 'apple-001', email: 'Ada@privaterelay.appleid.com', exp: Math.floor(Date.now() / 1000) + 7 * 86400, nonce: sha('sha256').update(nonce2).digest('hex') });
+    return `${head}.${body}.${rsaSign('RSA-SHA256', Buffer.from(`${head}.${body}`), APPLE_KEY.privateKey).toString('base64url')}`;
+  })();
+  const ok = await ap2.req('POST', '/api/auth/apple/callback', new URLSearchParams({ state: st2, id_token: good, user: JSON.stringify({ name: { firstName: 'Ada', lastName: 'Apple' } }) }).toString(), { json: false, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  const am = (await ap2.get('/api/me')).data;
+  eq('a real Apple answer signs you in (name from Apple’s first sign-in)', [ok.location, am.email, am.name], ['/', 'ada@privaterelay.appleid.com', 'Ada Apple']);
+
+  section('audit: production — deep health check, error alerts, fair-use limits, streamed uploads');
+  const deep = await anon.get('/api/health/deep');
+  eq('/api/health/deep proves the database answers (for uptime monitors)', [deep.status, deep.data.ok, deep.data.db], [200, true, 'ok']);
+  alerts.length = 0;
+  eq('an unexpected error answers 500 without details…', [(await anon.get(`/api/dev/boom?token=${DEV_TOKEN}`)).status, (await anon.get(`/api/dev/boom?token=${DEV_TOKEN}`)).data], [500, { error: 'Something went wrong' }]);
+  for (let i = 0; i < 20 && !alerts.length; i++) await new Promise((r) => setTimeout(r, 100));
+  check('…and sends an alert (route + error, no personal data)', alerts.some((a) => /Deliberate test error/.test(a) && /\/api\/dev\/boom/.test(a)), alerts[0]?.slice(0, 120));
+  eq('the test-error route doesn’t exist without the dev token', (await anon.get('/api/dev/boom')).status, 404);
+  const capC = new Client('cap-user');
+  await capC.get(`/dev-login?token=${DEV_TOKEN}&email=cap-user@example.com`);
+  await capC.post('/api/households', { householdName: 'Cap House', type: 'solo', yourName: 'Cappy' });
+  const capMe = (await capC.get('/api/me')).data;
+  await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text) SELECT $1, $2, 'companion', 'user', 'x' FROM generate_series(1, 1500)", [capMe.household.id, capMe.member.id]);
+  const capped = await capC.post('/api/chat/companion', { message: 'one more' });
+  eq('a household’s AI messages are capped per month (1,500 by default) with a friendly reason', [capped.status, capped.data.code], [429, 'monthly_limit']);
+  eq('…other households aren’t affected', (await ty.post('/api/chat/companion', { message: 'hi' })).status, 200);
+  const big = await avery.req('POST', `/api/lectures/upload?classId=${(await avery.get('/api/school')).data.classes.find((c) => c.name === 'Biology').id}&durationS=60`, Buffer.alloc(26 * 1024 * 1024, 1), { json: false, headers: { 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1' } });
+  eq('lecture uploads stream to disk and stop at 25 MB', big.status, 413);
+
+  section('audit: transactional email — invites by email, a trial-ending reminder (once)');
+  const invMail = (await ty.post('/api/household/invites', { name: 'Robin', email: 'robin-invite@example.com' })).data;
+  const robin = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.filter((m) => m.to === 'robin-invite@example.com').at(-1);
+  eq('inviting a grown-up emails them the join link', [invMail.emailed, robin?.text.includes(invMail.link)], [true, true]);
+  const soon = new Client('trial-soon');
+  await soon.get(`/dev-login?token=${DEV_TOKEN}&email=trial-soon@example.com`);
+  await soon.post('/api/households', { householdName: 'Trial Soon', type: 'solo', yourName: 'Tess' });
+  await sql("UPDATE households SET trial_ends_at = now() + interval '2 days' WHERE name = 'Trial Soon'");
+  const tr1 = runNode(['dist/cli.js', 'billing:trial-reminders']);
+  const tr2 = runNode(['dist/cli.js', 'billing:trial-reminders']);
+  eq('two days before the trial ends, the grown-ups get one reminder (never twice)', [/sent: [1-9]/.test(tr1), /sent: 0/.test(tr2), (await sql("SELECT trial_notice_at IS NOT NULL AS sent FROM households WHERE name = 'Trial Soon'"))[0].sent], [true, true, true]);
+
   section('audit: public privacy policy + terms (readable signed out)');
   for (const p of ['/privacy', '/terms']) eq(`${p} is served signed out`, (await fetch(BASE + p)).status, 200);
+}
+
+/** Real payments through Stripe, against a local fake Stripe (no network, no real keys). */
+async function stripeBilling() {
+  section('audit: real payments (Stripe Checkout + signed webhooks) — against a local fake Stripe');
+  const { createServer } = await import('node:http');
+  const { createHmac } = await import('node:crypto');
+  const calls = [];
+  const fake = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      calls.push({ path: req.url, auth: req.headers.authorization, body: new URLSearchParams(body) });
+      const out = req.url === '/v1/customers' ? { id: 'cus_test1' } : req.url === '/v1/checkout/sessions' ? { id: 'cs_1', url: 'https://checkout.stripe.test/cs_1' } : { url: 'https://billing.stripe.test/portal' };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    });
+  });
+  await new Promise((r) => fake.listen(0, r));
+  const fakeUrl = `http://127.0.0.1:${fake.address().port}`;
+  const [{ price_cents: oldPrice }] = await sql('SELECT price_cents FROM billing_plans WHERE is_default');
+  await sql('UPDATE billing_plans SET price_cents = 1299 WHERE is_default');
+  const PORT2 = PORT + 1;
+  const env2 = { ...serverEnv(), PORT: String(PORT2), PUBLIC_URL: `http://localhost:${PORT2}`, BILLING_PROVIDER: 'stripe', STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_fake', STRIPE_API_BASE: fakeUrl };
+  const s2 = spawn(process.execPath, ['dist/server.js'], { cwd: apiDir, env: env2, stdio: ['ignore', 'ignore', 'pipe'] });
+  const B2 = `http://localhost:${PORT2}`;
+  for (let i = 0; i < 100; i++) {
+    if (await fetch(`${B2}/api/health`).then((r) => r.ok, () => false)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const as = (c) => ({ Cookie: c.cookie, 'User-Agent': 'MyDay-e2e' });
+  const call2 = async (c, method, path, body) => {
+    const r = await fetch(B2 + path, { method, headers: { ...as(c), 'Content-Type': 'application/json' }, body: body === undefined ? (method === 'GET' ? undefined : '{}') : JSON.stringify(body) });
+    return { status: r.status, data: await r.json().catch(() => null) };
+  };
+  const hhId = (await ty.get('/api/me')).data.household.id;
+  // Earlier billing tests left this household on the (stub) paid plan: start from a fresh 20-day trial.
+  const [{ billing_status: oldStatus, trial_ends_at: oldTrial }] = await sql('SELECT billing_status, trial_ends_at FROM households WHERE id = $1', [hhId]);
+  await sql("UPDATE households SET billing_status = 'trialing', trial_ends_at = now() + interval '20 days' WHERE id = $1", [hhId]);
+  try {
+    eq('the billing page says payments are real (Stripe)', (await call2(ty, 'GET', '/api/billing')).data.provider, 'stripe');
+    const co = await call2(ty, 'POST', '/api/billing/checkout');
+    const cust = calls.find((c) => c.path === '/v1/customers');
+    const sess = calls.find((c) => c.path === '/v1/checkout/sessions');
+    eq('“Subscribe” opens Stripe’s hosted checkout (cards never touch MyDay)', [co.status, co.data.url], [200, 'https://checkout.stripe.test/cs_1']);
+    eq('…for the household’s plan price, monthly, charging when the trial ends', [
+      cust?.auth, cust?.body.get('metadata[household_id]'), sess?.body.get('mode'), sess?.body.get('client_reference_id'),
+      sess?.body.get('line_items[0][price_data][unit_amount]'), sess?.body.get('line_items[0][price_data][recurring][interval]'), Number(sess?.body.get('subscription_data[trial_end]')) > Date.now() / 1000,
+    ], ['Bearer sk_test_fake', String(hhId), 'subscription', String(hhId), '1299', 'month', true]);
+    eq('a kid can’t start billing', (await call2(avery, 'POST', '/api/billing/checkout')).status, 403);
+    const hook = async (type, object, secret = 'whsec_fake') => {
+      const payload = JSON.stringify({ id: `evt_${type}`, type, data: { object } });
+      const t = Math.floor(Date.now() / 1000);
+      const sig = createHmac('sha256', secret).update(`${t}.${payload}`).digest('hex');
+      return fetch(`${B2}/api/billing/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${t},v1=${sig}` }, body: payload });
+    };
+    eq('a webhook with a bad signature is refused', (await hook('checkout.session.completed', { client_reference_id: String(hhId), customer: 'cus_test1', subscription: 'sub_1' }, 'whsec_wrong')).status, 400);
+    eq('…and nothing changed', (await call2(ty, 'GET', '/api/billing')).data.status === 'active', false);
+    await hook('checkout.session.completed', { client_reference_id: String(hhId), customer: 'cus_test1', subscription: 'sub_1' });
+    eq('paid → the household is active', (await call2(ty, 'GET', '/api/billing')).data.status, 'active');
+    await hook('customer.subscription.updated', { id: 'sub_1', customer: 'cus_test1', status: 'past_due', current_period_end: 1893456000 });
+    eq('card declined → past due (the app still works)', (await call2(ty, 'GET', '/api/billing')).data.status, 'past_due');
+    await hook('customer.subscription.deleted', { id: 'sub_1', customer: 'cus_test1', status: 'canceled', current_period_end: 1893456000 });
+    const after = (await call2(ty, 'GET', '/api/billing')).data;
+    eq('canceled in Stripe → canceled here, paid through the period end', [after.status, after.paidThrough?.slice(0, 10)], ['canceled', '2030-01-01']);
+    eq('“Manage billing” opens Stripe’s portal (card, invoices, cancel)', (await call2(ty, 'POST', '/api/billing/portal')).data.url, 'https://billing.stripe.test/portal');
+  } finally {
+    s2.kill();
+    fake.close();
+    await sql('UPDATE households SET billing_status = $2, trial_ends_at = $3, stripe_customer_id = NULL, stripe_subscription_id = NULL, paid_through = NULL WHERE id = $1', [hhId, oldStatus, oldTrial]);
+    await sql('UPDATE billing_plans SET price_cents = $1 WHERE is_default', [oldPrice]);
+  }
 }
 
 async function householdJoin() {
@@ -2021,16 +2204,42 @@ async function uiGate() {
     eq('member archived via the in-page confirm, persists after reload', (await ty.get('/api/household/admin')).data.members.find((m) => m.name === 'Uitest Person')?.archived, true);
     eq('no native confirm() dialogs anywhere', nativeDialogs, 0);
 
-    section('C. phone layout unchanged; desktop gets the command center + shortcuts');
+    section('audit layout: one Today, five tabs, a grouped menu, Hana everywhere, kid tools only as a parent’s view');
     await page.goto(`${BASE}/`);
-    await page.waitForLoadState('networkidle');
-    check('phone: Today is the checklist (no command center), bottom tabs present', (await page.locator('[data-testid^=command-]').count()) === 0 && (await page.locator('nav.tabs a').count()) >= 4);
+    await page.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    eq('phone: a grown-up’s home is the merged Today; tabs are Today · Plan · Family · Money · Me', (await page.locator('nav.tabs a small').allInnerTexts()).map((t) => t.toLowerCase()), ['today', 'plan', 'family', 'money', 'me']);
+    await page.getByTestId('kids-glance').waitFor({ timeout: 10000 });
+    check('Today shows what’s next, the workout and meals, and the kids at a glance', (await page.getByTestId('next-up').count()) === 1 && (await page.getByTestId('kids-glance').count()) === 1);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    const groups = await page.getByTestId('menu').locator('.navgroup-label').allInnerTexts();
+    eq('the menu is grouped (Me · Family · Home · Money · School · Help & people · Account)', groups.map((g) => g.toLowerCase()), ['me', 'family', 'home', 'money', 'school', 'help & people', 'account']);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByTestId('hana-fab').click();
+    await page.waitForURL('**/hana');
+    check('the Hana button opens Ask Hana from any page', page.url().endsWith('/hana'));
+    await page.goto(`${BASE}/me`);
+    await page.getByTestId('me-hub').locator('.hubtile').first().waitFor({ timeout: 10000 });
+    eq('Me: everything else, grouped, one tap away', await page.getByTestId('me-hub').locator('.hubtile').count() > 15, true);
+    await page.goto(`${BASE}/homework`);
+    await page.getByTestId('homework-pick').waitFor({ timeout: 10000 });
+    eq('a grown-up’s Homework is the kids’ homework (no “Ty’s homework”)', await page.getByTestId('homework-pick').getByRole('button').allInnerTexts().then((t) => t.some((x) => /Avery/.test(x)) && t.some((x) => /Evan/.test(x))), true);
+    await page.goto(`${BASE}/score`);
+    await page.getByTestId('progress-adult').waitFor({ timeout: 10000 });
+    eq('a grown-up’s Score is “Your progress” — no kid points to spend', [await page.getByText('to spend').count(), await page.getByText('Perfect Week').count()], [0, 0]);
+    await page.goto(`${BASE}/meals`);
+    await page.locator('nav.subtabs a').first().waitFor({ timeout: 10000 });
+    eq('Plan section tabs on Meals: Week · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Meals', 'This week’s menu', 'Grocery list']);
+
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const dp = await desk.newPage();
     watch(dp);
     await dp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
-    await dp.waitForLoadState('networkidle');
-    check('desktop: a grown-up lands on the command center', (await dp.locator('[data-testid^=command-]').count()) === 1);
+    await dp.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    eq('desktop: a sidebar instead of the phone’s bottom bar and menu button', [await dp.getByTestId('sidebar').count(), await dp.locator('nav.tabs').count(), await dp.getByRole('button', { name: 'Menu' }).count()], [1, 0, 0]);
+    await dp.getByLabel('Find a page').fill('gro');
+    eq('…with search', await dp.getByTestId('sidebar').locator('a').allInnerTexts().then((t) => t.map((x) => x.trim())), ['🛒 Grocery list']);
+    await dp.getByLabel('Find a page').fill('');
+    await dp.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
     await dp.keyboard.press('?');
     check('“?” opens the shortcut help', await dp.getByTestId('shortcut-help').isVisible());
     await dp.keyboard.press('Escape');
@@ -2133,8 +2342,12 @@ async function uiGate() {
     const lp = await lc.newPage();
     await lp.goto(`${BASE}/`);
     await lp.getByTestId('landing').waitFor({ timeout: 10000 });
-    const fit = await lp.evaluate(() => ({ w: document.documentElement.scrollWidth, vw: innerWidth, recipes: document.body.innerText.includes('233 recipes'), cta: !!document.querySelector('[data-testid="start-trial"]') }));
+    await lp.getByTestId('apple-signin').waitFor({ timeout: 10000 });
+    const fit = await lp.evaluate(() => ({ w: document.documentElement.scrollWidth, vw: innerWidth, recipes: document.body.innerText.includes('233 recipes'), cta: !!document.querySelector('[data-testid="signin-choices"] a, [data-testid="signin-choices"] form') }));
     eq('landing: nothing wider than the phone, current numbers, a clear start button', [fit.w <= fit.vw, fit.recipes, fit.cta], [true, true, true]);
+    await lp.getByLabel('Email address').fill('ui-mail@example.com');
+    await lp.getByRole('button', { name: /email me a sign-in link/i }).click();
+    eq('landing: “Email me a sign-in link” works (for families without Google)', await lp.getByTestId('email-sent').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
     await lp.getByRole('link', { name: 'Privacy' }).click();
     eq('…Privacy opens signed out', await lp.getByRole('heading', { name: 'Privacy Policy' }).waitFor({ timeout: 10000 }).then(() => true, () => false), true);
     await lp.goto(`${BASE}/terms`);
@@ -2145,7 +2358,57 @@ async function uiGate() {
     eq('Settings → Your data: download, delete account, delete household', [await kpg.getByTestId('export-data').count(), await kpg.getByTestId('delete-account').count()], [1, 1]);
     await kpg.goto(`${BASE}/family`);
     eq('Family: the AI-helper switch for kids under 13', await kpg.getByTestId('ai-consent').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    const nk = await browser.newContext(phone);
+    const np = await nk.newPage();
+    await np.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=duo-ui@example.com`);
+    await np.getByLabel('Household name').fill('Two UI');
+    await np.getByText('Couple', { exact: true }).click();
+    await np.getByRole('button', { name: /start my free trial/i }).click();
+    await np.waitForLoadState('networkidle');
+    await np.goto(`${BASE}/`);
+    await np.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    await np.request.patch(`${BASE}/api/me/prefs`, { data: { firstRunDone: true }, headers: { 'Content-Type': 'application/json' } });
+    await np.reload();
+    await np.getByTestId('setup-checklist').waitFor({ timeout: 10000 });
+    await np.getByRole('button', { name: 'Menu' }).click();
+    const menu2 = (await np.getByTestId('menu').locator('a').allInnerTexts()).map((t) => t.trim());
+    eq('a new couple: setup checklist on Today; no Homework, Rewards, Kid money or School in the menu', [menu2.some((t) => /Homework|Rewards|Kid money|School|Lectures/.test(t)), menu2.some((t) => /Health/.test(t))], [false, true]);
+    await np.getByRole('button', { name: 'Menu' }).click();
+    await np.getByTestId('setup-checklist').getByRole('button', { name: 'Hide' }).click();
+    await np.reload();
+    await np.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    eq('…“Hide” keeps it hidden', await np.getByTestId('setup-checklist').count(), 0);
+    await np.goto(`${BASE}/settings`);
+    await np.getByTestId('modules').waitFor({ timeout: 10000 });
+    await np.getByTestId('module-health').uncheck();
+    await np.getByTestId('modules').getByRole('button', { name: 'Save' }).click();
+    await np.waitForLoadState('networkidle');
+    await np.getByTestId('modules').waitFor({ timeout: 10000 });
+    await np.getByRole('button', { name: 'Menu' }).click();
+    eq('Settings → What’s in your MyDay: turning Health off removes it from the menu', (await np.getByTestId('menu').locator('a').allInnerTexts()).some((t) => /Health/.test(t)), false);
+    await nk.close();
     await kpg.goto(`${BASE}/health`);
+
+    section('audit: accessibility — readable contrast in light and dark (with a chosen accent), labels, headings');
+    const axeSrc = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
+    const axeFails = [];
+    for (const [who, scheme, pages] of [['ty', 'light', ['/', '/money', '/health/plan', '/meals', '/meals/grocery', '/day', '/household', '/setup', '/me']], ['avery', 'dark', ['/', '/health', '/school', '/lectures', '/settings', '/meals']], ['evan', 'light', ['/', '/homework']]]) {
+      const ac = await browser.newContext({ ...phone, colorScheme: scheme, bypassCSP: true });
+      const ap2 = await ac.newPage();
+      await ap2.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=${who}`);
+      await ap2.waitForLoadState('networkidle');
+      for (const r of pages) {
+        await ap2.goto(BASE + r);
+        await ap2.waitForLoadState('networkidle');
+        await ap2.addScriptTag({ content: axeSrc });
+        const v = await ap2.evaluate(async () =>
+          (await window.axe.run(document, { runOnly: ['color-contrast', 'link-name', 'select-name', 'button-name', 'image-alt', 'label', 'empty-table-header', 'page-has-heading-one'] })).violations.map((x) => `${x.id}×${x.nodes.length}`),
+        );
+        if (v.length) axeFails.push(`${who}${r}: ${v.join(', ')}`);
+      }
+      await ac.close();
+    }
+    eq('no contrast, label, link-name or heading problems on the audited pages (incl. dark mode with a purple accent)', axeFails, []);
 
     section('audit 1a in the browser: the “whose day” picker offers me + the kids, never another grown-up');
     await kpg.locator('select[aria-label="Whose day"]').waitFor({ timeout: 10000 });
@@ -2277,9 +2540,12 @@ async function uiGate() {
       const shellKey = keys.find((k) => k.endsWith('-shell'));
       const c = shellKey ? await caches.open(shellKey) : null;
       const reqs = c ? await c.keys() : [];
-      return { controlled: !!navigator.serviceWorker.controller, page: !!(c && (await c.match('/index.html'))), assets: reqs.filter((r) => new URL(r.url).pathname.startsWith('/assets/')).length };
+      const man = await (await fetch('/asset-manifest.json')).json();
+      const files = new Set(Object.values(man).map((e) => `/${e.file}`));
+      const cached = new Set(reqs.map((r) => new URL(r.url).pathname));
+      return { controlled: !!navigator.serviceWorker.controller, page: !!(c && (await c.match('/index.html'))), assets: reqs.filter((r) => new URL(r.url).pathname.startsWith('/assets/')).length, missing: [...files].filter((f) => !cached.has(f)).length, split: files.size };
     });
-    eq('the app shell (page + all its scripts/styles) is cached on the phone', [shell.controlled, shell.page, shell.assets > 0], [true, true, true]);
+    eq('the app shell (page + every on-demand piece of code) is cached on the phone', [shell.controlled, shell.page, shell.assets > 0, shell.split > 10, shell.missing], [true, true, true, true, 0]);
     const lecCount = async () => (await avery.get('/api/lectures')).data.lectures.length;
     const before = await lecCount();
 
@@ -2417,6 +2683,7 @@ try {
   await exercisePictures();
   await bodyScience();
   await privacyRules();
+  await stripeBilling();
   await householdJoin();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
@@ -2424,6 +2691,7 @@ try {
   console.error(e);
 } finally {
   await stopServer();
+  alertHook.close();
 }
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {

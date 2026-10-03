@@ -49,14 +49,22 @@ export function InviteGrownUp() {
       </div>
       {made && (
         <div data-testid="invite-made" style={{ marginTop: 10 }}>
+          {made.emailed && <p className="good small" data-testid="invite-emailed">✓ We emailed the link to them. You can also share it below.</p>}
           <QR value={made.link} label="Invite QR code" />
           <p className="small" style={{ wordBreak: 'break-all' }}>
             {made.link}
           </p>
           <p className="small muted">Works once, for 14 days. Opening it signs them in straight into this household.</p>
-          <button className="btn small ghost" onClick={() => void navigator.clipboard?.writeText(made.link)}>
-            Copy link
-          </button>
+          <div className="row">
+            {typeof navigator.share === 'function' && (
+              <button className="btn small" onClick={() => void navigator.share({ title: 'Join our household on MyDay', text: 'Here’s your invite to our MyDay household:', url: made.link }).catch(() => undefined)}>
+                Share (text, WhatsApp…)
+              </button>
+            )}
+            <button className="btn small ghost" onClick={() => void navigator.clipboard?.writeText(made.link)}>
+              Copy link
+            </button>
+          </div>
         </div>
       )}
     </div>
