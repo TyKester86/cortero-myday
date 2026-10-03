@@ -644,9 +644,13 @@ export async function householdInfo(householdId: number): Promise<HouseholdInfo>
     onboarding: Record<string, boolean>;
     modules_off: string[];
     has_kids: boolean;
+    signed_in_adults: number;
   }>(
     `SELECT id, name, type, code, trial_ends_at, allow_teen_bank_link, onboarding, modules_off,
-            EXISTS (SELECT 1 FROM household_members m WHERE m.household_id = households.id AND m.kind = 'kid' AND m.archived_at IS NULL) AS has_kids
+            EXISTS (SELECT 1 FROM household_members m WHERE m.household_id = households.id AND m.kind = 'kid' AND m.archived_at IS NULL) AS has_kids,
+            (SELECT COUNT(*)::int FROM household_members m
+              WHERE m.household_id = households.id AND m.kind = 'adult' AND m.archived_at IS NULL
+                AND EXISTS (SELECT 1 FROM users u WHERE u.member_id = m.id)) AS signed_in_adults
        FROM households WHERE id = $1`,
     [householdId],
   );
@@ -662,6 +666,7 @@ export async function householdInfo(householdId: number): Promise<HouseholdInfo>
     onboarding: h.onboarding,
     modulesOff: h.modules_off.filter((k): k is ModuleKey => (MODULE_KEYS as readonly string[]).includes(k)),
     hasKids: h.has_kids,
+    signedInAdults: h.signed_in_adults,
   };
 }
 

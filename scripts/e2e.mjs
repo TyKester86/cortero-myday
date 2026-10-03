@@ -1521,6 +1521,24 @@ async function circles() {
 }
 
 async function careTeam() {
+  section('solo grown-ups (“Just me”): no kid or partner tools until someone joins full time');
+  const { liveFeatures } = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
+  const sol = new Client('solo-one');
+  await sol.get(`/dev-login?token=${DEV_TOKEN}&email=solo-one@example.com`);
+  eq('a “Just me” household', (await sol.post('/api/households', { householdName: 'Sol’s place', type: 'solo', yourName: 'Sol' })).status, 201);
+  let solHh = (await sol.get('/api/me')).data.household;
+  eq('one grown-up signed in, no kids → no family tools', [solHh.signedInAdults, solHh.hasKids, liveFeatures(solHh)], [1, false, { kids: false, partner: false, family: false }]);
+  const solInv = (await sol.post('/api/household/invites', { name: 'Rowan', email: 'rowan@example.com', xpTrack: 'leader' })).data;
+  solHh = (await sol.get('/api/me')).data.household;
+  eq('inviting someone isn’t “full time” yet (they haven’t signed in)', [solHh.signedInAdults, liveFeatures(solHh).partner], [1, false]);
+  const rowan = new Client('rowan');
+  await rowan.get(`/dev-login?token=${DEV_TOKEN}&email=rowan@example.com&invite=${solInv.link.split('/join/')[1]}`);
+  solHh = (await sol.get('/api/me')).data.household;
+  eq('a second grown-up signs in and lives here → partner tools on', [solHh.signedInAdults, liveFeatures(solHh)], [2, { kids: false, partner: true, family: true }]);
+  await sol.post('/api/household/members', { name: 'Pip', kind: 'kid', age: 7 });
+  solHh = (await sol.get('/api/me')).data.household;
+  eq('…and a kid joins → kid tools on too', liveFeatures(solHh), { kids: true, partner: true, family: true });
+
   section('kid PIN sign-in: the PIN that was set is the PIN that works (even with a kid on the roster twice)');
   const dupAvery = await ty.post('/api/household/members', { name: 'avery', kind: 'kid' });
   eq('adding a second kid with the same first name → 409 (sign-in would be ambiguous)', [dupAvery.status, dupAvery.data.code], [409, 'duplicate_kid']);
@@ -2639,6 +2657,37 @@ async function uiGate() {
     eq('the new PIN works', await kidSignIn('739104'), 'Avery');
     check('…and the old one doesn’t', /didn't match/.test(await kidSignIn(genPin)));
     await pairCtx.close();
+    section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
+    const soloCtx = await browser.newContext(phone);
+    const sp = await soloCtx.newPage();
+    watch(sp);
+    await sp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=solo-ui@example.com`);
+    await sp.getByLabel('Household name').fill('Solo UI');
+    await sp.getByText('Just me', { exact: true }).click();
+    await sp.getByRole('button', { name: /start my free trial/i }).click();
+    await sp.waitForLoadState('networkidle');
+    await sp.request.patch(`${BASE}/api/me/prefs`, { data: { firstRunDone: true }, headers: { 'Content-Type': 'application/json' } });
+    await sp.goto(`${BASE}/`);
+    await sp.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    eq('solo tabs: Today · Plan · Money · Me (no Family)', (await sp.locator('nav.tabs a small').allTextContents()).map((t) => t.trim().toLowerCase()), ['today', 'plan', 'money', 'me']);
+    await sp.getByRole('button', { name: 'Menu' }).click();
+    const soloMenu = (await sp.getByTestId('menu').locator('a').allTextContents()).map((t) => t.trim());
+    eq('…no Chores, Family wins, Homework, Rewards or Kid money in the menu', soloMenu.filter((t) => /Chores|Family wins|Homework|Rewards|Kid money/.test(t)), []);
+    check('…Household is still there (to invite someone or add a kid), under Account', (await sp.getByTestId('menu').locator('.navgroup').filter({ hasText: 'Account' }).getByRole('link', { name: 'Household' }).count()) === 1);
+    await sp.getByRole('button', { name: 'Menu' }).click();
+    await sp.goto(`${BASE}/family`);
+    check('…and the Family page (partner check-in, kids) isn’t there for one person', (await sp.getByText('Page not found.').waitFor({ timeout: 10000 }).then(() => true, () => false)) && (await sp.getByTestId('partner-checkin').count()) === 0);
+    const soloInv = await (await sp.request.post(`${BASE}/api/household/invites`, { data: { name: 'Quinn', email: 'quinn-solo@example.com', xpTrack: 'leader' }, headers: { 'Content-Type': 'application/json' } })).json();
+    const qc = await browser.newContext(phone);
+    const qp = await qc.newPage();
+    await qp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=quinn-solo@example.com&invite=${soloInv.link.split('/join/')[1]}`);
+    await qc.close();
+    await sp.goto(`${BASE}/`);
+    await sp.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    eq('once a second grown-up signs in: the Family tab appears', (await sp.locator('nav.tabs a small').allTextContents()).map((t) => t.trim().toLowerCase()), ['today', 'plan', 'family', 'money', 'me']);
+    await sp.goto(`${BASE}/family`);
+    check('…with the partner check-in', await sp.getByTestId('partner-checkin').waitFor({ timeout: 10000 }).then(() => true, () => false));
+    await soloCtx.close();
     const nk = await browser.newContext(phone);
     const np = await nk.newPage();
     await np.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=duo-ui@example.com`);

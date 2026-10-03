@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
-import type { Curfew, EarnResult, FamilyResponse, KidOverview, NewOneOnOne, PartnerCheckinFields } from '@myday/shared';
+import { liveFeatures, type Curfew, type EarnResult, type FamilyResponse, type KidOverview, type NewOneOnOne, type PartnerCheckinFields } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
 import { ago } from '../../dates';
+import { useSession } from '../../session';
 import { KidAiConsent } from '../settings/YourData';
 
 type EarnFamily = EarnResult & { family: FamilyResponse };
@@ -55,6 +56,8 @@ function KidCard({ k, onCurfew }: { k: KidOverview; onCurfew: (field: keyof Curf
 
 /** Partner check-in, the kids at a glance (with curfews), and 1-on-1 time. */
 export default function Family() {
+  const { me } = useSession();
+  const live = me.household ? liveFeatures(me.household) : { kids: true, partner: true, family: true };
   const { data, error, setData } = useLoad<FamilyResponse>('/api/family');
   const { toast, show } = useToast();
   const [partner, setPartner] = useState<PartnerCheckinFields | null>(null);
@@ -87,8 +90,8 @@ export default function Family() {
     <section>
       <h1>Family</h1>
 
-      <KidAiConsent />
-      <h2>The kids</h2>
+      {data.kids.length > 0 && <KidAiConsent />}
+      {data.kids.length > 0 && <h2>The kids</h2>}
       {data.kids.map((k) => (
         <KidCard
           key={k.member.id}
@@ -102,36 +105,38 @@ export default function Family() {
         />
       ))}
 
-      <form className="card form" onSubmit={(e) => void savePartner(e)}>
-        <h2>💑 Partner check-in · week of {data.weekStart}</h2>
-        {data.partner && <p className="muted">Ratio this week: {data.partner.ratio} (aim for 5:1)</p>}
-        <div className="inline">
+      {live.partner && (
+        <form className="card form" onSubmit={(e) => void savePartner(e)} data-testid="partner-checkin">
+          <h2>💑 Partner check-in · week of {data.weekStart}</h2>
+          {data.partner && <p className="muted">Ratio this week: {data.partner.ratio} (aim for 5:1)</p>}
+          <div className="inline">
+            <label>
+              Positives
+              <input type="number" min={0} value={p.positives} onChange={(e) => setPartner({ ...p, positives: Number(e.target.value) })} />
+            </label>
+            <label>
+              Negatives
+              <input type="number" min={0} value={p.negatives} onChange={(e) => setPartner({ ...p, negatives: Number(e.target.value) })} />
+            </label>
+          </div>
           <label>
-            Positives
-            <input type="number" min={0} value={p.positives} onChange={(e) => setPartner({ ...p, positives: Number(e.target.value) })} />
+            Connection moment
+            <input value={p.connection} onChange={(e) => setPartner({ ...p, connection: e.target.value })} />
           </label>
+          <div className="chips">
+            {([['conflict', 'We had conflict'], ['flooded', 'I got flooded'], ['tookBreak', 'I took a break']] as const).map(([k, label]) => (
+              <button type="button" key={k} className={p[k] ? 'chip on' : 'chip'} onClick={() => setPartner({ ...p, [k]: !p[k] })}>
+                {label}
+              </button>
+            ))}
+          </div>
           <label>
-            Negatives
-            <input type="number" min={0} value={p.negatives} onChange={(e) => setPartner({ ...p, negatives: Number(e.target.value) })} />
+            What I need
+            <input value={p.need} onChange={(e) => setPartner({ ...p, need: e.target.value })} />
           </label>
-        </div>
-        <label>
-          Connection moment
-          <input value={p.connection} onChange={(e) => setPartner({ ...p, connection: e.target.value })} />
-        </label>
-        <div className="chips">
-          {([['conflict', 'We had conflict'], ['flooded', 'I got flooded'], ['tookBreak', 'I took a break']] as const).map(([k, label]) => (
-            <button type="button" key={k} className={p[k] ? 'chip on' : 'chip'} onClick={() => setPartner({ ...p, [k]: !p[k] })}>
-              {label}
-            </button>
-          ))}
-        </div>
-        <label>
-          What I need
-          <input value={p.need} onChange={(e) => setPartner({ ...p, need: e.target.value })} />
-        </label>
-        <button className="btn">Save check-in</button>
-      </form>
+          <button className="btn">Save check-in</button>
+        </form>
+      )}
 
       {data.kids.length > 0 && (
         <form className="card form" onSubmit={(e) => void logOne(e)}>

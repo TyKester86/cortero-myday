@@ -138,6 +138,21 @@ export interface HouseholdInfo {
   modulesOff: ModuleKey[];
   /** Any kids on the roster (kid features hide when there are none). */
   hasKids: boolean;
+  /** Grown-ups who live here full time: on the roster AND signed in with their own account. */
+  signedInAdults: number;
+}
+
+/**
+ * What a household uses right now. Kid features: once there's a kid (or it
+ * signed up as a family, so it can add them). Partner features: once a second
+ * grown-up has their own sign-in here (or it signed up as a couple). A solo
+ * grown-up gets neither — no Family tab, no partner check-in, no chores —
+ * until one of those happens.
+ */
+export function liveFeatures(hh: Pick<HouseholdInfo, 'type' | 'hasKids' | 'signedInAdults'>): { kids: boolean; partner: boolean; family: boolean } {
+  const kids = hh.hasKids || hh.type === 'family';
+  const partner = featuresFor(hh.type).partner || hh.signedInAdults >= 2;
+  return { kids, partner, family: kids || partner };
 }
 
 export interface CreateHouseholdRequest {

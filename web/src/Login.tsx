@@ -231,6 +231,9 @@ function Landing({ err, onKid }: { err: string | null; onKid: () => void }) {
           </button>
         </div>
         <p className="lp-fine">30 days free · no card needed · cancel anytime</p>
+        <p className="lp-fine" data-testid="solo-note">
+          Just you? MyDay works solo too — pick “Just me” after you sign in. Kid and partner tools stay out of your way until someone joins your household.
+        </p>
       </section>
 
       <section className="lp-section">

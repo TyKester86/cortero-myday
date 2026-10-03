@@ -80,6 +80,10 @@ export interface ModuleRoute {
   module?: ModuleKey;
   /** A grown-up's view of the kids' things: hidden when the household has no kids. */
   kidsOnly?: boolean;
+  /** Family life (kids and/or a partner): hidden for a solo grown-up until a kid or a second signed-in grown-up joins. */
+  familyOnly?: boolean;
+  /** Where it sits in the menu for a solo grown-up (instead of nav.group). */
+  soloGroup?: NavGroup;
   /**
    * Navigation: bottom-bar tab for the listed audiences (with an optional
    * shorter tab label); otherwise listed under its group in the menu. `icon`
@@ -93,7 +97,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/chores', element: <HomeChores />, audience: 'all' },
   // Grown-ups: Today · Plan · Family · Money · Me. Kids: Today · Homework · Helper · Rewards · Score.
   { path: '/weekly', element: <WeeklyPlan />, audience: 'all', nav: { label: 'Plan', icon: 'weekly-plan', group: 'home', tabFor: ['adult'] } },
-  { path: '/family', element: <Family />, audience: 'adult', nav: { label: 'Family', icon: 'family', group: 'family', tabFor: ['adult'] } },
+  { path: '/family', element: <Family />, audience: 'adult', familyOnly: true, nav: { label: 'Family', icon: 'family', group: 'family', tabFor: ['adult'] } },
   { path: '/money', element: <Money />, audience: 'adult', module: 'money', nav: { label: 'Money', icon: 'money', group: 'money', tabFor: ['adult'] } },
   { path: '/me', element: <MeHub />, audience: 'adult', nav: { label: 'Me', icon: 'everything', group: 'me', tabFor: ['adult'] } },
   { path: '/homework', element: <Homework />, audience: 'all', kidsOnly: true, nav: { label: 'Homework', icon: 'homework', group: 'family', tabFor: ['kid'] } },
@@ -113,15 +117,15 @@ export const MODULES: ModuleRoute[] = [
   { path: '/dump', element: <BrainDump />, audience: 'all', module: 'dump', nav: { label: 'Brain dump', icon: 'brain-dump', group: 'me' } },
   { path: '/battles', element: <Battles />, audience: 'adult', module: 'challenges', nav: { label: 'Challenges', icon: 'challenges', group: 'me' } },
   { path: '/red-alert', element: <RedAlert />, audience: 'adult', module: 'challenges' },
-  { path: '/chores/manage', element: <ManageChores />, audience: 'adult', nav: { label: 'Chores', icon: 'chores', group: 'family' } },
-  { path: '/household', element: <Household />, audience: 'adult', nav: { label: 'Household', icon: 'household', group: 'family' } },
+  { path: '/chores/manage', element: <ManageChores />, audience: 'adult', familyOnly: true, nav: { label: 'Chores', icon: 'chores', group: 'family' } },
+  { path: '/household', element: <Household />, audience: 'adult', soloGroup: 'account', nav: { label: 'Household', icon: 'household', group: 'family' } },
   { path: '/school', element: <School />, audience: 'all', module: 'school', nav: { label: 'School', icon: 'school', group: 'school' } },
   { path: '/lectures', element: <Lectures />, audience: 'all', module: 'school', nav: { label: 'Lectures', icon: 'lectures', group: 'school' } },
   { path: '/record', element: <Recorder />, audience: 'all', module: 'school' },
   { path: '/lectures/:id', element: <Lecture />, audience: 'all', module: 'school' },
   { path: '/study/:classId', element: <Study />, audience: 'all', module: 'school' },
   { path: '/classroom-mode', element: <ClassroomMode />, audience: 'all', module: 'school' },
-  { path: '/wins', element: <Wins />, audience: 'all', nav: { label: 'Family wins', icon: 'family-wins', group: 'family' } },
+  { path: '/wins', element: <Wins />, audience: 'all', familyOnly: true, nav: { label: 'Family wins', icon: 'family-wins', group: 'family' } },
   { path: '/my-money', element: <KidMoney />, audience: 'all', kidsOnly: true, nav: { label: 'Kid money', icon: 'piggy', group: 'family', kidLabel: 'My money' } },
   { path: '/focus', element: <Focus />, audience: 'all', module: 'focus', nav: { label: 'Focus timer', icon: 'focus-timer', group: 'me' } },
   { path: '/private', element: <Private />, audience: 'kid', nav: { label: 'My space', icon: 'lock', group: 'me' } },

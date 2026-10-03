@@ -3,7 +3,7 @@
  * One place, used by the shell (phone tabs + menu, desktop sidebar) and the
  * Me page.
  */
-import type { Me } from '@myday/shared';
+import { liveFeatures, type Me } from '@myday/shared';
 import { MODULES, NAV_GROUPS, type ModuleRoute, type NavGroup } from './index';
 
 export interface NavItem {
@@ -27,12 +27,15 @@ export function navFor(me: Me): Nav {
   const who: 'kid' | 'adult' = me.member?.kind === 'adult' ? 'adult' : 'kid';
   const off = new Set(me.household?.modulesOff ?? []);
   const hasKids = me.household?.hasKids ?? false;
+  // A solo grown-up (no kids, nobody else signed in here) doesn't get family pages until that changes.
+  const family = me.household ? liveFeatures(me.household).family : true;
   const tooYoung = (m: ModuleRoute): boolean => m.minKidAge !== undefined && who === 'kid' && (me.member?.age ?? 0) < m.minKidAge;
   const visible = (m: ModuleRoute): boolean =>
     !tooYoung(m) &&
     !(m.module && off.has(m.module)) &&
     // A grown-up's kid tools only when there are kids (kids always see their own).
     !(m.kidsOnly && who === 'adult' && !hasKids) &&
+    !(m.familyOnly && who === 'adult' && !family) &&
     (m.audience === 'all' ||
       m.audience === who ||
       (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student')) ||
@@ -41,7 +44,7 @@ export function navFor(me: Me): Nav {
   const item = (m: ModuleRoute): NavItem => {
     const n = m.nav as NonNullable<ModuleRoute['nav']>;
     const label = who === 'kid' && n.kidLabel ? n.kidLabel : n.label;
-    return { path: m.path, label, tabLabel: n.tabLabel ?? label, icon: n.icon, group: n.group };
+    return { path: m.path, label, tabLabel: n.tabLabel ?? label, icon: n.icon, group: !family && m.soloGroup ? m.soloGroup : n.group };
   };
   const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who)).map(item);
   const listed = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who)).map(item);
