@@ -123,6 +123,7 @@ export default function Setup() {
 
   return (
     <div className="landing" data-testid="setup">
+      <h1 className="sr-only">Finish setting up</h1>
       <div className="steps-bar">
         <i className="on" />
         {steps.map((s) => (

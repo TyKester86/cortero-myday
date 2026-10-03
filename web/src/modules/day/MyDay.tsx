@@ -161,7 +161,9 @@ export default function MyDay() {
         <table className="habitgrid" data-testid="habit-grid">
           <thead>
             <tr>
-              <th />
+              <th>
+                <span className="sr-only">Habit</span>
+              </th>
               {WEEKDAYS.map((d) => (
                 <th key={d}>{d.slice(0, 2)}</th>
               ))}
@@ -205,6 +207,7 @@ export default function MyDay() {
       </div>
 
       <form
+        id="review"
         className="card form"
         onSubmit={(e) => {
           e.preventDefault();

@@ -195,7 +195,7 @@ export default function Household() {
         <p className="muted">They sign in with this Google account. You'll get a link to send them.</p>
         <input value={inv.name} onChange={(e) => setInv({ ...inv, name: e.target.value })} placeholder="Name" required />
         <input type="email" value={inv.email} onChange={(e) => setInv({ ...inv, email: e.target.value })} placeholder="their@gmail.com" required />
-        <select value={inv.xpTrack} onChange={(e) => setInv({ ...inv, xpTrack: (['leader', 'woman', 'student'] as const).find((t) => t === e.target.value) ?? 'leader' })}>
+        <select aria-label="Level track" value={inv.xpTrack} onChange={(e) => setInv({ ...inv, xpTrack: (['leader', 'woman', 'student'] as const).find((t) => t === e.target.value) ?? 'leader' })}>
           <option value="leader">Family Leader</option>
           <option value="woman">Heart of Home</option>
           <option value="student">Student</option>

@@ -1,47 +1,49 @@
-import type { ReactNode } from 'react';
+import { lazy, type ReactNode } from 'react';
 import HomeChores from './chores/HomeChores';
-import ManageChores from './chores/ManageChores';
-import Homework from './homework/Homework';
-import Rewards from './rewards/Rewards';
-import Score from './score/Score';
-import HealthToday from './health/HealthToday';
-import HealthPlan from './health/HealthPlan';
-import Meals from './meals/Meals';
-import MealPlan from './meals/MealPlan';
-import MealDetail from './meals/MealDetail';
-import Grocery from './meals/Grocery';
-import WeeklyPlan from './weekly/WeeklyPlan';
-import MyDay from './day/MyDay';
-import Money from './money/Money';
-import Battles from './battles/Battles';
-import RedAlert from './battles/RedAlert';
-import BrainDump from './dump/BrainDump';
-import Family from './family/Family';
-import Household from './household/Household';
-import Chat from './chat/Chat';
-import School from './school/School';
+const ManageChores = lazy(() => import('./chores/ManageChores'));
+const Homework = lazy(() => import('./homework/Homework'));
+const Rewards = lazy(() => import('./rewards/Rewards'));
+const Score = lazy(() => import('./score/Score'));
+const HealthToday = lazy(() => import('./health/HealthToday'));
+const HealthPlan = lazy(() => import('./health/HealthPlan'));
+const Meals = lazy(() => import('./meals/Meals'));
+const MealPlan = lazy(() => import('./meals/MealPlan'));
+const MealDetail = lazy(() => import('./meals/MealDetail'));
+const Grocery = lazy(() => import('./meals/Grocery'));
+const WeeklyPlan = lazy(() => import('./weekly/WeeklyPlan'));
+const MyDay = lazy(() => import('./day/MyDay'));
+const Money = lazy(() => import('./money/Money'));
+const Battles = lazy(() => import('./battles/Battles'));
+const RedAlert = lazy(() => import('./battles/RedAlert'));
+const BrainDump = lazy(() => import('./dump/BrainDump'));
+const Family = lazy(() => import('./family/Family'));
+const Household = lazy(() => import('./household/Household'));
+const Chat = lazy(() => import('./chat/Chat'));
+const School = lazy(() => import('./school/School'));
 import Recorder from './school/Recorder';
-import Lecture from './school/Lecture';
-import Lectures from './school/Lectures';
+const Lecture = lazy(() => import('./school/Lecture'));
+const Lectures = lazy(() => import('./school/Lectures'));
 import { Navigate } from 'react-router';
-import Study from './school/Study';
-import ClassroomMode from './school/ClassroomMode';
-import Identity from './identity/Identity';
-import Bills from './money/Bills';
-import KidMoney from './kidmoney/KidMoney';
-import Wins from './engagement/Wins';
-import Focus from './engagement/Focus';
-import Private from './engagement/Private';
+const Study = lazy(() => import('./school/Study'));
+const ClassroomMode = lazy(() => import('./school/ClassroomMode'));
+const Identity = lazy(() => import('./identity/Identity'));
+const Bills = lazy(() => import('./money/Bills'));
+const KidMoney = lazy(() => import('./kidmoney/KidMoney'));
+const Wins = lazy(() => import('./engagement/Wins'));
+const Focus = lazy(() => import('./engagement/Focus'));
+const Private = lazy(() => import('./engagement/Private'));
 import Settings from './settings/Settings';
-import Records from './records/Records';
-import CommandCenter from './desk/CommandCenter';
+const Records = lazy(() => import('./records/Records'));
+const CommandCenter = lazy(() => import('./desk/CommandCenter'));
 import Setup from '../Onboarding';
 import Home from './desk/Home';
-import Billing from './billing/Billing';
+const Billing = lazy(() => import('./billing/Billing'));
 import Admin from './billing/Admin';
-import Invest from './invest/Invest';
+const Invest = lazy(() => import('./invest/Invest'));
 import Circles, { Circle, Moderation } from './circles/Circles';
 import Care from './care/Care';
+import MeHub from './desk/MeHub';
+import type { ModuleKey } from '@myday/shared';
 
 /** Who sees a route. 'tutor' = kids plus grown-ups on the student track. */
 export type Audience = 'all' | 'adult' | 'kid' | 'tutor' | 'admin';
@@ -50,64 +52,86 @@ export type Audience = 'all' | 'adult' | 'kid' | 'tutor' | 'admin';
  * Module registry: one entry per route. Each module owns a folder under
  * modules/ and its rows here; the shell (App.tsx) needs no changes.
  */
+export type NavGroup = 'today' | 'me' | 'family' | 'home' | 'money' | 'school' | 'connect' | 'account';
+export const NAV_GROUPS: Array<{ key: NavGroup; label: string }> = [
+  { key: 'today', label: 'Today' },
+  { key: 'me', label: 'Me' },
+  { key: 'family', label: 'Family' },
+  { key: 'home', label: 'Home' },
+  { key: 'money', label: 'Money' },
+  { key: 'school', label: 'School' },
+  { key: 'connect', label: 'Help & people' },
+  { key: 'account', label: 'Account' },
+];
+
 export interface ModuleRoute {
   path: string;
   element: ReactNode;
   audience: Audience;
   /** Kids younger than this don't see the route at all (e.g. Circles: 13+). */
   minKidAge?: number;
-  /** Shown in navigation when set: in the bottom bar for the listed audiences, otherwise in the ☰ menu. */
-  nav?: { label: string; icon: string; tabFor?: Array<'kid' | 'adult'> };
+  /** Optional part a household can turn off (Settings → What's in your MyDay). */
+  module?: ModuleKey;
+  /** A grown-up's view of the kids' things: hidden when the household has no kids. */
+  kidsOnly?: boolean;
+  /**
+   * Navigation: bottom-bar tab for the listed audiences (with an optional
+   * shorter tab label); otherwise listed under its group in the menu.
+   */
+  nav?: { label: string; icon: string; group: NavGroup; tabFor?: Array<'kid' | 'adult'>; tabLabel?: string; kidLabel?: string };
 }
 
 export const MODULES: ModuleRoute[] = [
-  { path: '/', element: <Home />, audience: 'all', nav: { label: 'Today', icon: '✅', tabFor: ['kid', 'adult'] } },
+  { path: '/', element: <Home />, audience: 'all', nav: { label: 'Today', icon: '✅', group: 'today', tabFor: ['kid', 'adult'] } },
   { path: '/chores', element: <HomeChores />, audience: 'all' },
-  { path: '/day', element: <MyDay />, audience: 'adult', nav: { label: 'My day', icon: '🌅', tabFor: ['adult'] } },
-  { path: '/family', element: <Family />, audience: 'adult', nav: { label: 'Family', icon: '💛', tabFor: ['adult'] } },
-  { path: '/money', element: <Money />, audience: 'adult', nav: { label: 'Money', icon: '💵', tabFor: ['adult'] } },
-  { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', nav: { label: 'Ask Hana', icon: '💬', tabFor: ['adult'] } },
-  { path: '/homework', element: <Homework />, audience: 'all', nav: { label: 'Homework', icon: '📚', tabFor: ['kid'] } },
-  { path: '/tutor', element: <Chat mode="tutor" />, audience: 'tutor', nav: { label: 'Helper', icon: '🧑‍🏫', tabFor: ['kid'] } },
-  { path: '/rewards', element: <Rewards />, audience: 'all', nav: { label: 'Rewards', icon: '🎁', tabFor: ['kid'] } },
-  { path: '/score', element: <Score />, audience: 'all', nav: { label: 'Score', icon: '⭐', tabFor: ['kid'] } },
-  { path: '/health', element: <HealthToday />, audience: 'all', nav: { label: 'Health', icon: '💪' } },
-  { path: '/health/plan', element: <HealthPlan />, audience: 'all' },
-  { path: '/meals', element: <Meals />, audience: 'all', nav: { label: 'Meals', icon: '🍽' } },
-  { path: '/meals/plan', element: <MealPlan />, audience: 'all' },
-  { path: '/meals/grocery', element: <Grocery />, audience: 'all' },
-  { path: '/meals/:id', element: <MealDetail />, audience: 'all' },
-  { path: '/weekly', element: <WeeklyPlan />, audience: 'all', nav: { label: 'Weekly plan', icon: '🗓' } },
+  // Grown-ups: Today · Plan · Family · Money · Me. Kids: Today · Homework · Helper · Rewards · Score.
+  { path: '/weekly', element: <WeeklyPlan />, audience: 'all', nav: { label: 'Weekly plan', icon: '🗓', group: 'home', tabFor: ['adult'], tabLabel: 'Plan' } },
+  { path: '/family', element: <Family />, audience: 'adult', nav: { label: 'Family', icon: '💛', group: 'family', tabFor: ['adult'] } },
+  { path: '/money', element: <Money />, audience: 'adult', module: 'money', nav: { label: 'Money', icon: '💵', group: 'money', tabFor: ['adult'] } },
+  { path: '/me', element: <MeHub />, audience: 'adult', nav: { label: 'Everything else', icon: '🙂', group: 'me', tabFor: ['adult'], tabLabel: 'Me' } },
+  { path: '/homework', element: <Homework />, audience: 'all', kidsOnly: true, nav: { label: 'Homework', icon: '📚', group: 'family', tabFor: ['kid'] } },
+  { path: '/tutor', element: <Chat mode="tutor" />, audience: 'tutor', nav: { label: 'Homework helper', icon: '🧑‍🏫', group: 'school', tabFor: ['kid'], tabLabel: 'Helper' } },
+  { path: '/rewards', element: <Rewards />, audience: 'all', kidsOnly: true, nav: { label: 'Rewards', icon: '🎁', group: 'family', tabFor: ['kid'] } },
+  { path: '/score', element: <Score />, audience: 'all', nav: { label: 'My progress', icon: '⭐', group: 'me', tabFor: ['kid'], tabLabel: 'Score' } },
+  { path: '/day', element: <MyDay />, audience: 'adult', nav: { label: 'My day', icon: '🌅', group: 'me' } },
+  { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', module: 'hana', nav: { label: 'Ask Hana', icon: '💬', group: 'connect' } },
+  { path: '/health', element: <HealthToday />, audience: 'all', module: 'health', nav: { label: 'Health', icon: '💪', group: 'me' } },
+  { path: '/health/plan', element: <HealthPlan />, audience: 'all', module: 'health' },
+  { path: '/meals', element: <Meals />, audience: 'all', module: 'meals', nav: { label: 'Meals', icon: '🍽', group: 'home' } },
+  { path: '/meals/plan', element: <MealPlan />, audience: 'all', module: 'meals' },
+  { path: '/meals/grocery', element: <Grocery />, audience: 'all', module: 'meals', nav: { label: 'Grocery list', icon: '🛒', group: 'home' } },
+  { path: '/meals/:id', element: <MealDetail />, audience: 'all', module: 'meals' },
   // Old/guessed link: the weekly calendar lives at /weekly.
   { path: '/plan', element: <Navigate to="/weekly" replace />, audience: 'all' },
-  { path: '/dump', element: <BrainDump />, audience: 'all', nav: { label: 'Brain dump', icon: '🧠' } },
-  { path: '/battles', element: <Battles />, audience: 'adult', nav: { label: 'Boss battles', icon: '⚔️' } },
-  { path: '/red-alert', element: <RedAlert />, audience: 'adult', nav: { label: 'Red Alert', icon: '🚨' } },
-  { path: '/chores/manage', element: <ManageChores />, audience: 'adult', nav: { label: 'Manage chores', icon: '🧹' } },
-  { path: '/household', element: <Household />, audience: 'adult', nav: { label: 'Household', icon: '🏠' } },
-  { path: '/school', element: <School />, audience: 'all', nav: { label: 'School', icon: '🎒' } },
-  { path: '/lectures', element: <Lectures />, audience: 'all', nav: { label: 'Lectures', icon: '🎙' } },
-  { path: '/record', element: <Recorder />, audience: 'all' },
-  { path: '/lectures/:id', element: <Lecture />, audience: 'all' },
-  { path: '/study/:classId', element: <Study />, audience: 'all' },
-  { path: '/classroom-mode', element: <ClassroomMode />, audience: 'all' },
-  { path: '/wins', element: <Wins />, audience: 'all', nav: { label: 'Family wins', icon: '🏆' } },
-  { path: '/my-money', element: <KidMoney />, audience: 'all', nav: { label: 'Kid money', icon: '🐷' } },
-  { path: '/focus', element: <Focus />, audience: 'all', nav: { label: 'Focus timer', icon: '⏱' } },
-  { path: '/private', element: <Private />, audience: 'kid', nav: { label: 'My space', icon: '🔒' } },
-  { path: '/bills', element: <Bills />, audience: 'adult', nav: { label: 'Bills & income', icon: '🧾' } },
-  { path: '/identity', element: <Identity />, audience: 'adult', nav: { label: 'Identity', icon: '🪞' } },
-  { path: '/records', element: <Records />, audience: 'adult', nav: { label: 'Records', icon: '🗂' } },
-  { path: '/command', element: <CommandCenter />, audience: 'adult', nav: { label: 'Command center', icon: '🖥' } },
+  { path: '/dump', element: <BrainDump />, audience: 'all', module: 'dump', nav: { label: 'Brain dump', icon: '🧠', group: 'me' } },
+  { path: '/battles', element: <Battles />, audience: 'adult', module: 'challenges', nav: { label: 'Challenges', icon: '⚔️', group: 'me' } },
+  { path: '/red-alert', element: <RedAlert />, audience: 'adult', module: 'challenges' },
+  { path: '/chores/manage', element: <ManageChores />, audience: 'adult', nav: { label: 'Chores', icon: '🧹', group: 'family' } },
+  { path: '/household', element: <Household />, audience: 'adult', nav: { label: 'Household', icon: '🏠', group: 'family' } },
+  { path: '/school', element: <School />, audience: 'all', module: 'school', nav: { label: 'School', icon: '🎒', group: 'school' } },
+  { path: '/lectures', element: <Lectures />, audience: 'all', module: 'school', nav: { label: 'Lectures', icon: '🎙', group: 'school' } },
+  { path: '/record', element: <Recorder />, audience: 'all', module: 'school' },
+  { path: '/lectures/:id', element: <Lecture />, audience: 'all', module: 'school' },
+  { path: '/study/:classId', element: <Study />, audience: 'all', module: 'school' },
+  { path: '/classroom-mode', element: <ClassroomMode />, audience: 'all', module: 'school' },
+  { path: '/wins', element: <Wins />, audience: 'all', nav: { label: 'Family wins', icon: '🏆', group: 'family' } },
+  { path: '/my-money', element: <KidMoney />, audience: 'all', kidsOnly: true, nav: { label: 'Kid money', icon: '🐷', group: 'family', kidLabel: 'My money' } },
+  { path: '/focus', element: <Focus />, audience: 'all', module: 'focus', nav: { label: 'Focus timer', icon: '⏱', group: 'me' } },
+  { path: '/private', element: <Private />, audience: 'kid', nav: { label: 'My space', icon: '🔒', group: 'me' } },
+  { path: '/bills', element: <Bills />, audience: 'adult', module: 'money', nav: { label: 'Bills & income', icon: '🧾', group: 'money' } },
+  { path: '/identity', element: <Identity />, audience: 'adult', module: 'identity', nav: { label: 'Identity', icon: '🪞', group: 'me' } },
+  { path: '/records', element: <Records />, audience: 'adult', module: 'records', nav: { label: 'Records', icon: '🗂', group: 'me' } },
+  // The desktop morning/evening view now lives inside Today; the old link still works.
+  { path: '/command', element: <CommandCenter />, audience: 'adult' },
   { path: '/setup', element: <Setup />, audience: 'adult' },
-  { path: '/invest', element: <Invest />, audience: 'adult', nav: { label: 'Investments', icon: '📈' } },
-  { path: '/circles', element: <Circles />, audience: 'all', minKidAge: 13, nav: { label: 'Circles', icon: '🫂' } },
+  { path: '/invest', element: <Invest />, audience: 'adult', module: 'invest', nav: { label: 'Investments', icon: '📈', group: 'money' } },
+  { path: '/circles', element: <Circles />, audience: 'all', minKidAge: 13, module: 'circles', nav: { label: 'Circles', icon: '🫂', group: 'connect' } },
   { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },
-  { path: '/circles/:id', element: <Circle />, audience: 'all', minKidAge: 13 },
-  { path: '/care', element: <Care />, audience: 'adult', nav: { label: 'Care team', icon: '🩺' } },
-  { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: '💳' } },
-  { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: '🛠' } },
-  { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️' } },
+  { path: '/circles/:id', element: <Circle />, audience: 'all', minKidAge: 13, module: 'circles' },
+  { path: '/care', element: <Care />, audience: 'adult', module: 'care', nav: { label: 'Care team', icon: '🩺', group: 'connect' } },
+  { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: '💳', group: 'account' } },
+  { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: '🛠', group: 'account' } },
+  { path: '/settings', element: <Settings />, audience: 'all', nav: { label: 'Settings', icon: '⚙️', group: 'account' } },
   // Old link from build 2; kid PINs now live on the Household page.
   { path: '/kids', element: <Household />, audience: 'adult' },
 ];

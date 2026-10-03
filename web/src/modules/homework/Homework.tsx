@@ -14,8 +14,10 @@ import { due as fmtDue } from '../../dates';
 
 /** Kids log their homework; checking it off pays HOMEWORK_POINTS. */
 export default function Homework() {
-  const { viewing, isAdult } = useSession();
-  const key = viewing?.key ?? null;
+  const { viewing, isAdult, me, viewable, setViewing } = useSession();
+  // Grown-ups don't have homework (unless they're students): show the kids'.
+  const pickKid = isAdult && viewing?.kind === 'adult' && me.xpTrack !== 'student';
+  const key = pickKid ? null : (viewing?.key ?? null);
   const { data, error, setData } = useLoad<HomeworkListResponse>(key ? withMember('/api/homework', key) : null);
   const [assignment, setAssignment] = useState('');
   const [subject, setSubject] = useState('');
@@ -23,6 +25,26 @@ export default function Homework() {
   const { toast, show, earned } = useToast();
   const confirm = useConfirm();
 
+  if (pickKid) {
+    const kids = viewable.filter((m) => m.kind === 'kid');
+    return (
+      <section data-testid="homework-pick">
+        <h1>Kids’ homework</h1>
+        {kids.length === 0 ? (
+          <p className="muted">No kids on the roster yet.</p>
+        ) : (
+          <div className="hubtiles">
+            {kids.map((k) => (
+              <button key={k.key} className="hubtile" onClick={() => setViewing(k.key)}>
+                <span aria-hidden="true">📚</span>
+                {k.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
   if (error) return <p className="error">{error}</p>;
   if (!data || !key) return <p className="muted">Loading…</p>;
 

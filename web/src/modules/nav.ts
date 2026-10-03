@@ -1,0 +1,50 @@
+/**
+ * What each person sees: routes, bottom tabs and the grouped menu.
+ * One place, used by the shell (phone tabs + menu, desktop sidebar) and the
+ * Me page.
+ */
+import type { Me } from '@myday/shared';
+import { MODULES, NAV_GROUPS, type ModuleRoute, type NavGroup } from './index';
+
+export interface NavItem {
+  path: string;
+  label: string;
+  tabLabel: string;
+  icon: string;
+  group: NavGroup;
+}
+
+export interface Nav {
+  routes: ModuleRoute[];
+  tabs: NavItem[];
+  /** Grouped, in menu order (only groups with something in them). */
+  groups: Array<{ key: NavGroup; label: string; items: NavItem[] }>;
+  /** Hana is on for this household (floating button for grown-ups). */
+  hana: boolean;
+}
+
+export function navFor(me: Me): Nav {
+  const who: 'kid' | 'adult' = me.member?.kind === 'adult' ? 'adult' : 'kid';
+  const off = new Set(me.household?.modulesOff ?? []);
+  const hasKids = me.household?.hasKids ?? false;
+  const tooYoung = (m: ModuleRoute): boolean => m.minKidAge !== undefined && who === 'kid' && (me.member?.age ?? 0) < m.minKidAge;
+  const visible = (m: ModuleRoute): boolean =>
+    !tooYoung(m) &&
+    !(m.module && off.has(m.module)) &&
+    // A grown-up's kid tools only when there are kids (kids always see their own).
+    !(m.kidsOnly && who === 'adult' && !hasKids) &&
+    (m.audience === 'all' ||
+      m.audience === who ||
+      (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student')) ||
+      (m.audience === 'admin' && me.isAdmin));
+  const routes = MODULES.filter(visible);
+  const item = (m: ModuleRoute): NavItem => {
+    const n = m.nav as NonNullable<ModuleRoute['nav']>;
+    const label = who === 'kid' && n.kidLabel ? n.kidLabel : n.label;
+    return { path: m.path, label, tabLabel: n.tabLabel ?? label, icon: n.icon, group: n.group };
+  };
+  const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who)).map(item);
+  const listed = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who)).map(item);
+  const groups = NAV_GROUPS.map((g) => ({ ...g, items: listed.filter((i) => i.group === g.key) })).filter((g) => g.items.length > 0);
+  return { routes, tabs, groups, hana: who === 'adult' && !off.has('hana') };
+}

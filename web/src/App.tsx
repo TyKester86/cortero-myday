@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { BrowserRouter, Link, NavLink, Route, Routes } from 'react-router';
+import { Suspense, useEffect, useState } from 'react';
+import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from 'react-router';
+import type { ModuleKey } from '@myday/shared';
 import { api, useOffline } from './api';
 import FirstRun from './components/FirstRun';
 import Shortcuts from './components/Shortcuts';
@@ -14,7 +15,7 @@ import { ConfirmProvider } from './components/Confirm';
 import Join from './Join';
 import { Privacy, Terms } from './Legal';
 import Login from './Login';
-import { MODULES, type ModuleRoute } from './modules';
+import { navFor } from './modules/nav';
 import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
@@ -29,26 +30,72 @@ function OfflineBar() {
   );
 }
 
+/** Sub-tabs inside a section, so related pages are one tap apart (grown-ups). */
+const SECTIONS: Array<{ paths: string[]; links: Array<{ to: string; label: string; module?: ModuleKey; kids?: boolean }> }> = [
+  {
+    paths: ['/weekly', '/meals', '/meals/plan', '/meals/grocery'],
+    links: [
+      { to: '/weekly', label: 'Week' },
+      { to: '/meals', label: 'Meals', module: 'meals' },
+      { to: '/meals/plan', label: 'This week’s menu', module: 'meals' },
+      { to: '/meals/grocery', label: 'Grocery list', module: 'meals' },
+    ],
+  },
+  {
+    paths: ['/family', '/chores/manage', '/homework', '/rewards', '/my-money', '/wins', '/household'],
+    links: [
+      { to: '/family', label: 'Overview' },
+      { to: '/chores/manage', label: 'Chores' },
+      { to: '/homework', label: 'Homework', kids: true },
+      { to: '/rewards', label: 'Rewards', kids: true },
+      { to: '/my-money', label: 'Kid money', kids: true },
+      { to: '/wins', label: 'Wins' },
+      { to: '/household', label: 'Household' },
+    ],
+  },
+  {
+    paths: ['/money', '/bills', '/invest'],
+    links: [
+      { to: '/money', label: 'Accounts', module: 'money' },
+      { to: '/bills', label: 'Bills & income', module: 'money' },
+      { to: '/invest', label: 'Investments', module: 'invest' },
+    ],
+  },
+];
+
+function SectionTabs({ path }: { path: string }) {
+  const { me } = useSession();
+  const clean = path.length > 1 ? path.replace(/\/+$/, '') : path;
+  const sec = SECTIONS.find((s) => s.paths.includes(clean));
+  if (!sec) return null;
+  const off = new Set(me.household?.modulesOff ?? []);
+  const links = sec.links.filter((l) => !(l.module && off.has(l.module)) && !(l.kids && !me.household?.hasKids));
+  if (links.length < 2) return null;
+  return (
+    <nav className="subtabs" aria-label="In this section">
+      {links.map((l) => (
+        <NavLink key={l.to} to={l.to} end>
+          {l.label}
+        </NavLink>
+      ))}
+    </nav>
+  );
+}
+
 function Shell() {
   const { me, viewable, viewing, setViewing, isAdult } = useSession();
   const [menu, setMenu] = useState(false);
+  const [find, setFind] = useState('');
   const wide = useWide();
+  const location = useLocation();
   // Lecture recordings saved on this device upload on their own (load, reconnect, back to the app).
   useRecordingUploads(me.member ? me.userId : null);
   useEffect(() => {
     applyLook(me.prefs?.theme ?? 'system', me.prefs?.accent ?? 'navy');
   }, [me.prefs]);
-  const who: 'kid' | 'adult' = isAdult ? 'adult' : 'kid';
-  const tooYoung = (m: ModuleRoute): boolean => m.minKidAge !== undefined && me.member?.kind === 'kid' && (me.member.age ?? 0) < m.minKidAge;
-  const visible = (m: ModuleRoute): boolean =>
-    !tooYoung(m) &&
-    (m.audience === 'all' ||
-    m.audience === who ||
-    (m.audience === 'tutor' && (who === 'kid' || me.xpTrack === 'student')) ||
-    (m.audience === 'admin' && me.isAdmin));
-  const routes = MODULES.filter(visible);
-  const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who));
-  const menuItems = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who));
+  const nav = navFor(me);
+  // Grown-ups on a desktop get a sidebar instead of the phone's bottom bar + menu.
+  const sidebar = wide && isAdult;
   const signOut = async (): Promise<void> => {
     await api('/api/auth/logout', 'POST');
     // Don't leave this person's cached data on a shared device.
@@ -60,8 +107,25 @@ function Shell() {
     }
     window.location.href = '/';
   };
+  const needle = find.trim().toLowerCase();
+  const groupedLinks = (onPick?: () => void) =>
+    nav.groups.map((g) => {
+      const items = needle ? g.items.filter((i) => i.label.toLowerCase().includes(needle)) : g.items;
+      if (!items.length) return null;
+      return (
+        <div key={g.key} className="navgroup">
+          <small className="navgroup-label">{g.label}</small>
+          {items.map((i) => (
+            <NavLink key={i.path} to={i.path} end={i.path === '/'} onClick={onPick}>
+              <span aria-hidden="true">{i.icon}</span> {i.label}
+            </NavLink>
+          ))}
+        </div>
+      );
+    });
+  const sideTabs = sidebar ? nav.tabs.map((t) => ({ ...t, group: 'today' as const })) : [];
   return (
-    <div className={wide && isAdult ? 'app wide' : 'app'}>
+    <div className={sidebar ? 'app wide sidebar' : 'app'}>
       <OfflineBar />
       <header className="top">
         <img src="/icons/myday-mark.svg" alt="" className="mark" />
@@ -77,40 +141,66 @@ function Shell() {
         ) : (
           <span className="who">{me.member?.name ?? me.name}</span>
         )}
-        <button className="link light" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>
-          ☰
-        </button>
-        {menu && (
-          <nav className="menu" onClick={() => setMenu(false)}>
-            {menuItems.map((m) => (
-              <Link key={m.path} to={m.path}>
-                {m.nav?.icon} {m.nav?.label}
-              </Link>
-            ))}
+        {!sidebar && (
+          <button className="link light" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>
+            ☰
+          </button>
+        )}
+        {menu && !sidebar && (
+          <nav className="menu" data-testid="menu">
+            {groupedLinks(() => setMenu(false))}
             <button className="link" onClick={() => void signOut()}>
               Sign out
             </button>
           </nav>
         )}
       </header>
+      {sidebar && (
+        <aside className="side" data-testid="sidebar">
+          <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find…" aria-label="Find a page" />
+          <div className="navgroup">
+            {sideTabs
+              .filter((t) => !needle || t.label.toLowerCase().includes(needle))
+              .map((t) => (
+                <NavLink key={t.path} to={t.path} end={t.path === '/'}>
+                  <span aria-hidden="true">{t.icon}</span> {t.path === '/me' ? 'Everything' : t.label}
+                </NavLink>
+              ))}
+          </div>
+          {groupedLinks()}
+          <button className="link small" onClick={() => void signOut()}>
+            Sign out
+          </button>
+        </aside>
+      )}
       <main>
-        <Routes>
-          {routes.map((m) => (
-            <Route key={m.path} path={m.path} element={m.element} />
-          ))}
-          <Route path="*" element={<p className="muted">Page not found.</p>} />
-        </Routes>
+        {isAdult && <SectionTabs path={location.pathname} />}
+        <Suspense fallback={<p className="muted">Loading…</p>}>
+          <Routes>
+            {nav.routes.map((m) => (
+              <Route key={m.path} path={m.path} element={m.element} />
+            ))}
+            <Route path="*" element={<p className="muted">Page not found.</p>} />
+          </Routes>
+        </Suspense>
       </main>
       <FirstRun />
       <Shortcuts enabled={wide} />
-      <nav className="tabs">
-        {tabs.map((m) => (
-          <NavLink key={m.path} to={m.path} end={m.path === '/'}>
-            <span>{m.nav?.icon}</span>
-            <small>{m.nav?.label}</small>
-          </NavLink>
-        ))}
-      </nav>
+      {nav.hana && location.pathname !== '/hana' && (
+        <Link to="/hana" className="hana-fab" aria-label="Ask Hana" data-testid="hana-fab">
+          💬
+        </Link>
+      )}
+      {!sidebar && (
+        <nav className="tabs">
+          {nav.tabs.map((t) => (
+            <NavLink key={t.path} to={t.path} end={t.path === '/'}>
+              <span>{t.icon}</span>
+              <small>{t.tabLabel}</small>
+            </NavLink>
+          ))}
+        </nav>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useConfirm } from '../../components/Confirm';
 import { ago, day } from '../../dates';
+import { Link } from 'react-router';
 
 const usd = (n: number): string => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -114,11 +115,22 @@ export default function Money() {
       <h1>Money</h1>
       {data.provider === 'fake' && <p className="warn small">Demo data — not a real bank.</p>}
       {data.items.length === 0 ? (
-        <div className="card">
-          <p>Link your bank to see balances, what's safe to spend, and every subscription you're paying for. MyDay can only read — it can never move money.</p>
-          <button className="btn" disabled={busy} onClick={() => void link()}>
-            Link a bank
-          </button>
+        <div className="card" data-testid="money-empty">
+          <h2>See your money in one calm place</h2>
+          <ul className="plain small">
+            <li>✓ What’s safe to spend until the next paycheck</li>
+            <li>✓ Every subscription you’re paying for — and the ones you forgot</li>
+            <li>✓ Bills coming up, so nothing sneaks up on you</li>
+          </ul>
+          <p className="small muted">MyDay can only read — it can never move money. You can unlink any time.</p>
+          <div className="row">
+            <button className="btn" disabled={busy} onClick={() => void link()}>
+              Link a bank
+            </button>
+            <Link className="btn ghost" to="/bills">
+              Just track bills
+            </Link>
+          </div>
         </div>
       ) : (
         <>

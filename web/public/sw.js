@@ -25,9 +25,21 @@ async function cacheShell(res) {
   const html = await page.clone().text();
   await cache.put('/index.html', page.clone());
   await cache.put('/', page.clone());
-  const assets = [...new Set(html.match(/\/assets\/[^"'\s)]+/g) || [])];
+  const assets = new Set(html.match(/\/assets\/[^"'\s)]+/g) || []);
+  // Every page's code, including the ones loaded on demand (from Vite's build manifest).
+  try {
+    const m = await fetch('/asset-manifest.json', { cache: 'no-store' });
+    if (m.ok) {
+      for (const entry of Object.values(await m.json())) {
+        if (entry.file) assets.add(`/${entry.file}`);
+        for (const css of entry.css || []) assets.add(`/${css}`);
+      }
+    }
+  } catch {
+    /* the page's own files are still cached */
+  }
   await Promise.all(
-    assets.map(async (a) => {
+    [...assets].map(async (a) => {
       if (await cache.match(a)) return;
       const r = await fetch(a);
       if (r.ok) await cache.put(a, r);

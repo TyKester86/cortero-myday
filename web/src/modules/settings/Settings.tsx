@@ -4,6 +4,7 @@ import type { EngagementResponse, HouseholdInfo, NotificationsResponse } from '@
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
 import { InviteGrownUp, MergeDuplicate } from './HouseholdTools';
+import { Modules } from './Modules';
 import { YourData } from './YourData';
 
 export const ACCENTS: Array<[string, string]> = [
@@ -190,6 +191,7 @@ export default function Settings() {
       )}
       {isAdult && hh && <InviteGrownUp />}
       {isAdult && hh && me.isAdmin && <MergeDuplicate />}
+      {isAdult && hh && <Modules hh={hh} />}
       {isAdult && hh && <YourData householdName={hh.name} />}
       {!isAdult && (
         <p className="small muted">

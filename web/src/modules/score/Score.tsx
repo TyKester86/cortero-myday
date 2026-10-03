@@ -18,6 +18,60 @@ export default function Score() {
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   const pw = data.perfectWeek;
+  const grownUp = data.member.kind === 'adult';
+
+  if (grownUp) {
+    return (
+      <section data-testid="progress-adult">
+        <h1>Your progress</h1>
+        <XpBar xp={data.xp} />
+        {data.daily && (
+          <div className="card">
+            <div className="ex-head">
+              <h2>Today’s score</h2>
+              <b>{data.daily.total}/100</b>
+            </div>
+            {data.dailyHistory.length > 1 && (
+              <div className="spark" aria-label="Last 30 days">
+                {data.dailyHistory.map((h) => (
+                  <i key={h.date} title={`${day(h.date)}: ${h.total}`} style={{ height: `${Math.max(4, h.total)}%` }} className={h.total === 100 ? 'hot' : ''} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {data.streak && (
+          <div className="card">
+            <h2>Streak</h2>
+            <p className="small">
+              <b>{data.streak.current}</b> days running · longest {data.streak.longest} · {data.streak.shields} shield{data.streak.shields === 1 ? '' : 's'} (a missed day doesn’t break it)
+            </p>
+          </div>
+        )}
+        {data.achievements.length > 0 && (
+          <details className="card" data-testid="achievements">
+            <summary>
+              <b>Achievements</b>{' '}
+              <small className="muted">
+                {data.achievements.filter((a) => a.unlocked).length} of {data.achievements.length}
+              </small>
+            </summary>
+            <ul className="achievements">
+              {data.achievements.map((a) => (
+                <li key={a.name} className={a.unlocked ? 'on' : ''} title={a.desc}>
+                  <b>{a.name}</b>
+                  <small>
+                    {a.desc}
+                    {a.date && ` · ${day(a.date)}`}
+                  </small>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section>
