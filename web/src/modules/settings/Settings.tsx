@@ -187,6 +187,9 @@ export default function Settings() {
             Teens can see a bank account (read-only, a parent links it)
           </label>
           <Link to="/household">Roster, invites and kid PINs →</Link>
+          <Link to="/household#kid-pins" data-testid="settings-reset-pin">
+            Reset a kid’s PIN →
+          </Link>
         </div>
       )}
       {isAdult && hh && <InviteGrownUp />}

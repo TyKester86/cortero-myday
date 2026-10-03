@@ -6,7 +6,9 @@ import {
   HOUSEHOLD_TYPE_ICON,
   HOUSEHOLD_TYPE_INFO,
   HOUSEHOLD_TYPES,
+  KID_PIN_LENGTH,
   featuresFor,
+  weakPinReason,
   type BuildKey,
   type CreateHouseholdRequest,
   type HouseholdAdminResponse,
@@ -15,7 +17,7 @@ import {
   type InviteCreated,
   type OnboardingStep,
 } from '@myday/shared';
-import { api } from './api';
+import { api, ApiFail } from './api';
 import { JoinBox } from './components/JoinFlow';
 import QR from './components/QR';
 import { useSession } from './session';
@@ -106,7 +108,7 @@ export default function Setup() {
   const [hh, setHh] = useState<HouseholdInfo | null>(me.household);
   const [invite, setInvite] = useState<InviteCreated | null>(null);
   const [partner, setPartner] = useState({ name: '', email: '' });
-  const [kid, setKid] = useState({ name: '', age: '', school: '' });
+  const [kid, setKid] = useState({ name: '', age: '', school: '', pin: '', pinMode: 'choose' as 'choose' | 'generate' });
   const [kidsAdded, setKidsAdded] = useState<Array<{ name: string; pin: string }>>([]);
   const [schools, setSchools] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -189,19 +191,52 @@ export default function Setup() {
                 <option key={s} value={s} />
               ))}
             </datalist>
+            <fieldset className="pin-choice" data-testid="kid-pin-choice">
+              <legend className="small">Their sign-in PIN</legend>
+              <label className="inline-label">
+                <input type="radio" name="pin-mode" checked={kid.pinMode === 'choose'} onChange={() => setKid({ ...kid, pinMode: 'choose' })} /> I’ll choose a {KID_PIN_LENGTH}-digit PIN
+              </label>
+              {kid.pinMode === 'choose' && (
+                <input
+                  value={kid.pin}
+                  onChange={(e) => setKid({ ...kid, pin: e.target.value.replace(/\D/g, '').slice(0, KID_PIN_LENGTH) })}
+                  placeholder={`${KID_PIN_LENGTH}-digit PIN`}
+                  aria-label="Kid's PIN"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+              )}
+              <label className="inline-label">
+                <input type="radio" name="pin-mode" checked={kid.pinMode === 'generate'} onChange={() => setKid({ ...kid, pinMode: 'generate' })} /> Make one for me
+              </label>
+            </fieldset>
             <button
               className="btn small"
-              disabled={!kid.name}
+              disabled={!kid.name.trim() || (kid.pinMode === 'choose' && kid.pin.length !== KID_PIN_LENGTH)}
               onClick={() =>
                 wrap(
                   (async () => {
-                    const roster = await api<HouseholdAdminResponse>('/api/household/members', 'POST', { name: kid.name, kind: 'kid', age: kid.age || null, xpTrack: 'kid' });
-                    const added = [...roster.members].reverse().find((m) => m.kind === 'kid' && m.name === kid.name.trim());
+                    setErr(null);
+                    const name = kid.name.trim();
+                    // Check the chosen PIN first, so a weak one never leaves a kid on the roster without a PIN.
+                    const weak = kid.pinMode === 'choose' ? weakPinReason(kid.pin) : null;
+                    if (weak) throw new Error(weak);
+                    let roster: HouseholdAdminResponse;
+                    let note = '';
+                    try {
+                      roster = await api<HouseholdAdminResponse>('/api/household/members', 'POST', { name, kind: 'kid', age: kid.age || null, xpTrack: 'kid' });
+                    } catch (e) {
+                      // Already on the roster (e.g. added earlier): pair that kid instead of adding a second one.
+                      if (!(e instanceof ApiFail) || e.code !== 'duplicate_kid') throw e;
+                      roster = await api<HouseholdAdminResponse>('/api/household/admin');
+                      note = ' (already on your roster)';
+                    }
+                    const added = [...roster.members].reverse().find((m) => m.kind === 'kid' && !m.archived && m.name.toLowerCase() === name.toLowerCase());
                     if (!added) throw new Error('Kid not found after adding');
                     if (kid.school) await api(`/api/household/members/${added.id}`, 'PATCH', { school: kid.school }).catch(() => undefined);
-                    const pin = await api<{ pin: string }>(`/api/kid-access/${added.id}/pin`, 'PUT', {});
-                    setKidsAdded([...kidsAdded, { name: added.name, pin: pin.pin }]);
-                    setKid({ name: '', age: '', school: '' });
+                    const pin = await api<{ pin: string }>(`/api/kid-access/${added.id}/pin`, 'PUT', kid.pinMode === 'choose' ? { pin: kid.pin } : {});
+                    setKidsAdded([...kidsAdded.filter((k) => k.name !== added.name), { name: added.name + note, pin: pin.pin }]);
+                    setKid({ name: '', age: '', school: '', pin: '', pinMode: kid.pinMode });
                   })(),
                 )
               }

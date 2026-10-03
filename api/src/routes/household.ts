@@ -133,11 +133,25 @@ async function emailTaken(email: string, exceptId: number | null): Promise<boole
   return rows.length > 0;
 }
 
+/**
+ * Kids sign in by first name + PIN, so two kids with the same name would be
+ * ambiguous (and adding a kid twice used to leave the PIN on the wrong one).
+ */
+async function assertKidNameFree(name: string, exceptId: number | null): Promise<void> {
+  const { rows } = await pool.query<{ id: number; name: string }>(
+    "SELECT id, name FROM household_members WHERE kind = 'kid' AND archived_at IS NULL AND lower(name) = lower($1) AND ($2::int IS NULL OR id <> $2)",
+    [name, exceptId],
+  );
+  const dup = rows[0];
+  if (dup) throw new HttpError(409, `${dup.name} is already on your roster — use Household → Kid PINs to set their PIN`, 'duplicate_kid');
+}
+
 householdRouter.post('/api/household/members', async (req, res) => {
   const me = requireAdult(req);
   const b = req.body as Record<string, unknown>;
   const name = str(b.name, 'name', 40, true);
   const kind: MemberKind = b.kind === 'kid' ? 'kid' : 'adult';
+  if (kind === 'kid') await assertKidNameFree(name, null);
   const email = parseEmail(b.email);
   if (email && (await emailTaken(email, null))) throw new HttpError(409, 'Someone already uses that email');
   await pool.query(
@@ -160,6 +174,7 @@ householdRouter.patch('/api/household/members/:id', async (req, res) => {
   if (!cur) throw new HttpError(404, 'No such member');
   const kind: MemberKind = b.kind === undefined ? cur.kind : b.kind === 'kid' ? 'kid' : 'adult';
   if (id === me.id && kind !== 'adult') throw new HttpError(409, "You can't make yourself a kid (you'd lock yourself out)");
+  if (kind === 'kid') await assertKidNameFree(b.name === undefined ? cur.name : str(b.name, 'name', 40, true), id);
   const email = b.email === undefined ? cur.email : parseEmail(b.email);
   if (email && (await emailTaken(email, id))) throw new HttpError(409, 'Someone already uses that email');
   const track = b.xpTrack === undefined ? (kind !== cur.kind ? parseTrack(undefined, kind) : cur.xp_track) : parseTrack(b.xpTrack, kind);
@@ -197,7 +212,10 @@ householdRouter.post('/api/household/members/:id/archive', async (req, res) => {
 
 householdRouter.post('/api/household/members/:id/restore', async (req, res) => {
   const me = requireAdult(req);
-  await pool.query('UPDATE household_members SET archived_at = NULL WHERE id = $1', [idParam(req.params.id)]);
+  const id = idParam(req.params.id);
+  const { rows } = await pool.query<{ name: string; kind: MemberKind }>('SELECT name, kind FROM household_members WHERE id = $1', [id]);
+  if (rows[0]?.kind === 'kid') await assertKidNameFree(rows[0].name, id);
+  await pool.query('UPDATE household_members SET archived_at = NULL WHERE id = $1', [id]);
   res.json(await adminView(me.id, req));
 });
 

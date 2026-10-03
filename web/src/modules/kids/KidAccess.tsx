@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KID_PIN_LENGTH, type KidAccessResponse, type SetKidPinRequest, type SetKidPinResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
@@ -6,8 +6,10 @@ import { useSession } from '../../session';
 import { when } from '../../dates';
 
 /**
- * Grown-ups create, rotate or turn off each kid's PIN. A new PIN is shown
- * once — the server only keeps a hash — and signs the kid out everywhere.
+ * Kid PINs: grown-ups set, reset (kids forget them), or turn off each kid's
+ * PIN. Only a grown-up signed in with their own account can do this — kids'
+ * PIN sessions get 403. A new PIN is shown once (the server keeps a hash) and
+ * signs the kid out everywhere.
  */
 export default function KidAccess() {
   const { isAdult } = useSession();
@@ -16,6 +18,10 @@ export default function KidAccess() {
   const [shown, setShown] = useState<{ name: string; pin: string } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const confirm = useConfirm();
+  // Linked as /household#kid-pins (Settings → "Reset a kid's PIN"): land on it once it's loaded.
+  useEffect(() => {
+    if (data && window.location.hash === '#kid-pins') document.getElementById('kid-pins')?.scrollIntoView({ block: 'start' });
+  }, [data]);
 
   if (!isAdult) return <p className="muted">Only grown-ups can manage kid sign-in.</p>;
   if (error) return <p className="error">{error}</p>;
@@ -39,11 +45,11 @@ export default function KidAccess() {
   };
 
   return (
-    <section className="card">
-      <h2>Kid sign-in</h2>
+    <section className="card" id="kid-pins" data-testid="kid-pins">
+      <h2>Kid PINs</h2>
       <p className="muted">
-        Kids sign in with their first name and a {KID_PIN_LENGTH}-digit PIN — no Google account needed. Setting a new PIN signs them
-        out on every device. Five wrong tries locks sign-in for 15 minutes.
+        Kids sign in with their first name and a {KID_PIN_LENGTH}-digit PIN — no Google account needed. <b>Forgot it?</b> Set a new one here — only a
+        signed-in grown-up can. A new PIN signs them out on every device and unlocks a locked sign-in.
       </p>
 
       {shown && (
@@ -69,11 +75,11 @@ export default function KidAccess() {
           </div>
           <div className="inline">
             <button className="btn small" onClick={() => void setPin(k.memberId, k.name)}>
-              {k.hasPin ? 'New random PIN' : 'Create random PIN'}
+              {k.hasPin ? 'Reset with a random PIN' : 'Make a random PIN'}
             </button>
             <input
               aria-label={`Choose a PIN for ${k.name}`}
-              placeholder="or choose one"
+              placeholder={k.hasPin ? 'or type a new PIN' : 'or choose one'}
               inputMode="numeric"
               value={custom[k.memberId] ?? ''}
               onChange={(e) => setCustom({ ...custom, [k.memberId]: e.target.value.replace(/\D/g, '').slice(0, KID_PIN_LENGTH) })}
@@ -83,7 +89,7 @@ export default function KidAccess() {
               disabled={(custom[k.memberId] ?? '').length !== KID_PIN_LENGTH}
               onClick={() => void setPin(k.memberId, k.name, custom[k.memberId])}
             >
-              Set
+              {k.hasPin ? 'Reset PIN' : 'Set PIN'}
             </button>
           </div>
           {k.hasPin && (

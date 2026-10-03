@@ -379,7 +379,10 @@ authRouter.post('/api/auth/kid-login', async (req, res) => {
 
   const device = deviceLabel(req.headers['user-agent']);
   const result = await inHousehold(householdId, async () => {
-    const { rows } = await pool.query<{
+    // Every kid this name could mean. Two kids can share a first name (or a kid
+    // was added twice): the PIN decides which one is signing in, so a PIN set on
+    // the newer one is never checked against the older one by mistake.
+    const { rows: candidates } = await pool.query<{
       id: number;
       name: string;
       pin_hash: string | null;
@@ -389,27 +392,36 @@ authRouter.post('/api/auth/kid-login', async (req, res) => {
     }>(
       `SELECT id, name, pin_hash, pin_version, pin_failed, (pin_locked_until > now()) AS locked
          FROM household_members
-        WHERE kind = 'kid' AND archived_at IS NULL AND (key = $1 OR lower(name) = $1)
-        ORDER BY id LIMIT 1`,
+        WHERE kind = 'kid' AND archived_at IS NULL AND pin_hash IS NOT NULL AND (key = $1 OR lower(name) = $1)
+        ORDER BY (key = $1) DESC, id DESC`,
       [name],
     );
-    const kid = rows[0];
-    if (!kid || !kid.pin_hash) throw new HttpError(401, BAD_PIN);
-    if (kid.locked) {
-      await logKidSignin(kid.id, false, device);
+    if (!candidates.length) throw new HttpError(401, BAD_PIN);
+    const open = candidates.filter((c) => !c.locked);
+    if (!open.length) {
+      await logKidSignin(candidates[0]!.id, false, device);
       throw new HttpError(429, `Too many wrong PINs. Ask a grown-up, or wait ${PIN_LOCK_MINUTES} minutes.`);
     }
-    if (!(await verifyPin(pin, kid.pin_hash))) {
-      await logKidSignin(kid.id, false, device);
-      const fails = kid.pin_failed + 1;
-      await pool.query(
-        `UPDATE household_members
-            SET pin_failed = CASE WHEN $2::int >= $3::int THEN 0 ELSE $2::int END,
-                pin_locked_until = CASE WHEN $2::int >= $3::int THEN now() + make_interval(mins => $4::int)
-                                        ELSE pin_locked_until END
-          WHERE id = $1`,
-        [kid.id, fails, PIN_MAX_FAILS, PIN_LOCK_MINUTES],
-      );
+    let kid: (typeof candidates)[number] | null = null;
+    for (const c of open) {
+      if (c.pin_hash && (await verifyPin(pin, c.pin_hash))) {
+        kid = c;
+        break;
+      }
+    }
+    if (!kid) {
+      for (const c of open) {
+        await logKidSignin(c.id, false, device);
+        const fails = c.pin_failed + 1;
+        await pool.query(
+          `UPDATE household_members
+              SET pin_failed = CASE WHEN $2::int >= $3::int THEN 0 ELSE $2::int END,
+                  pin_locked_until = CASE WHEN $2::int >= $3::int THEN now() + make_interval(mins => $4::int)
+                                          ELSE pin_locked_until END
+            WHERE id = $1`,
+          [c.id, fails, PIN_MAX_FAILS, PIN_LOCK_MINUTES],
+        );
+      }
       throw new HttpError(401, BAD_PIN);
     }
     await pool.query('UPDATE household_members SET pin_failed = 0, pin_locked_until = NULL WHERE id = $1', [kid.id]);

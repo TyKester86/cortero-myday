@@ -59,6 +59,11 @@ function MemberRow({ m, onSave, onArchive, onRestore }: {
             {m.invite && ` · invite ${m.invite.status}`}
             {m.kind === 'kid' && (m.hasPin ? ' · PIN set' : ' · no PIN')}
           </small>
+          {m.kind === 'kid' && !m.archived && (
+            <a href="#kid-pins" className="small" style={{ marginLeft: 8 }}>
+              {m.hasPin ? 'Reset PIN' : 'Set PIN'}
+            </a>
+          )}
         </span>
         <span>
           <button className="link" onClick={() => setEdit(true)}>
@@ -175,6 +180,8 @@ export default function Household() {
         ))}
       </ul>
 
+      <KidAccess />
+
       <form className="card form" onSubmit={add}>
         <h2>Add someone</h2>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="First name" required />
@@ -208,8 +215,6 @@ export default function Household() {
           </div>
         )}
       </form>
-
-      <KidAccess />
 
       <div className="card">
         <h2>Kid sign-in devices</h2>

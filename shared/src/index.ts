@@ -153,6 +153,19 @@ export interface CreateHouseholdRequest {
 /** Kid PINs are exactly this many digits. */
 export const KID_PIN_LENGTH = 6;
 
+/** Easy-to-guess PINs a parent may not pick (checked in the browser and again on the server). */
+export function weakPinReason(pin: string): string | null {
+  if (pin.length !== KID_PIN_LENGTH || !/^[0-9]+$/.test(pin)) return `PIN must be exactly ${KID_PIN_LENGTH} digits`;
+  const d = [...pin].map(Number);
+  if (new Set(d).size <= 2) return 'PIN uses too few different digits';
+  const steps = d.slice(1).map((v, i) => v - (d[i] ?? 0));
+  if (steps.every((s) => s === 1) || steps.every((s) => s === -1)) return 'PIN is a straight run (like 123456)';
+  const half = KID_PIN_LENGTH / 2;
+  if (pin.slice(0, half) === pin.slice(half)) return 'PIN repeats itself (like 123123)';
+  if (pin[0] === pin[1] && pin[2] === pin[3] && pin[4] === pin[5]) return 'PIN is doubled digits (like 112233)';
+  return null;
+}
+
 export interface KidPinLoginRequest {
   name: string;
   pin: string;

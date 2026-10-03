@@ -5,27 +5,17 @@
  */
 import { randomBytes, randomInt, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { KID_PIN_LENGTH } from '@myday/shared';
+import { KID_PIN_LENGTH, weakPinReason } from '@myday/shared';
 import { HttpError } from './http.js';
+
+/** The same weak-PIN rules the browser checks (shared). */
+export { weakPinReason };
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, keylen: number) => Promise<Buffer>;
 
 /** Wrong PINs before a kid's sign-in locks. */
 export const PIN_MAX_FAILS = 5;
 export const PIN_LOCK_MINUTES = 15;
-
-/** Easy-to-guess PINs a parent may not pick. */
-export function weakPinReason(pin: string): string | null {
-  if (!new RegExp(`^\\d{${KID_PIN_LENGTH}}$`).test(pin)) return `PIN must be exactly ${KID_PIN_LENGTH} digits`;
-  const d = [...pin].map(Number);
-  if (new Set(d).size <= 2) return 'PIN uses too few different digits';
-  const steps = d.slice(1).map((v, i) => v - (d[i] ?? 0));
-  if (steps.every((s) => s === 1) || steps.every((s) => s === -1)) return 'PIN is a straight run (like 123456)';
-  const half = KID_PIN_LENGTH / 2;
-  if (pin.slice(0, half) === pin.slice(half)) return 'PIN repeats itself (like 123123)';
-  if (/^(\d)\1(\d)\2(\d)\3$/.test(pin)) return 'PIN is doubled digits (like 112233)';
-  return null;
-}
 
 export function generatePin(): string {
   for (;;) {
