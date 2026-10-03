@@ -18,9 +18,11 @@ import type {
   KidAccessResponse,
   KidSignin,
   Me,
+  ModuleKey,
   SetKidPinResponse,
   XpTrack,
 } from '@myday/shared';
+import { MODULE_KEYS } from '@myday/shared';
 import { config } from './config.js';
 import { asSystem, inHousehold, pool, setHousehold } from './db.js';
 import { logEvent } from './lib/events.js';
@@ -628,7 +630,14 @@ export async function householdInfo(householdId: number): Promise<HouseholdInfo>
     trial_ends_at: Date | null;
     allow_teen_bank_link: boolean;
     onboarding: Record<string, boolean>;
-  }>('SELECT id, name, type, code, trial_ends_at, allow_teen_bank_link, onboarding FROM households WHERE id = $1', [householdId]);
+    modules_off: string[];
+    has_kids: boolean;
+  }>(
+    `SELECT id, name, type, code, trial_ends_at, allow_teen_bank_link, onboarding, modules_off,
+            EXISTS (SELECT 1 FROM household_members m WHERE m.household_id = households.id AND m.kind = 'kid' AND m.archived_at IS NULL) AS has_kids
+       FROM households WHERE id = $1`,
+    [householdId],
+  );
   const h = rows[0];
   if (!h) throw new HttpError(404, 'Household not found');
   return {
@@ -639,6 +648,8 @@ export async function householdInfo(householdId: number): Promise<HouseholdInfo>
     trialEndsAt: h.trial_ends_at ? h.trial_ends_at.toISOString() : null,
     allowTeenBankLink: h.allow_teen_bank_link,
     onboarding: h.onboarding,
+    modulesOff: h.modules_off.filter((k): k is ModuleKey => (MODULE_KEYS as readonly string[]).includes(k)),
+    hasKids: h.has_kids,
   };
 }
 
@@ -646,8 +657,8 @@ export async function meHandler(req: Request, res: Response<Me>): Promise<void> 
   if (!req.user) throw new HttpError(401, 'Not signed in');
   const member = req.member ?? null;
   const { rows } = member
-    ? await pool.query<{ xp_track: XpTrack; theme: 'system' | 'light' | 'dark'; accent: string; first_run_done: boolean }>(
-        'SELECT xp_track, theme, accent, first_run_done FROM household_members WHERE id = $1',
+    ? await pool.query<{ xp_track: XpTrack; theme: 'system' | 'light' | 'dark'; accent: string; first_run_done: boolean; ai_consent: boolean }>(
+        'SELECT xp_track, theme, accent, first_run_done, ai_consent_at IS NOT NULL AS ai_consent FROM household_members WHERE id = $1',
         [member.id],
       )
     : { rows: [] };
@@ -661,6 +672,7 @@ export async function meHandler(req: Request, res: Response<Me>): Promise<void> 
     xpTrack: r?.xp_track ?? null,
     household: req.householdId ? await householdInfo(req.householdId) : null,
     prefs: r ? { theme: r.theme, accent: r.accent, firstRunDone: r.first_run_done } : null,
+    aiAllowed: !member || member.kind !== 'kid' || (member.age !== null && member.age >= 13) || !!r?.ai_consent,
     isAdmin: config.adminEmails.includes(req.user.email.toLowerCase()),
     pendingInvite: req.session.pendingInvite ? await peekInvite(req.session.pendingInvite).then((i) => (i ? { household: i.household } : null)) : null,
   });

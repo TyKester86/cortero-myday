@@ -14,6 +14,7 @@ import { useSession } from '../../session';
 import KidAccess from '../kids/KidAccess';
 import { useConfirm } from '../../components/Confirm';
 import RoleArt, { roleIcon } from '../../components/RoleArt';
+import { ago } from '../../dates';
 
 const TRACK_LABEL: Record<XpTrack, string> = {
   leader: 'Family Leader',
@@ -220,7 +221,7 @@ export default function Household() {
                 {d.label || 'Device'} {d.isThisDevice && <span className="tag">THIS ONE</span>}
                 <small className="muted">
                   {' '}
-                  · {d.kids.join(', ') || 'no kids'} · seen {new Date(d.lastSeenAt).toLocaleDateString()}
+                  · {d.kids.join(', ') || 'no kids'} · seen {ago(d.lastSeenAt)}
                 </small>
               </span>
               <button className="link danger" onClick={() => void run(api<HouseholdAdminResponse>(`/api/household/devices/${d.id}`, 'DELETE'), 'Device forgotten')}>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import type { Lecture as LectureData, LectureNotes } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { day, due } from '../../dates';
 
 const STATUS: Record<string, string> = {
   uploaded: 'Saved — getting in line…',
@@ -86,7 +87,7 @@ export default function Lecture() {
       </p>
       <h1>{data.title || data.className}</h1>
       <p className="muted small">
-        {data.recordedOn} · {Math.round(data.durationS / 60)} min
+        {day(data.recordedOn)} · {Math.round(data.durationS / 60)} min
       </p>
       {processing && (
         <div className="card" data-testid="lecture-processing">
@@ -132,7 +133,7 @@ export default function Lecture() {
               .map((a) => (
                 <li key={a.id}>
                   <span>
-                    {a.title} {a.due && <small className="muted">· due {a.due}</small>}
+                    {a.title} {a.due && <small className="muted">· {due(a.due)}</small>}
                   </span>
                   <span className="row">
                     <button className="btn small" onClick={() => void act(api<LectureData>(`/api/lectures/${data.id}/assignments/${a.id}/add`, 'POST'), 'Added to your homework ✓')}>

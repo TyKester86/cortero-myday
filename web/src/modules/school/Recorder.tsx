@@ -221,6 +221,17 @@ export default function Recorder() {
     );
   }
   if (!lite) return <p className="muted">Loading…</p>;
+  if (!me.aiAllowed) {
+    return (
+      <section data-testid="needs-consent">
+        <h1>Record a class</h1>
+        <div className="card">
+          <p>Your notes are made by an AI helper, so a grown-up needs to turn it on for you first.</p>
+          <p className="small muted">Ask them to open their Family page → “AI helpers for kids under 13”.</p>
+        </div>
+      </section>
+    );
+  }
   if (!lite.recordingAcknowledged) {
     if (!data) return <p className="muted">You’re offline. The one-time recording screen needs signal.</p>;
     return <PolicyScreen onAck={() => void api('/api/lectures/ack', 'POST').then(reload)} />;

@@ -4,6 +4,7 @@ import type { EngagementResponse, HouseholdInfo, NotificationsResponse } from '@
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
 import { InviteGrownUp, MergeDuplicate } from './HouseholdTools';
+import { YourData } from './YourData';
 
 export const ACCENTS: Array<[string, string]> = [
   ['navy', '#c2410c'], // default ember (key kept for saved prefs)
@@ -189,6 +190,12 @@ export default function Settings() {
       )}
       {isAdult && hh && <InviteGrownUp />}
       {isAdult && hh && me.isAdmin && <MergeDuplicate />}
+      {isAdult && hh && <YourData householdName={hh.name} />}
+      {!isAdult && (
+        <p className="small muted">
+          <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a>
+        </p>
+      )}
     </section>
   );
 }

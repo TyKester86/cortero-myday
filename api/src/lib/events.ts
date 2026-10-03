@@ -36,7 +36,11 @@ export type EventName =
   | 'household_joined'
   | 'household_merged'
   | 'build_screen_referred'
-  | 'cut_paused';
+  | 'cut_paused'
+  | 'ai_consent_given'
+  | 'ai_consent_withdrawn'
+  | 'data_exported'
+  | 'account_deleted';
 
 export async function logEvent(
   name: EventName,

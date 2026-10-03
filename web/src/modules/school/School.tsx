@@ -4,6 +4,7 @@ import { WEEKDAYS, type ClassInfo, type EarnResult, type SchoolResponse, type We
 import { api, useLoad, withMember } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { due } from '../../dates';
 
 type WithEarn = EarnResult & { school: SchoolResponse };
 
@@ -162,7 +163,7 @@ export default function School() {
               {data.assignments.map((a) => (
                 <li key={a.id}>
                   <span className={a.overdue ? 'warn' : ''}>
-                    {a.name} <small className="muted">{[a.className, a.due && `due ${a.due}`, a.priority].filter(Boolean).join(' · ')}</small>
+                    {a.name} <small className="muted">{[a.className, a.due && due(a.due), a.priority].filter(Boolean).join(' · ')}</small>
                   </span>
                   <button className="btn small" onClick={() => void run(api<WithEarn>(path(`/api/school/assignments/${a.id}/done`), 'POST'), 'Done ✓ +20 XP')}>
                     Done

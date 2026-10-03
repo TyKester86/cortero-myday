@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { EngagementResponse, Quest } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
+import { day } from '../../dates';
 
 /** Rotating weekly quests (kids). Claiming pays points. */
 export function QuestsCard({ quests, onClaim }: { quests: Quest[]; onClaim: (q: Quest) => void }) {
@@ -121,7 +122,7 @@ export default function Wins() {
             <span>
               <b>{w.who}</b> {w.text}
               <br />
-              <small className="muted">{w.at}</small>
+              <small className="muted">{day(w.at)}</small>
             </span>
           </div>
         ))}

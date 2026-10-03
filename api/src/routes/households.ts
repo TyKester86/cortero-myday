@@ -8,9 +8,12 @@ import { Router } from 'express';
 import {
   BUILDS,
   HOUSEHOLD_TYPES,
+  MODULE_KEYS,
   ONBOARDING_STEPS,
+  defaultModulesOff,
   type HouseholdInfo,
   type HouseholdType,
+  type ModuleKey,
   type OnboardingStep,
 } from '@myday/shared';
 import { asSystem, pool, setHousehold } from '../db.js';
@@ -50,10 +53,10 @@ householdsRouter.post('/api/households', async (req, res) => {
     let id: number | undefined;
     for (let attempt = 0; attempt < 5 && id === undefined; attempt++) {
       const r = await pool.query<{ id: number }>(
-        `INSERT INTO households (name, type, code, trial_ends_at, onboarding)
-         VALUES ($1, $2, $3, now() + make_interval(days => $4::int), '{"household": true}'::jsonb)
+        `INSERT INTO households (name, type, code, trial_ends_at, onboarding, modules_off)
+         VALUES ($1, $2, $3, now() + make_interval(days => $4::int), '{"household": true}'::jsonb, $5)
          ON CONFLICT (code) DO NOTHING RETURNING id`,
-        [householdName, type, newCode(), TRIAL_DAYS],
+        [householdName, type, newCode(), TRIAL_DAYS, defaultModulesOff(type)],
       );
       id = r.rows[0]?.id;
     }
@@ -98,12 +101,16 @@ householdsRouter.patch('/api/household/info', async (req, res) => {
   const type: HouseholdType = b.type === undefined ? cur.type : (HOUSEHOLD_TYPES.find((t) => t === b.type) ?? cur.type);
   const name = b.name === undefined ? cur.name : str(b.name, 'name', 60, true);
   const gate = b.allowTeenBankLink === undefined ? cur.allowTeenBankLink : b.allowTeenBankLink === true;
+  const modulesOff = Array.isArray(b.modulesOff)
+    ? [...new Set(b.modulesOff.filter((k): k is ModuleKey => typeof k === 'string' && (MODULE_KEYS as readonly string[]).includes(k)))]
+    : cur.modulesOff;
   await asSystem(() =>
-    pool.query('UPDATE households SET name = $2, type = $3, allow_teen_bank_link = $4 WHERE id = $1', [
+    pool.query('UPDATE households SET name = $2, type = $3, allow_teen_bank_link = $4, modules_off = $5 WHERE id = $1', [
       req.householdId,
       name,
       type,
       gate,
+      modulesOff,
     ]),
   );
   res.json(await householdInfo(req.householdId));

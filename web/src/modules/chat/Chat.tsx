@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { useSession } from '../../session';
 
 const COPY: Record<ChatMode, { title: string; intro: string; placeholder: string }> = {
   companion: {
@@ -17,6 +18,7 @@ const COPY: Record<ChatMode, { title: string; intro: string; placeholder: string
 
 /** Ask Hana (grown-ups) and the homework tutor (kids + students) share this screen. */
 export default function Chat({ mode }: { mode: ChatMode }) {
+  const { me } = useSession();
   const { data, error, setData } = useLoad<ChatState>(`/api/chat/${mode}`);
   const [msg, setMsg] = useState('');
   const [pending, setPending] = useState<string | null>(null);
@@ -30,6 +32,17 @@ export default function Chat({ mode }: { mode: ChatMode }) {
     void end.current?.scrollIntoView({ block: 'end' });
   }, [data, pending]);
 
+  if (mode === 'tutor' && !me.aiAllowed) {
+    return (
+      <section data-testid="needs-consent">
+        <h1>Homework helper</h1>
+        <div className="card">
+          <p>The helper is an AI, so a grown-up needs to turn it on for you first.</p>
+          <p className="small muted">Ask them to open their Family page → “AI helpers for kids under 13”.</p>
+        </div>
+      </section>
+    );
+  }
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   const copy = COPY[mode];

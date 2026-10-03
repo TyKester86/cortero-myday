@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import type { PrivateNote } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
+import { when } from '../../dates';
 
 /** A teen's private space: notes only they can read (not parents, not Hana), plus shortcuts to their money and look. */
 export default function Private() {
@@ -47,7 +48,7 @@ export default function Private() {
           <li key={n.id} className="card">
             <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{n.body}</p>
             <div className="row">
-              <small className="muted grow">{new Date(n.at).toLocaleString()}</small>
+              <small className="muted grow">{when(n.at)}</small>
               <button
                 className="link danger"
                 onClick={() =>

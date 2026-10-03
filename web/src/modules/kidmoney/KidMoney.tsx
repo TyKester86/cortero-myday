@@ -4,6 +4,7 @@ import { api, useLoad, withMember } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 import { loadPlaid } from '../money/Money';
+import { day } from '../../dates';
 
 const usd = (n: number): string => n.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
 const CATS = ['Food & snacks', 'Games & apps', 'Clothes', 'Fun & outings', 'Gifts', 'School', 'Other'];
@@ -184,7 +185,7 @@ export default function KidMoney() {
           {data.ledger.map((e) => (
             <li key={e.id}>
               <span>
-                {e.date} · {KIND_LABEL[e.kind]}
+                {day(e.date)} · {KIND_LABEL[e.kind]}
                 {e.category && ` · ${e.category}`}
                 {e.note && ` · ${e.note}`}
               </span>
@@ -244,7 +245,7 @@ export default function KidMoney() {
               <ul className="plain small">
                 {data.bank.recent.map((t) => (
                   <li key={t.id}>
-                    {t.date} · {t.merchant || t.name} · {usd(-t.amount)}
+                    {day(t.date)} · {t.merchant || t.name} · {usd(-t.amount)}
                   </li>
                 ))}
               </ul>

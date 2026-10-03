@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { RedAlertDone, RedAlertRequest, RedAlertResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { day } from '../../dates';
 
 /** The restart protocol for a day that went sideways: a few tiny steps, no shame. */
 export default function RedAlert() {
@@ -69,7 +70,7 @@ export default function RedAlert() {
             {data.recent.map((r, i) => (
               <li key={i}>
                 <span>
-                  {r.day} {r.trigger && <small className="muted">· {r.trigger}</small>}
+                  {day(r.day)} {r.trigger && <small className="muted">· {r.trigger}</small>}
                 </span>
                 <small className="muted">
                   {r.stepsDone}/{r.stepsTotal} steps

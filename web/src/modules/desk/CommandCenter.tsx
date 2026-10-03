@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import type { BillsResponse, EngagementResponse, MealPlanResponse, MyDayResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import QuickNote from '../../components/QuickNote';
+import { day as fmtDay } from '../../dates';
 
 /**
  * Desktop command center. Morning: check-in state, energy-ordered tasks,
@@ -100,7 +101,7 @@ export default function CommandCenter() {
                 <ul className="plain small">
                   {bills.data.dueSoon.map((b) => (
                     <li key={b.name + b.date}>
-                      {b.date} · {b.name} · ${b.amount}
+                      {fmtDay(b.date)} · {b.name} · ${b.amount}
                     </li>
                   ))}
                 </ul>
@@ -156,7 +157,7 @@ export default function CommandCenter() {
                 <div key={i} className="win">
                   <span className="emoji">{w.emoji}</span>
                   <span>
-                    <b>{w.who}</b> {w.text} <small className="muted">{w.at}</small>
+                    <b>{w.who}</b> {w.text} <small className="muted">{fmtDay(w.at)}</small>
                   </span>
                 </div>
               ))}

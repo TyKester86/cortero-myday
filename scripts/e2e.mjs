@@ -219,6 +219,8 @@ async function setup() {
   await db.connect();
   // Chores "exist" from the start of the test week.
   await db.query("UPDATE chores SET created_on = '2026-09-28'");
+  // Evan (11) uses the homework helper in the walk below: a parent turned AI helpers on for him.
+  await db.query("UPDATE household_members SET ai_consent_at = now() WHERE name = 'Evan'");
   await db.end();
 }
 
@@ -1778,6 +1780,67 @@ async function privacyRules() {
   eq('…on API answers too', (await fetch(`${BASE}/api/health`)).headers.get('x-frame-options'), 'DENY');
   const asset = (await (await fetch(`${BASE}/`)).text()).match(/\/assets\/[^"']+\.js/)?.[0];
   eq('hashed build files: cached a year, immutable', (await fetch(BASE + asset)).headers.get('cache-control'), 'public, max-age=31536000, immutable');
+
+  section('audit: AI helpers for kids under 13 need a parent’s OK (COPPA)');
+  const jo = new Client('jordan');
+  await jo.get(`/dev-login?token=${DEV_TOKEN}&member=jordan`);
+  eq('Jordan (8): AI helpers off by default', (await jo.get('/api/me')).data.aiAllowed, false);
+  const t1 = await jo.post('/api/chat/tutor', { message: 'help with fractions' });
+  eq('…the homework helper refuses with a “ask a grown-up” reason', [t1.status, t1.data.code], [409, 'needs_parent_consent']);
+  await jo.post('/api/lectures/ack');
+  eq('…and so does lecture recording', (await jo.req('POST', '/api/lectures/upload?classId=1', Buffer.from('x'.repeat(50)), { json: false, headers: { 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1' } })).data.code, 'needs_parent_consent');
+  eq('a kid can’t turn it on for themselves', (await jo.post('/api/household/members/jordan/ai-consent', { consent: true })).status, 403);
+  const cl = (await ty.get('/api/household/ai-consent')).data.kids;
+  eq('parents see which kids need it (under 13; teens don’t)', [cl.find((k) => k.key === 'jordan')?.needsConsent, cl.find((k) => k.key === 'avery')?.needsConsent], [true, false]);
+  await ty.post('/api/household/members/jordan/ai-consent', { consent: true });
+  eq('a parent turns it on → the helper answers', [(await jo.get('/api/me')).data.aiAllowed, (await jo.post('/api/chat/tutor', { message: 'help with fractions' })).status], [true, 200]);
+  await ty.post('/api/household/members/jordan/ai-consent', { consent: false });
+  eq('…and can withdraw it', (await jo.get('/api/me')).data.aiAllowed, false);
+  eq('consent is logged (who, when)', (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name IN ('ai_consent_given', 'ai_consent_withdrawn')"))[0].n, 2);
+
+  section('audit: your data — download it, delete your account, delete the household');
+  const ex = await ty.get('/api/account/export');
+  const tyId = (await ty.get('/api/me')).data.member.id;
+  const people = ex.data.data.household_members.map((m) => m.name);
+  const flat = JSON.stringify(ex.data);
+  eq('export: a download of Ty’s + the kids’ records — never Kayla’s, never secrets, never kids’ private notes', [
+    ex.status, /attachment; filename="myday-export-/.test(ex.headers.get('content-disposition') ?? ''),
+    people.includes('Ty'), people.includes('Avery'), people.includes('Kayla'),
+    /pin_hash|access_token|invite_hash|"data":"\\x/.test(flat),
+    (ex.data.data.private_notes ?? []).every((n) => n.member_id === tyId),
+    Object.keys(ex.data.data).includes('chores'),
+  ], [200, true, true, true, false, false, true, true]);
+
+  const solo = new Client('solo-del');
+  await solo.get(`/dev-login?token=${DEV_TOKEN}&email=solo-del@example.com`);
+  await solo.post('/api/households', { householdName: 'Gone Soon', type: 'family', yourName: 'Sol' });
+  await solo.post('/api/household/members', { name: 'Little', kind: 'kid', age: 6 });
+  const lastAdult = await solo.del('/api/account?confirm=DELETE');
+  eq('the only grown-up can’t leave the kids alone → “delete the household instead”', [lastAdult.status, lastAdult.data.code], [409, 'last_adult']);
+  eq('deleting the household needs its exact name', (await solo.del('/api/household?confirm=nope')).status, 409);
+  const gone = await solo.del('/api/household?confirm=Gone%20Soon');
+  eq('…with it: everything is deleted, the sign-in too, and the session ends', [
+    gone.status, (await sql("SELECT COUNT(*)::int AS n FROM households WHERE name = 'Gone Soon'"))[0].n,
+    (await sql("SELECT COUNT(*)::int AS n FROM household_members WHERE name = 'Little'"))[0].n,
+    (await sql("SELECT COUNT(*)::int AS n FROM users WHERE email = 'solo-del@example.com'"))[0].n,
+    (await solo.get('/api/me')).status,
+  ], [200, 0, 0, 0, 401]);
+
+  const pair = new Client('pair-del');
+  await pair.get(`/dev-login?token=${DEV_TOKEN}&email=pair-del@example.com`);
+  await pair.post('/api/households', { householdName: 'Two of Us', type: 'couple', yourName: 'Pemberly' });
+  await pair.post('/api/household/members', { name: 'Partner', kind: 'adult' });
+  await pair.post('/api/dump', { note: 'Pia’s own note' });
+  eq('with another grown-up there, you can delete just your account', (await pair.del('/api/account?confirm=DELETE')).status, 200);
+  eq('…your own things go, the household stays with them', [
+    (await sql("SELECT COUNT(*)::int AS n FROM households WHERE name = 'Two of Us'"))[0].n,
+    (await sql("SELECT COUNT(*)::int AS n FROM household_members WHERE name = 'Pemberly'"))[0].n,
+    (await sql("SELECT COUNT(*)::int AS n FROM dump_items WHERE note = 'Pia’s own note'"))[0].n,
+    (await sql("SELECT COUNT(*)::int AS n FROM users WHERE email = 'pair-del@example.com'"))[0].n,
+  ], [1, 0, 0, 0]);
+
+  section('audit: public privacy policy + terms (readable signed out)');
+  for (const p of ['/privacy', '/terms']) eq(`${p} is served signed out`, (await fetch(BASE + p)).status, 200);
 }
 
 async function householdJoin() {
@@ -1976,7 +2039,12 @@ async function uiGate() {
     await dp.waitForURL('**/meals');
     check('“g m” goes to Meals', dp.url().endsWith('/meals'));
     await dp.waitForSelector('.mealcard img');
-    check('meal cards show pictures', (await dp.locator('.mealcard img').count()) === 233);
+    eq('the library shows 24 at a time (not a 32,000 px page), with “show more”', [await dp.locator('.mealcard').count(), await dp.getByTestId('meals-more').innerText()], [24, 'SHOW 24 MORE']);
+    await dp.getByRole('button', { name: 'Show all 233' }).click();
+    check('meal cards show pictures (all 233 on request)', (await dp.locator('.mealcard img').count()) === 233);
+    await dp.getByLabel('Search meals').fill('gumbo');
+    eq('search narrows by name', await dp.locator('.mealcard').count(), 1);
+    await dp.getByLabel('Search meals').fill('');
     await dp.getByLabel('Country of origin').selectOption('Spanish');
     await dp.getByLabel('Region of origin').selectOption('Basque Country');
     await dp.waitForResponse((r) => r.url().includes('region=Basque'));
@@ -2060,7 +2128,27 @@ async function uiGate() {
     eq('…', [await tpg.getByTestId('macros').count(), await tpg.getByTestId('weighins-on').count(), await tpg.getByTestId('habits').getByText('Protein shake').count(), await tpg.getByTestId('program').getByText(/^Athletic ·/).count()], [0, 0, 0, 1]);
     await tc.close();
 
+    section('audit: the signed-out landing page fits a phone; privacy + terms render; Settings → Your data');
+    const lc = await browser.newContext(phone);
+    const lp = await lc.newPage();
+    await lp.goto(`${BASE}/`);
+    await lp.getByTestId('landing').waitFor({ timeout: 10000 });
+    const fit = await lp.evaluate(() => ({ w: document.documentElement.scrollWidth, vw: innerWidth, recipes: document.body.innerText.includes('233 recipes'), cta: !!document.querySelector('[data-testid="start-trial"]') }));
+    eq('landing: nothing wider than the phone, current numbers, a clear start button', [fit.w <= fit.vw, fit.recipes, fit.cta], [true, true, true]);
+    await lp.getByRole('link', { name: 'Privacy' }).click();
+    eq('…Privacy opens signed out', await lp.getByRole('heading', { name: 'Privacy Policy' }).waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    await lp.goto(`${BASE}/terms`);
+    eq('…Terms too', await lp.getByRole('heading', { name: 'Terms of Service' }).waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    await lc.close();
+    await kpg.goto(`${BASE}/settings`);
+    await kpg.getByTestId('your-data').waitFor({ timeout: 10000 });
+    eq('Settings → Your data: download, delete account, delete household', [await kpg.getByTestId('export-data').count(), await kpg.getByTestId('delete-account').count()], [1, 1]);
+    await kpg.goto(`${BASE}/family`);
+    eq('Family: the AI-helper switch for kids under 13', await kpg.getByTestId('ai-consent').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    await kpg.goto(`${BASE}/health`);
+
     section('audit 1a in the browser: the “whose day” picker offers me + the kids, never another grown-up');
+    await kpg.locator('select[aria-label="Whose day"]').waitFor({ timeout: 10000 });
     const pick = await kpg.locator('select[aria-label="Whose day"] option').allInnerTexts();
     eq('Kayla’s picker', [pick.includes('Kayla (me)'), pick.includes('Ty'), pick.includes('Avery'), pick.includes('Evan')], [true, false, true, true]);
     await kpg.evaluate(() => localStorage.setItem('myday.viewing', 'ty'));

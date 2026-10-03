@@ -3,6 +3,7 @@ import type { ExchangeRequest, LinkTokenResponse, MoneyResponse, MoneyTransactio
 import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useConfirm } from '../../components/Confirm';
+import { ago, day } from '../../dates';
 
 const usd = (n: number): string => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -42,7 +43,7 @@ function Txn({ t }: { t: MoneyTransaction }) {
         {t.merchant || t.name}
         <small className="muted">
           {' '}
-          · {t.date} · {t.accountName}
+          · {day(t.date)} · {t.accountName}
           {t.pending && ' · pending'}
         </small>
       </span>
@@ -136,7 +137,7 @@ export default function Money() {
                 {s.upcoming.map((u, i) => (
                   <li key={`${u.merchant}${i}`}>
                     <span>
-                      {u.merchant} <small className="muted">· {u.date}</small>
+                      {u.merchant} <small className="muted">· {day(u.date)}</small>
                     </span>
                     <b>−{usd(u.amount)}</b>
                   </li>
@@ -229,7 +230,7 @@ export default function Money() {
                     {i.institution}
                     <small className={i.syncError ? 'warn' : 'muted'}>
                       {' '}
-                      · {i.syncError || (i.lastSyncedAt ? `synced ${new Date(i.lastSyncedAt).toLocaleString()}` : 'not synced')}
+                      · {i.syncError || (i.lastSyncedAt ? `synced ${ago(i.lastSyncedAt)}` : 'not synced')}
                     </small>
                   </span>
                   <button

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { BillsResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
+import { day } from '../../dates';
 
 const usd = (n: number): string => n.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
 
@@ -45,7 +46,7 @@ export default function Bills() {
           <ul className="plain small">
             {data.dueSoon.map((d) => (
               <li key={`${d.name}${d.date}`}>
-                {d.date} · {d.name} · {usd(d.amount)}
+                {day(d.date)} · {d.name} · {usd(d.amount)}
               </li>
             ))}
           </ul>
@@ -67,7 +68,7 @@ export default function Bills() {
         </div>
         {data.lastCheck && (
           <p className="muted small">
-            Last check-in {data.lastCheck.date} · anxiety {data.lastCheck.anxiety}
+            Last check-in {day(data.lastCheck.date)} · anxiety {data.lastCheck.anxiety}
           </p>
         )}
       </div>

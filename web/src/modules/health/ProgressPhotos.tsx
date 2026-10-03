@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { PROGRESS_POSES, type ProgressPhotos as Data, type ProgressPose } from '@myday/shared';
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
+import { day } from '../../dates';
 
 /**
  * Re-encode in the browser: max 1600 px, JPEG. Re-drawing on a canvas drops
@@ -102,7 +103,7 @@ export function ProgressPhotos({ today }: { today: string }) {
           ? data.lastOn
             ? 'About 4 weeks since your last set — take this month’s when you’re ready.'
             : 'Take your first set — it’s the “before” you’ll be glad you have.'
-          : `Last set ${data.lastOn}. The next one is about 4 weeks after that — no rush.`}{' '}
+          : `Last set ${day(data.lastOn)}. The next one is about 4 weeks after that — no rush.`}{' '}
         Same spot, same light, same time of day (morning works well), same clothes. A phone timer helps.
       </p>
       <div className="photogrid">
@@ -144,7 +145,9 @@ export function ProgressPhotos({ today }: { today: string }) {
               Before{' '}
               <select value={a.takenOn} onChange={(e) => setBefore(e.target.value)}>
                 {dates.map((d) => (
-                  <option key={d}>{d}</option>
+                  <option key={d} value={d}>
+                    {day(d)}
+                  </option>
                 ))}
               </select>
             </label>
@@ -152,7 +155,9 @@ export function ProgressPhotos({ today }: { today: string }) {
               After{' '}
               <select value={b.takenOn} onChange={(e) => setAfter(e.target.value)}>
                 {dates.map((d) => (
-                  <option key={d}>{d}</option>
+                  <option key={d} value={d}>
+                    {day(d)}
+                  </option>
                 ))}
               </select>
             </label>

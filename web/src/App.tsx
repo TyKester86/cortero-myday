@@ -12,6 +12,7 @@ import { useWide } from './modules/desk/Home';
 import { applyLook } from './modules/settings/Settings';
 import { ConfirmProvider } from './components/Confirm';
 import Join from './Join';
+import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { MODULES, type ModuleRoute } from './modules';
 import GroceryPopout from './modules/meals/GroceryPopout';
@@ -134,6 +135,9 @@ function Gate() {
 
 export default function App() {
   const path = window.location.pathname;
+  // Public pages: readable signed out.
+  if (path === '/privacy') return <Privacy />;
+  if (path === '/terms') return <Terms />;
   // Invite links work signed out.
   const join = path.match(/^\/join\/([^/]+)$/);
   if (join?.[1]) {

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useLoad } from '../../api';
+import { day } from '../../dates';
 
 interface RecordRow {
   kind: string;
@@ -66,7 +67,7 @@ export default function Records() {
                 </>
               )}
             </span>
-            <small className="muted">{r.date}</small>
+            <small className="muted">{day(r.date)}</small>
           </li>
         ))}
       </ul>

@@ -3,6 +3,7 @@ import type { HealthPlan as HealthPlanData } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { day } from '../../dates';
 
 /** All 52 phased weeks, the current one highlighted, then each phase in detail. */
 export default function HealthPlan() {
@@ -63,7 +64,7 @@ export default function HealthPlan() {
               w.kind === 'deload' ? 'deload' : '',
               w.week < data.currentWeek ? 'past' : '',
             ].join(' ')}
-            title={`${w.phase ?? 'Unplanned'} · starts ${w.starts}`}
+            title={`${w.phase ?? 'Unplanned'} · starts ${day(w.starts)}`}
             aria-current={w.isCurrent ? 'true' : undefined}
           >
             <b>{w.week}</b>

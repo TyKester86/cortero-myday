@@ -48,37 +48,7 @@ export default function Login() {
     setName('');
   };
 
-  return (
-    <div className="login">
-      <img src="/icons/myday-icon-192.png" alt="" width={96} height={96} />
-      <h1>MyDay</h1>
-      <p className="muted">One app for the whole family.</p>
-      {err && <p className="error-light">{LOGIN_ERRORS[err] ?? 'Sign-in failed.'}</p>}
-
-      {!kid && known.length > 0 && (
-        <div className="kidpicker" data-testid="kid-picker">
-          {known.map((k) => (
-            <button key={k.key} className="kidbtn" onClick={() => pick(k.key)}>
-              <span className="avatar">{k.name.slice(0, 1)}</span>
-              {k.name}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {!kid ? (
-        <>
-          <a className="btn" href="/api/auth/google">
-            Sign in with Google
-          </a>
-          <a className="link light" href="/api/auth/google" data-testid="start-trial">
-            New here? Start a free 30-day trial
-          </a>
-          <button className="link light" onClick={() => setKid(true)}>
-            I'm a kid — sign in with my PIN
-          </button>
-        </>
-      ) : (
+  const kidForm = (
         <form className="kidlogin" onSubmit={(e) => void kidLogin(e)}>
           {picked ? (
             <p>
@@ -126,26 +96,146 @@ export default function Login() {
             Back
           </button>
         </form>
-      )}
-      {!kid && (
-        <div className="feature" style={{ maxWidth: 720, textAlign: 'left' }} data-testid="landing">
-          {[
-            ['✅ Today, for everyone', 'Chores, homework and tasks with points kids actually care about.'],
-            ['💪 A year of training', 'Pick a body-style build; get 52 phased weeks, meals and protein math.'],
-            ['🍽 Meals → groceries', '120 recipes with pictures. One tap builds the list and opens your store.'],
-            ['📚 School, captured', 'Record a class; get real study notes, flashcards and homework found for you.'],
-            ['💬 Hana', 'An AI that can actually do things — add tasks, groceries, move a workout.'],
-            ['🏠 Any household', 'Families, couples, empty nesters, solo, and college students.'],
-          ].map(([t, b]) => (
-            <div key={t} className="card" style={{ color: 'var(--text)' }}>
-              <b>{t}</b>
-              <p className="small" style={{ margin: '4px 0 0', color: 'var(--muted)' }}>
-                {b}
-              </p>
+  );
+
+  // The kid PIN screen (and a device that remembers kids) stays a simple, focused card.
+  if (kid || known.length > 0) {
+    return (
+      <div className="login">
+        <img src="/icons/myday-icon-192.png" alt="" width={96} height={96} />
+        <h1>MyDay</h1>
+        {err && <p className="error-light">{LOGIN_ERRORS[err] ?? 'Sign-in failed.'}</p>}
+        {!kid && (
+          <>
+            <div className="kidpicker" data-testid="kid-picker">
+              {known.map((k) => (
+                <button key={k.key} className="kidbtn" onClick={() => pick(k.key)}>
+                  <span className="avatar">{k.name.slice(0, 1)}</span>
+                  {k.name}
+                </button>
+              ))}
+            </div>
+            <a className="btn" href="/api/auth/google">
+              Grown-up? Sign in with Google
+            </a>
+            <button className="link light" onClick={() => setKid(true)}>
+              Someone else — sign in with a PIN
+            </button>
+          </>
+        )}
+        {kid && kidForm}
+      </div>
+    );
+  }
+
+  return <Landing err={err} onKid={() => setKid(true)} />;
+}
+
+const FEATURES: Array<[string, string, string]> = [
+  ['✅', 'Chores and homework kids actually do', 'Points, quests and rewards they choose — and a grown-up approves. Nothing hangs over anyone.'],
+  ['🌅', 'A calmer day for grown-ups', 'A morning check-in, your three most important tasks, and a two-minute evening close-out.'],
+  ['🍽', 'Meals → groceries in one tap', '233 recipes with pictures from 25 countries. Plan the week and the shopping list builds itself.'],
+  ['💪', 'A year of training that fits you', 'Nine evidence-based builds, 52 planned weeks, safe calorie and protein math — and teen-safe by default.'],
+  ['🎙', 'Class notes that teach organizing', 'Record a lecture, even offline. Get structured notes, flashcards and the homework that was mentioned.'],
+  ['💬', 'Hana, a helper that does things', 'Ask in plain words: add a task, a grocery, move a workout. She always asks before changing anything big.'],
+];
+
+const AUDIENCES = ['Families with kids', 'Couples', 'Just me', 'Empty nesters', 'Retired', 'College students'];
+
+const FAQ: Array<[string, string]> = [
+  ['Do I need to download an app?', 'No. MyDay runs in your phone’s browser — tap “Add to Home Screen” and it opens like any app, even without signal.'],
+  ['Do my kids need their own phones?', 'No. Kids can use a family tablet or a parent’s phone with their own name and PIN. Older kids can use their own device.'],
+  ['What does it cost?', 'Every household starts with a free 30-day trial, no card needed. You’ll see the price before the trial ends.'],
+  ['Is our information private?', 'Your household’s data is walled off from every other household. Bank links are read-only — MyDay can never move money. Progress photos are encrypted and only their owner can see them.'],
+  ['Is it for people with ADHD?', 'It was built with ADHD brains in mind: one thing at a time, gentle nudges, no guilt, and structure that teaches itself. It works just as well for everyone else.'],
+];
+
+/** The signed-out front door: what MyDay is, who it's for, and how to start. */
+function Landing({ err, onKid }: { err: string | null; onKid: () => void }) {
+  return (
+    <div className="lp" data-testid="landing">
+      <header className="lp-top">
+        <span className="lp-brand">
+          <img src="/icons/myday-mark.svg" alt="" width={28} height={28} />
+          MyDay
+        </span>
+        <a className="lp-signin" href="/api/auth/google">
+          Sign in
+        </a>
+      </header>
+
+      <section className="lp-hero">
+        <h1>The family day, handled.</h1>
+        <p>
+          Chores and homework kids actually do, a calmer plan for the grown-ups, meals that write the grocery list, and a helper that takes care of the busywork.
+        </p>
+        {err && <p className="error-light">{LOGIN_ERRORS[err] ?? 'Sign-in failed.'}</p>}
+        <div className="lp-cta">
+          <a className="btn" href="/api/auth/google" data-testid="start-trial">
+            Start free with Google
+          </a>
+          <button className="btn ghost light" onClick={onKid}>
+            I’m a kid — sign in with my PIN
+          </button>
+        </div>
+        <p className="lp-fine">30 days free · no card needed · cancel anytime</p>
+      </section>
+
+      <section className="lp-section">
+        <h2>Who it’s for</h2>
+        <div className="lp-chips">
+          {AUDIENCES.map((a) => (
+            <span key={a} className="lp-chip">
+              {a}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section className="lp-section">
+        <h2>What you get</h2>
+        <div className="lp-features">
+          {FEATURES.map(([icon, title, body]) => (
+            <div key={title} className="lp-feature">
+              <span className="lp-icon" aria-hidden="true">
+                {icon}
+              </span>
+              <h3>{title}</h3>
+              <p>{body}</p>
             </div>
           ))}
         </div>
-      )}
+      </section>
+
+      <section className="lp-section lp-promise">
+        <h2>Our promise</h2>
+        <ul>
+          <li>Built for brains that get overwhelmed: one thing at a time, gentle reminders, never guilt.</li>
+          <li>Kids are protected by default: no calorie targets for teens, private spaces, grown-ups approve rewards.</li>
+          <li>Your data is yours: walled off per household, bank access is read-only, photos are encrypted.</li>
+        </ul>
+      </section>
+
+      <section className="lp-section">
+        <h2>Questions</h2>
+        {FAQ.map(([q, a]) => (
+          <details key={q} className="lp-faq">
+            <summary>{q}</summary>
+            <p>{a}</p>
+          </details>
+        ))}
+      </section>
+
+      <section className="lp-hero lp-end">
+        <h2>Try it with your family this week.</h2>
+        <a className="btn" href="/api/auth/google">
+          Start free with Google
+        </a>
+      </section>
+
+      <footer className="lp-foot">
+        <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <span>© {new Date().getFullYear()} MyDay</span>
+      </footer>
     </div>
   );
 }

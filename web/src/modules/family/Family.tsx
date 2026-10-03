@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import type { Curfew, EarnResult, FamilyResponse, KidOverview, NewOneOnOne, PartnerCheckinFields } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
+import { ago } from '../../dates';
+import { KidAiConsent } from '../settings/YourData';
 
 type EarnFamily = EarnResult & { family: FamilyResponse };
 
@@ -17,7 +19,7 @@ function KidCard({ k, onCurfew }: { k: KidOverview; onCurfew: (field: keyof Curf
     <div className="card" data-testid={`kid-${k.member.key}`}>
       <div className="ex-head">
         <b>{k.member.name}</b>
-        <small className="muted">{k.lastSignIn ? `signed in ${new Date(k.lastSignIn).toLocaleString()}` : 'not signed in yet'}</small>
+        <small className="muted">{k.lastSignIn ? ` · signed in ${ago(k.lastSignIn)}` : ' · not signed in yet'}</small>
       </div>
       <div className="stats">
         <div className="stat">
@@ -85,6 +87,7 @@ export default function Family() {
     <section>
       <h1>Family</h1>
 
+      <KidAiConsent />
       <h2>The kids</h2>
       {data.kids.map((k) => (
         <KidCard

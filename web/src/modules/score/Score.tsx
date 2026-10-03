@@ -2,6 +2,7 @@ import type { ScoreSource, ScoreSummary } from '@myday/shared';
 import { useLoad, withMember } from '../../api';
 import { XpBar } from '../../components/XpBar';
 import { useSession } from '../../session';
+import { day } from '../../dates';
 
 const SOURCE_LABEL: Record<ScoreSource, string> = {
   chore: 'Chore',
@@ -81,7 +82,7 @@ export default function Score() {
           {data.dailyHistory.length > 1 && (
             <div className="spark" aria-label="Last 30 days">
               {data.dailyHistory.map((h) => (
-                <i key={h.date} title={`${h.date}: ${h.total}`} style={{ height: `${Math.max(4, h.total)}%` }} className={h.total === 100 ? 'hot' : ''} />
+                <i key={h.date} title={`${day(h.date)}: ${h.total}`} style={{ height: `${Math.max(4, h.total)}%` }} className={h.total === 100 ? 'hot' : ''} />
               ))}
             </div>
           )}
@@ -104,7 +105,7 @@ export default function Score() {
                 <small>
                   {a.desc}
                   {a.xp > 0 && ` · +${a.xp} XP`}
-                  {a.date && ` · ${a.date}`}
+                  {a.date && ` · ${day(a.date)}`}
                 </small>
               </li>
             ))}
@@ -120,7 +121,7 @@ export default function Score() {
           {data.recent.map((r) => (
             <li key={r.id}>
               <span>
-                {r.note || SOURCE_LABEL[r.source]} <span className="muted">· {r.date}</span>
+                {r.note || SOURCE_LABEL[r.source]} <span className="muted">· {day(r.date)}</span>
               </span>
               <b>+{r.points}</b>
             </li>

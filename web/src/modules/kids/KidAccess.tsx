@@ -3,6 +3,7 @@ import { KID_PIN_LENGTH, type KidAccessResponse, type SetKidPinRequest, type Set
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { when } from '../../dates';
 
 /**
  * Grown-ups create, rotate or turn off each kid's PIN. A new PIN is shown
@@ -96,7 +97,7 @@ export default function KidAccess() {
               <ul className="plain small">
                 {k.recentSignins.slice(0, 8).map((s, i) => (
                   <li key={i} className={s.ok ? 'muted' : 'warn'}>
-                    {new Date(s.at).toLocaleString()} · {s.device} · {s.ok ? 'signed in' : 'wrong PIN'}
+                    {when(s.at)} · {s.device} · {s.ok ? 'signed in' : 'wrong PIN'}
                   </li>
                 ))}
               </ul>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { LectureSummary, SchoolResponse, UploadLectureResponse } from '@myday/shared';
 import { useLoad } from '../../api';
+import { day } from '../../dates';
 
 const STATUS: Record<LectureSummary['status'], string> = {
   uploaded: 'in line',
@@ -105,7 +106,7 @@ export default function Lectures() {
               <span className="grow">
                 <Link to={`/lectures/${l.id}`}>{l.title || 'Lecture'}</Link>{' '}
                 <small className="muted">
-                  {name(l.classId)} · {l.recordedOn}
+                  {name(l.classId)} · {day(l.recordedOn)}
                 </small>
               </span>
               <span className={l.status === 'ready' ? 'pill good' : l.status === 'failed' ? 'pill' : 'pill sun'}>{STATUS[l.status]}</span>

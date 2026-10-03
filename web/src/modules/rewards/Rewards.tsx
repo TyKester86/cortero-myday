@@ -3,6 +3,7 @@ import type { NewReward, Redemption, RewardAdminResponse, RewardStore } from '@m
 import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
+import { ago } from '../../dates';
 
 const STATUS: Record<Redemption['status'], string> = {
   pending: 'Waiting for a grown-up',
@@ -157,7 +158,7 @@ function RewardsAdmin() {
                   <b>{d.memberName}</b>: {d.rewardName} <small className="muted">· {d.cost} pts</small>
                 </span>
                 <small className={d.status === 'approved' ? 'good' : 'muted'}>
-                  {d.status === 'approved' ? 'Approved' : 'Denied'} by {d.decidedBy} · {new Date(d.decidedAt).toLocaleDateString()}
+                  {d.status === 'approved' ? 'Approved' : 'Denied'} by {d.decidedBy} · {ago(d.decidedAt)}
                 </small>
               </li>
             ))}

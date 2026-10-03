@@ -14,6 +14,9 @@ import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 
+/** Cards shown at a time (233 at once made a 32,000 px phone page). */
+const PAGE = 24;
+
 const PHASES: Array<{ key: '' | 'mine' | NutritionMode; label: string }> = [
   { key: '', label: 'All phases' },
   { key: 'mine', label: 'My phase' },
@@ -38,6 +41,8 @@ export default function Meals() {
   const [region, setRegion] = useState('');
   const [day, setDay] = useState<Weekday | ''>('');
   const [slot, setSlot] = useState<MealSlot | ''>('');
+  const [text, setText] = useState('');
+  const [limit, setLimit] = useState(PAGE);
   const q = new URLSearchParams();
   if (cuisine) q.set('cuisine', cuisine);
   if (region) q.set('region', region);
@@ -64,7 +69,13 @@ export default function Meals() {
     if (p) next.set('phase', p);
     else next.delete('phase');
     setParams(next, { replace: true });
+    setLimit(PAGE);
   };
+  const needle = text.trim().toLowerCase();
+  const matches = (library.data?.meals ?? []).filter(
+    (m) => !needle || m.title.toLowerCase().includes(needle) || m.cuisine.toLowerCase().includes(needle) || (m.region ?? '').toLowerCase().includes(needle),
+  );
+  const shown = matches.slice(0, limit);
 
   return (
     <section>
@@ -74,7 +85,7 @@ export default function Meals() {
         <Link to="/meals/grocery">Grocery list →</Link>
       </p>
 
-      <h2>Meal library {library.data && <span className="muted small">· {library.data.meals.length} meals</span>}</h2>
+      <h2>Meal library {library.data && <span className="muted small">· {matches.length} meals</span>}</h2>
       <div className="chips" data-testid="phase-filter">
         {PHASES.filter((p) => p.key !== 'mine' || library.data?.phase).map((p) => (
           <button key={p.key} className={phase === p.key ? 'chip on' : 'chip'} onClick={() => setPhase(p.key)}>
@@ -83,45 +94,41 @@ export default function Meals() {
         ))}
       </div>
       {library.data && (
-        <div className="form wide" data-testid="country-filter">
-          <label>
-            Country of origin
-            <select
-              value={cuisine}
-              onChange={(e) => {
-                setCuisine(e.target.value);
-                setRegion('');
-              }}
-              aria-label="Country of origin"
-            >
-              <option value="">All countries ({library.data.countries.reduce((s, c) => s + c.count, 0)})</option>
-              {library.data.countries.map((c) => (
-                <option key={c.name} value={c.name}>
-                  {c.name} ({c.count})
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="filters" data-testid="country-filter">
+          <input type="search" value={text} onChange={(e) => { setText(e.target.value); setLimit(PAGE); }} placeholder="Search meals" aria-label="Search meals" />
+          <select
+            value={cuisine}
+            onChange={(e) => {
+              setCuisine(e.target.value);
+              setRegion('');
+              setLimit(PAGE);
+            }}
+            aria-label="Country of origin"
+          >
+            <option value="">All countries ({library.data.countries.reduce((s, c) => s + c.count, 0)})</option>
+            {library.data.countries.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name} ({c.count})
+              </option>
+            ))}
+          </select>
           {(library.data.countries.find((c) => c.name === cuisine)?.regions.length ?? 0) > 0 && (
-            <label>
-              Region
-              <select value={region} onChange={(e) => setRegion(e.target.value)} aria-label="Region of origin">
-                <option value="">All of {cuisine}</option>
-                {library.data.countries
-                  .find((c) => c.name === cuisine)
-                  ?.regions.map((r) => (
-                    <option key={r.name} value={r.name}>
-                      {r.name} ({r.count})
-                    </option>
-                  ))}
-              </select>
-            </label>
+            <select value={region} onChange={(e) => { setRegion(e.target.value); setLimit(PAGE); }} aria-label="Region of origin">
+              <option value="">All of {cuisine}</option>
+              {library.data.countries
+                .find((c) => c.name === cuisine)
+                ?.regions.map((r) => (
+                  <option key={r.name} value={r.name}>
+                    {r.name} ({r.count})
+                  </option>
+                ))}
+            </select>
           )}
         </div>
       )}
       <label className="inline-label">
         Add to{' '}
-        <select value={day} onChange={(e) => setDay(WEEKDAYS.find((d) => d === e.target.value) ?? '')}>
+        <select aria-label="Add to which day" value={day} onChange={(e) => setDay(WEEKDAYS.find((d) => d === e.target.value) ?? '')}>
           <option value="">the week (no day yet)</option>
           {WEEKDAYS.map((d) => (
             <option key={d} value={d}>
@@ -139,11 +146,11 @@ export default function Meals() {
         </select>
       </label>
       {library.error && <p className="error">{library.error}</p>}
-      {library.data?.meals.length === 0 && <p className="muted">No meals match.</p>}
+      {library.data && matches.length === 0 && <p className="muted">No meals match.</p>}
       <div className="mealgrid" data-testid="meal-library">
-        {library.data?.meals.map((m) => (
+        {shown.map((m) => (
           <div key={m.id} className="mealcard">
-            <Link to={`/meals/${m.id}`}>
+            <Link to={`/meals/${m.id}`} aria-label={m.title}>
               <img src={m.imageUrl} alt="" loading="lazy" onError={onImgError} />
             </Link>
             <div>
@@ -166,6 +173,16 @@ export default function Meals() {
           </div>
         ))}
       </div>
+      {matches.length > shown.length && (
+        <div className="row" style={{ justifyContent: 'center' }}>
+          <button className="btn ghost" onClick={() => setLimit(limit + PAGE)} data-testid="meals-more">
+            Show {Math.min(PAGE, matches.length - shown.length)} more
+          </button>
+          <button className="link" onClick={() => setLimit(matches.length)}>
+            Show all {matches.length}
+          </button>
+        </div>
+      )}
       {toast}
     </section>
   );

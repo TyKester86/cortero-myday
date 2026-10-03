@@ -16,6 +16,7 @@ import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 import { BuildPicker, ProgramCard } from './Program';
 import { ProgressPhotos } from './ProgressPhotos';
+import { day } from '../../dates';
 
 function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequest) => Promise<void> }) {
   const [weight, setWeight] = useState('');
@@ -87,7 +88,7 @@ function Records({ memberKey }: { memberKey: string }) {
           <ul className="plain small">
             {data.sessions.slice(0, 6).map((s, i) => (
               <li key={i}>
-                {s.date} · {s.activity} · {s.minutes} min{s.miles ? ` · ${s.miles} mi` : ''}
+                {day(s.date)} · {s.activity} · {s.minutes} min{s.miles ? ` · ${s.miles} mi` : ''}
               </li>
             ))}
           </ul>
@@ -104,7 +105,7 @@ function Records({ memberKey }: { memberKey: string }) {
             <ul className="plain small">
               {data.exercises.slice(0, 12).map((x, i) => (
                 <li key={i}>
-                  {x.date} · {x.exercise} {x.weight && `· ${x.weight}`} {x.reps && `× ${x.reps}`}
+                  {day(x.date)} · {x.exercise} {x.weight && `· ${x.weight}`} {x.reps && `× ${x.reps}`}
                 </li>
               ))}
             </ul>
@@ -301,7 +302,7 @@ export default function HealthToday() {
                 {ex.subs && <small className="muted">Swap: {ex.subs}</small>}
                 {last && (
                   <small className="muted">
-                    Last: {last.weight} × {last.reps} ({last.date})
+                    Last: {last.weight} × {last.reps} ({day(last.date)})
                   </small>
                 )}
                 {ex.next && (

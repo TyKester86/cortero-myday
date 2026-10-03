@@ -4,6 +4,7 @@ import type { CirclePost, CircleSummary, CircleView, ModerationQueue, TeenActivi
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { ago } from '../../dates';
 
 const SAFETY = 'No direct messages, ever. Kids under 13 can’t join; teens appear as “Teen member” and a parent approves what they post.';
 
@@ -91,7 +92,7 @@ function Post({ p, onChange }: { p: CirclePost; onChange: (v: CircleView | null)
       <div className="row">
         <b className="grow">{p.author}</b>
         {p.status === 'pending' && <span className="pill sun">waiting for a parent’s OK</span>}
-        <small className="muted">{new Date(p.at).toLocaleDateString()}</small>
+        <small className="muted">{ago(p.at)}</small>
       </div>
       <p style={{ whiteSpace: 'pre-wrap' }}>{p.body}</p>
       {p.status === 'visible' && (

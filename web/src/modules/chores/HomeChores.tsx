@@ -5,6 +5,7 @@ import { api, useLoad, withMember } from '../../api';
 import QuickNote from '../../components/QuickNote';
 import { useSession } from '../../session';
 import { QuestsCard, useEngagement } from '../engagement/Wins';
+import { due } from '../../dates';
 
 /** Today's checklist for one person. Checking a chore pays out instantly. */
 export default function HomeChores() {
@@ -134,7 +135,7 @@ export default function HomeChores() {
             {data.homework.map((h) => (
               <li key={h.id} className={h.overdue ? 'warn' : ''}>
                 {h.assignment} {h.subject && <span className="muted">· {h.subject}</span>}
-                {h.due && <span className="muted"> · due {h.due}</span>}
+                {h.due && <span className="muted"> · {due(h.due)}</span>}
               </li>
             ))}
           </ul>

@@ -40,6 +40,8 @@ export interface Me {
   isAdmin: boolean;
   /** Signed in through an invite to ANOTHER household: held until they confirm leaving theirs. */
   pendingInvite: { household: string } | null;
+  /** AI helpers (homework helper, lecture notes) allowed: false for a kid under 13 until a parent turns them on. */
+  aiAllowed: boolean;
   /** Per-person look + first-run state (null until linked to a member). */
   prefs: { theme: 'system' | 'light' | 'dark'; accent: string; firstRunDone: boolean } | null;
 }
@@ -92,7 +94,34 @@ export function featuresFor(type: HouseholdType): HouseholdFeatures {
   };
 }
 
-export const ONBOARDING_STEPS = ['household', 'invite', 'kids', 'classroom', 'bank'] as const;
+/**
+ * Optional parts of MyDay a household can turn off (Settings → What's in your
+ * MyDay). Kid features also hide by themselves when there are no kids.
+ */
+export const MODULE_KEYS = ['health', 'meals', 'money', 'invest', 'school', 'challenges', 'focus', 'dump', 'identity', 'records', 'circles', 'care', 'hana'] as const;
+export type ModuleKey = (typeof MODULE_KEYS)[number];
+export const MODULE_INFO: Record<ModuleKey, { label: string; about: string }> = {
+  health: { label: 'Health', about: 'Workouts, a year plan, habits and protein' },
+  meals: { label: 'Meals & groceries', about: 'Recipes, the week’s menu and the shopping list' },
+  money: { label: 'Money', about: 'Bank accounts (read-only), bills and income' },
+  invest: { label: 'Investments', about: 'Retirement and savings accounts' },
+  school: { label: 'School', about: 'Classes, lecture notes and study tools' },
+  challenges: { label: 'Challenges', about: 'Boss battles and Red Alert restarts' },
+  focus: { label: 'Focus timer', about: 'One-thing-at-a-time timer' },
+  dump: { label: 'Brain dump', about: 'Catch every thought, sort it later' },
+  identity: { label: 'Identity', about: 'Who you’re becoming: values and anchors' },
+  records: { label: 'Records', about: 'Important papers and dates' },
+  circles: { label: 'Circles', about: 'Small support groups (13+)' },
+  care: { label: 'Care team', about: 'Share with a tutor, coach or provider' },
+  hana: { label: 'Ask Hana', about: 'The AI helper that can do things for you' },
+};
+/** What a new household starts without (it can turn anything back on). */
+export function defaultModulesOff(type: HouseholdType): ModuleKey[] {
+  if (type === 'college' || type === 'family') return [];
+  return ['school'];
+}
+
+export const ONBOARDING_STEPS = ['household', 'invite', 'kids', 'classroom', 'bank', 'checklist'] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 
 export interface HouseholdInfo {
@@ -105,6 +134,10 @@ export interface HouseholdInfo {
   allowTeenBankLink: boolean;
   /** Onboarding steps done or skipped. */
   onboarding: Partial<Record<OnboardingStep, boolean>>;
+  /** Optional parts this household turned off. */
+  modulesOff: ModuleKey[];
+  /** Any kids on the roster (kid features hide when there are none). */
+  hasKids: boolean;
 }
 
 export interface CreateHouseholdRequest {

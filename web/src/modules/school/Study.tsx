@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import type { Flashcard, StudyView } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { day } from '../../dates';
 
 /** Per-class study library: every lecture (kept forever), flashcards in Leitner boxes, quiz history. */
 export default function Study() {
@@ -113,7 +114,7 @@ export default function Study() {
             <li key={l.id}>
               <Link to={`/lectures/${l.id}`}>{l.title || 'Lecture'}</Link>
               <small className="muted">
-                {l.recordedOn} {l.status !== 'ready' && `· ${l.status}`}
+                {day(l.recordedOn)} {l.status !== 'ready' && `· ${l.status}`}
               </small>
             </li>
           ))}
@@ -126,7 +127,7 @@ export default function Study() {
           <ul className="plain small">
             {data.quiz.map((q) => (
               <li key={q.date}>
-                {q.date}: {q.correct}/{q.total} right
+                {day(q.date)}: {q.correct}/{q.total} right
               </li>
             ))}
           </ul>

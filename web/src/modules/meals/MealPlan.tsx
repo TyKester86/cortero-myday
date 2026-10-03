@@ -5,6 +5,7 @@ export const SLOT_LABEL: Record<MealSlot, string> = { breakfast: 'Breakfast', lu
 import { api, useLoad, withMember } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { shortDay } from '../../dates';
 
 /** The week, day by day: what's for dinner Monday..Sunday, with daily totals. */
 export default function MealPlan() {
@@ -76,7 +77,7 @@ export default function MealPlan() {
           <div key={d.day} className={d.isToday ? 'card day today' : 'card day'} data-testid={`day-${d.day}`}>
             <div className="day-head">
               <b>
-                {d.day} <span className="muted">{d.date.slice(5)}</span>
+                {d.day} <span className="muted">{shortDay(d.date)}</span>
                 {d.isToday && <span className="tag">TODAY</span>}
               </b>
               {d.meals.length > 0 && (

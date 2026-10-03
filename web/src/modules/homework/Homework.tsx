@@ -10,6 +10,7 @@ import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { due as fmtDue } from '../../dates';
 
 /** Kids log their homework; checking it off pays HOMEWORK_POINTS. */
 export default function Homework() {
@@ -81,7 +82,7 @@ export default function Homework() {
                 <span className="name">
                   {h.assignment}
                   {h.subject && <span className="muted"> · {h.subject}</span>}
-                  {h.due && <span className={h.overdue ? 'warn' : 'muted'}> · due {h.due}</span>}
+                  {h.due && <span className={h.overdue ? 'warn' : 'muted'}> · {fmtDue(h.due)}</span>}
                 </span>
                 <span className="pts">{h.points} pts</span>
                 {isAdult && (

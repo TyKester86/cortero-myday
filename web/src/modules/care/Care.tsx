@@ -16,6 +16,7 @@ import {
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { day, when } from '../../dates';
 
 function GrantDetail({ id }: { id: number }) {
   const { data, setData } = useLoad<CareGrantDetail>(`/api/care/grants/${id}`);
@@ -47,7 +48,7 @@ function GrantDetail({ id }: { id: number }) {
       <ul className="plain small" data-testid="care-log">
         {data.log.map((l, i) => (
           <li key={i}>
-            {new Date(l.at).toLocaleString()} · <b>{l.who}</b> {l.action}
+            {when(l.at)} · <b>{l.who}</b> {l.action}
             {l.scope && ` ${l.scope}`}
           </li>
         ))}
@@ -202,7 +203,7 @@ function ClientView({ c }: { c: ProClient }) {
         <ul className="plain small">
           {data.items.map((i, n) => (
             <li key={n}>
-              {i.date && `${i.date} · `}
+              {i.date && `${day(i.date)} · `}
               <b>{i.title}</b> {i.detail}
             </li>
           ))}

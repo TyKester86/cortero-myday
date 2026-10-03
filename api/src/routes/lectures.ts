@@ -35,6 +35,7 @@ import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
 import { structureLecture } from '../lib/lecturenotes.js';
 import { transcriber } from '../lib/transcribe.js';
+import { requireAiConsent } from './account.js';
 import { classesFor } from './school.js';
 
 export const lecturesRouter = Router();
@@ -144,6 +145,8 @@ lectureUploadRouter.post(
     const householdId = req.householdId;
     const { rows: ack } = await pool.query<{ ok: boolean }>('SELECT recording_ack_at IS NOT NULL AS ok FROM household_members WHERE id = $1', [me.id]);
     if (!ack[0]?.ok) throw new HttpError(409, 'First check your school’s recording policy and get permission (one-time screen).');
+    // Under 13: notes are made by an AI provider, so a parent turns this on first.
+    await requireAiConsent(me);
     const classId = idParam(req.query.classId);
     const durationS = int(req.query.durationS ?? 0, 'durationS', 0, 6 * 3600);
     const { rows: cls } = await pool.query<{ id: number }>('SELECT id FROM classes WHERE id = $1 AND member_id = $2', [classId, me.id]);
