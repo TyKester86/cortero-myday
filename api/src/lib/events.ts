@@ -40,7 +40,12 @@ export type EventName =
   | 'ai_consent_given'
   | 'ai_consent_withdrawn'
   | 'data_exported'
-  | 'account_deleted';
+  | 'account_deleted'
+  | 'community_post'
+  | 'community_held'
+  | 'community_crisis'
+  | 'community_moderation'
+  | 'community_strike';
 
 export async function logEvent(
   name: EventName,

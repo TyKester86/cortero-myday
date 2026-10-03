@@ -1,7 +1,9 @@
 /**
  * Public Privacy Policy and Terms (readable signed out, linked from the
  * landing page and Settings). Plain language; describes what the app
- * actually does. Have a lawyer review before charging customers.
+ * actually does. Have a lawyer review before charging customers — including
+ * the community (Village + Feed) sections: UGC license, no medical advice,
+ * adults-only, moderation rights. FLAGGED FOR LEGAL REVIEW before production.
  */
 const CONTACT = 'privacy@conquermyday.app';
 const UPDATED = 'October 3, 2026';
@@ -60,10 +62,17 @@ export function Privacy() {
         words to an AI provider stay off until a parent gives consent in the app. Parents can review, export or delete their child’s information at any time, and can
         withdraw consent. Kids’ private notes are visible only to the child.
       </p>
+      <h2>The Village and the Feed (community)</h2>
+      <p>
+        The community is for adults 18 and older. Kids’ and teens’ accounts can’t see or use it, and nothing posted there appears anywhere a child can see. You
+        choose a first name and an optional photo and bio; we never show your household, last name or kids. What you post is encrypted where we store it. Posts and
+        photos are checked by an automated screen (which may use an AI provider) and, when held or reported, by our moderators. If a post suggests someone may be in
+        danger, moderators are alerted and you’re shown crisis resources. Your posts are included in your data export, and deleting your account deletes them.
+      </p>
       <h2>Lecture recordings</h2>
       <p>Audio is kept only until it has been turned into notes, then deleted. Recording a class requires the student to confirm their school’s policy and permission first.</p>
       <h2>Security</h2>
-      <p>Each household’s data is walled off from every other household in the database. Bank tokens and progress photos are encrypted. Connections use HTTPS.</p>
+      <p>Each household’s data is walled off from every other household in the database. Bank tokens, progress photos and community posts are encrypted. Connections use HTTPS.</p>
       <h2>Your choices</h2>
       <ul>
         <li><b>Export:</b> download your household’s data any time (Settings → Your data).</li>
@@ -98,6 +107,28 @@ export function Terms() {
       <p>Don’t use MyDay to harass anyone, to record people without the permission your school or state requires, or to break the law. We may suspend accounts that do.</p>
       <h2>Your content</h2>
       <p>What you put into MyDay is yours. You give us permission to store and process it only to run MyDay for you.</p>
+      <h2>The Village and the Feed</h2>
+      <ul>
+        <li>
+          <b>Adults only.</b> You must be 18 or older to use the community, and you agree to its guidelines before your first post.
+        </li>
+        <li>
+          <b>Not medical advice.</b> Posts are people sharing their own experience. Nothing there is medical advice; talk to your doctor about diagnosis, medication and
+          treatment. Don’t give dosages or diagnose anyone’s child.
+        </li>
+        <li>
+          <b>License.</b> You keep ownership of what you post. By posting, you give MyDay a non-exclusive, royalty-free license to store, display and distribute it
+          inside MyDay to the people who can see it, for as long as it’s up. Delete it and the license ends (copies in backups expire on their normal schedule).
+        </li>
+        <li>
+          <b>Moderation.</b> We may screen, hold, hide or remove posts and photos, and warn, mute or ban accounts that break the guidelines. Three reports hide a post
+          until a moderator reviews it.
+        </li>
+        <li>
+          <b>Your responsibility.</b> Don’t post anything that identifies a child (names, photos, schools), other people’s private information, or anything you
+          don’t have the right to share.
+        </li>
+      </ul>
       <h2>Availability and liability</h2>
       <p>We work hard to keep MyDay running and your data safe, but the service is provided “as is”. To the extent the law allows, our liability is limited to what you paid in the last 12 months.</p>
       <h2>Changes</h2>

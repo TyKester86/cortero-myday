@@ -8,7 +8,7 @@ import { day } from '../../dates';
  * Re-encode in the browser: max 1600 px, JPEG. Re-drawing on a canvas drops
  * EXIF (location, camera) and keeps uploads small.
  */
-async function shrink(file: File): Promise<Blob> {
+export async function shrink(file: File): Promise<Blob> {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();

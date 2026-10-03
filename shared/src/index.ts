@@ -2156,3 +2156,144 @@ export interface MergePreview {
   /** Rows per area that move. */
   rows: Record<string, number>;
 }
+
+/* ---------- Community: The Village (forum) + The Feed (social), adults 18+ only ---------- */
+
+export const VILLAGE_CATEGORIES = [
+  { key: 'wins', label: 'Wins' },
+  { key: 'tough-days', label: 'Tough days' },
+  { key: 'school', label: 'School & IEPs' },
+  { key: 'routines', label: 'Routines that work' },
+  { key: 'ask', label: 'Ask a parent' },
+] as const;
+export type VillageCategory = (typeof VILLAGE_CATEGORIES)[number]['key'];
+
+/** Shown and accepted before anyone posts in the Village or the Feed. */
+export const COMMUNITY_GUIDELINES = [
+  'Grown-ups only. You must be 18 or older.',
+  'First names only. Never post your kids’ names, photos, schools, or anything that identifies your household.',
+  'Share what worked for you — but no medical advice: no diagnosing anyone’s child, no dosages, no telling anyone to change their meds.',
+  'No cure or supplement claims, no selling, no links to things you profit from.',
+  'Be kind. We all have hard days. No insults, no piling on.',
+  'If someone may be in danger, call or text 988 (US) or call 911. Report the post so a person sees it fast.',
+  'Posts are checked before they appear. Anything held shows as “under review” to you until a moderator looks.',
+  'Three reports hide a post until a moderator reviews it. Breaking the rules: a warning, then a 7-day mute, then a ban.',
+] as const;
+
+export const COMMUNITY_SAFETY_LINE = 'Ideas, not medical advice. Talk to your doctor about treatment decisions.';
+
+export const CRISIS_RESOURCES = [
+  { label: 'Call or text 988 (Suicide & Crisis Lifeline, US)', href: 'tel:988' },
+  { label: 'Childhelp abuse hotline: 1-800-422-4453', href: 'tel:18004224453' },
+  { label: 'In immediate danger: call 911', href: 'tel:911' },
+] as const;
+
+export type CommunityStatus = 'visible' | 'pending' | 'hidden' | 'removed';
+
+export interface CommunityProfile {
+  userId: number;
+  displayName: string;
+  bio: string;
+  parentBadge: boolean;
+  avatarUrl: string | null;
+  followers: number;
+  following: number;
+  posts: number;
+  /** For the viewer: */
+  me: boolean;
+  followedByMe: boolean;
+  blockedByMe: boolean;
+}
+
+export interface CommunityMe {
+  /** False for kid and teen accounts (they never get this far — 403 — but the type allows it). */
+  eligible: boolean;
+  profile: CommunityProfile | null;
+  /** Set while a 7-day mute is running. */
+  mutedUntil: string | null;
+  banned: boolean;
+  guidelines: readonly string[];
+  isModerator: boolean;
+}
+
+export interface CommunityAuthor {
+  userId: number;
+  displayName: string;
+  parentBadge: boolean;
+  avatarUrl: string | null;
+}
+
+/** What the pre-screen said about something you just posted. */
+export interface ReviewNote {
+  underReview: boolean;
+  crisis: boolean;
+  reasons: string[];
+}
+
+export interface VillageThreadSummary {
+  id: number;
+  category: VillageCategory;
+  title: string;
+  author: CommunityAuthor;
+  replies: number;
+  lastActivity: string;
+  status: CommunityStatus;
+  mine: boolean;
+}
+
+export interface VillagePost {
+  id: number;
+  opening: boolean;
+  author: CommunityAuthor;
+  body: string;
+  at: string;
+  status: CommunityStatus;
+  mine: boolean;
+  reactions: { heart: number; beenThere: number; mine: Array<'heart' | 'been-there'> };
+  helpful: number;
+  markedHelpfulByMe: boolean;
+}
+
+export interface VillageThread {
+  id: number;
+  category: VillageCategory;
+  title: string;
+  status: CommunityStatus;
+  posts: VillagePost[];
+}
+
+export interface FeedPost {
+  id: number;
+  author: CommunityAuthor;
+  body: string;
+  imageUrl: string | null;
+  at: string;
+  status: CommunityStatus;
+  mine: boolean;
+  likes: number;
+  likedByMe: boolean;
+}
+
+export interface FeedPage {
+  posts: FeedPost[];
+  /** Pass as ?before= for the next page; null at the end. */
+  next: number | null;
+}
+
+export interface CommunityQueueItem {
+  kind: 'village' | 'feed' | 'image' | 'profile';
+  id: number;
+  author: { userId: number; displayName: string; email: string; strikes: number };
+  title: string | null;
+  body: string;
+  imageUrl: string | null;
+  status: CommunityStatus;
+  priority: number;
+  reasons: string[];
+  reports: string[];
+  at: string;
+}
+
+export interface CommunityQueue {
+  items: CommunityQueueItem[];
+}

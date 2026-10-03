@@ -9,7 +9,7 @@ Staging (`staging.conquermyday.app`) shares a server and a database with Opsentr
 2. **GitHub secrets:** `PROD_HOST` (the server IP) and `PROD_SSH_KEY` (a deploy key for that server only). Optionally, add a GitHub *environment* named `production` with you as the required reviewer.
 
 **Configuration**
-3. **`/opt/myday-prod/deploy/production/.env`.** Copy it from `deploy/production/env.example` and `chmod 600` it. Generate secrets with `openssl rand -hex 32`, and keep copies of `SESSION_SECRET`, `MONEY_TOKEN_KEY` and `PHOTO_KEY` in your password manager. Losing them makes saved bank links and progress photos unreadable.
+3. **`/opt/myday-prod/deploy/production/.env`.** Copy it from `deploy/production/env.example` and `chmod 600` it. Generate secrets with `openssl rand -hex 32`, and keep copies of `SESSION_SECRET`, `MONEY_TOKEN_KEY`, `PHOTO_KEY` and `CONTENT_KEY` in your password manager. Losing them makes saved bank links, progress photos and community posts unreadable.
 4. **The app's database role.** Create it the way `deploy/bootstrap-droplet.sh` does: a `myday` role that owns the `myday` database, NOT a superuser, so row-level security is always enforced.
 
 **Outside services**
@@ -24,6 +24,11 @@ Staging (`staging.conquermyday.app`) shares a server and a database with Opsentr
 8. **Monitoring.**
    - Create a Sentry project and set `SENTRY_DSN`, and/or set a Slack/Discord webhook as `ERROR_WEBHOOK_URL`.
    - Add an uptime check (UptimeRobot, Better Stack…) on `https://conquermyday.app/api/health/deep`, which also checks the database.
+
+**Community (The Village + The Feed)**
+9a. **Moderators** are the MyDay admins (`ADMIN_EMAILS`). They get an email when a post may involve someone in danger, and work the queue at `/community/moderation`.
+9b. **The pre-screen** uses `ANTHROPIC_KEY`. Without it, production holds every post for a moderator, so the screen never silently lets things through.
+9c. **Legal**: the community sections of `/privacy` and `/terms` (adults-only, no medical advice, the license for what people post, moderation rights) need a lawyer's review before launch.
 
 **Backups**
 9. **Set them up** as in `docs/BACKUP-RESTORE.md`: a nightly cron for `deploy/backup.sh` with off-server storage, plus a monthly restore drill.

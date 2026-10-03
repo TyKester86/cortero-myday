@@ -8,6 +8,7 @@ import { adminRouter, billingRouter, billingWebhookRouter } from './billing.js';
 import { billsRouter } from './bills.js';
 import { careRouter, proRouter } from './care.js';
 import { circlesRouter, circlesStaffRouter } from './circles.js';
+import { communityRouter, communityStaffRouter, communityUploadRouter } from './community.js';
 import { engagementRouter } from './engagement.js';
 import { identityRouter } from './identity.js';
 import { joinRouter } from './join.js';
@@ -22,10 +23,10 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, communityRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
-export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, proRouter, joinRouter];
+export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, communityStaffRouter, proRouter, joinRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
-export const uploadRoutes: Router[] = [lectureUploadRouter, photoUploadRouter, billingWebhookRouter, appleCallbackRouter];
+export const uploadRoutes: Router[] = [lectureUploadRouter, photoUploadRouter, communityUploadRouter, billingWebhookRouter, appleCallbackRouter];

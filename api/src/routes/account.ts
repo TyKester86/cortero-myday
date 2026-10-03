@@ -14,6 +14,7 @@ import { asSystem, pool } from '../db.js';
 import { logEvent } from '../lib/events.js';
 import { HttpError, bool } from '../lib/http.js';
 import { listMembers, memberByKey, requireAdult } from '../lib/members.js';
+import { communityExport } from './community.js';
 import { revokeItem } from './money.js';
 
 export const accountRouter = Router();
@@ -96,7 +97,15 @@ accountRouter.get('/api/account/export', async (req, res) => {
   }
   await logEvent('data_exported', { tables: Object.keys(out).length }, me.id);
   res.setHeader('Content-Disposition', `attachment; filename="myday-export-${new Date().toISOString().slice(0, 10)}.json"`);
-  res.json({ exportedAt: new Date().toISOString(), by: me.name, note: 'Your records, your kids’ records (not their private notes) and the household’s shared lists.', data: out });
+  // Your Village/Feed profile and posts (decrypted for you). Nobody else's.
+  const community = req.user ? await communityExport(req.user.id) : null;
+  res.json({
+    exportedAt: new Date().toISOString(),
+    by: me.name,
+    note: 'Your records, your kids’ records (not their private notes), the household’s shared lists, and your own community posts.',
+    data: out,
+    community,
+  });
 });
 
 /* ---------- delete ---------- */

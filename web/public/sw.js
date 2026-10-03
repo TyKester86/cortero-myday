@@ -101,7 +101,7 @@ self.addEventListener('fetch', (event) => {
 
   if (p.startsWith('/api/')) {
     // Progress photos are never stored on the device (shared family phones).
-    if (p.startsWith('/api/auth/') || p.endsWith('.csv') || p.startsWith('/api/progress-photos')) return;
+    if (p.startsWith('/api/auth/') || p.endsWith('.csv') || p.startsWith('/api/progress-photos') || p.startsWith('/api/community/images')) return;
     event.respondWith(
       networkFirst(req, API).catch(
         () => new Response(JSON.stringify({ error: 'You’re offline and this hasn’t been opened on this device yet.' }), { status: 503, headers: { 'Content-Type': 'application/json' } }),

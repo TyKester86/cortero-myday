@@ -1512,6 +1512,142 @@ async function circles() {
 }
 
 async function careTeam() {
+  section('community: The Village + The Feed are for grown-ups (18+) only');
+  const uid = async (key) => (await sql('SELECT u.id FROM users u LEFT JOIN household_members m ON m.id = u.member_id WHERE m.key = $1 OR u.email = $1 ORDER BY u.id LIMIT 1', [key]))[0]?.id;
+  const kidRoutes = ['/api/community/me', '/api/village', '/api/feed', `/api/community/people/${await uid('ty')}`, `/api/community/people/${await uid('ty')}/followers`];
+  for (const [who, c] of [['Avery (15)', avery], ['Evan (11)', evan]]) {
+    eq(`${who}: every community read → 403`, await Promise.all(kidRoutes.map(async (p) => (await c.get(p)).status)), kidRoutes.map(() => 403));
+  }
+  eq('…and every write → 403 (profile, thread, post, follow, like)', [
+    (await avery.put('/api/community/profile', { displayName: 'Avery', adult: true, guidelines: true })).status,
+    (await avery.post('/api/village/threads', { category: 'wins', title: 'hi', body: 'hi' })).status,
+    (await avery.post('/api/feed/posts', { body: 'hi' })).status,
+    (await avery.post(`/api/community/people/${await uid('ty')}/follow`)).status,
+    (await evan.post('/api/feed/posts/1/like')).status,
+  ], [403, 403, 403, 403, 403]);
+  eq('a grown-up can’t reach the community “as” their kid', (await ty.get('/api/feed?member=avery')).status, 403);
+  eq('grown-ups set up a profile before anything else (409)', (await ty.get('/api/village')).status, 409);
+  let cme = (await ty.get('/api/community/me')).data;
+  eq('the guidelines come with it', [cme.eligible, cme.profile, cme.guidelines.length, /18 or older/.test(cme.guidelines[0])], [true, null, 8, true]);
+  eq('…must confirm 18+ and accept the guidelines', (await ty.put('/api/community/profile', { displayName: 'Ty' })).status, 400);
+  eq('first name only (no last name)', (await ty.put('/api/community/profile', { displayName: 'Ty Kester', adult: true, guidelines: true })).status, 400);
+  const tyProf = (await ty.put('/api/community/profile', { displayName: 'Ty', bio: 'ADHD dad, two kids, lots of timers', parentBadge: true, adult: true, guidelines: true })).data;
+  eq('profile: first name, parent badge, bio', [tyProf.displayName, tyProf.parentBadge, tyProf.bio, tyProf.me], ['Ty', true, 'ADHD dad, two kids, lots of timers', true]);
+  for (const [c, n] of [[kayla, 'Kayla'], [sam, 'Sam'], [ret, 'Rhett']]) await c.put('/api/community/profile', { displayName: n, adult: true, guidelines: true });
+  eq('a bio with a phone number is refused (422)', (await sam.put('/api/community/profile', { displayName: 'Sam', bio: 'text me 405-555-0134' })).status, 422);
+  const tyId = await uid('ty');
+  const samId = await uid('sam@example.com');
+
+  section('community: The Village — threads, replies, reactions, helpful');
+  let vr = (await ty.post('/api/village/threads', { category: 'routines', title: 'Visual timers saved our mornings', body: 'A big timer by the door. Shoes on before it beeps.' })).data;
+  eq('a clean post goes live right away', [vr.review.underReview, vr.thread.status, vr.thread.posts.length], [false, 'visible', 1]);
+  const vth = vr.thread;
+  eq('other households see it, filtered by category', (await sam.get('/api/village?category=routines')).data.threads.map((t) => [t.title, t.author.displayName, t.author.parentBadge]), [['Visual timers saved our mornings', 'Ty', true]]);
+  eq('no meds/doctors category', (await ty.post('/api/village/threads', { category: 'meds', title: 'x', body: 'y' })).status, 400);
+  vr = (await sam.post(`/api/village/threads/${vth.id}/replies`, { body: 'Same! We use a sand timer for teeth.' })).data;
+  const samReply = vr.thread.posts[1];
+  eq('reply', [samReply.status, samReply.author.displayName], ['visible', 'Sam']);
+  vr = (await kayla.post(`/api/village/posts/${vth.posts[0].id}/react`, { kind: 'heart' })).data;
+  vr = (await sam.post(`/api/village/posts/${vth.posts[0].id}/react`, { kind: 'been-there' })).data;
+  eq('reactions: heart + “been there”', [vr.posts[0].reactions.heart, vr.posts[0].reactions.beenThere], [1, 1]);
+  vr = (await ty.post(`/api/village/posts/${samReply.id}/helpful`)).data;
+  eq('“marked helpful” on a reply', vr.posts[1].helpful, 1);
+  eq('…not on your own post', (await sam.post(`/api/village/posts/${samReply.id}/helpful`)).status, 400);
+
+  section('community: the pre-screen holds medical advice, personal info, cure claims, attacks');
+  const held = async (c, body) => {
+    const r = (await c.post(`/api/village/threads/${vth.id}/replies`, { body })).data;
+    return [r.review.underReview, r.thread.posts.at(-1).status, r.thread.posts.at(-1).body === body];
+  };
+  eq('dosage advice → under review (the writer still sees it)', await held(sam, 'Try upping his dose to 20mg, it worked for us.'), [true, 'pending', true]);
+  eq('a kid’s name + school → under review', await held(kayla, 'My son Jake at Lincoln Elementary has the same thing.'), [true, 'pending', true]);
+  eq('a phone number → under review', await held(ret, 'Call me at 405-555-0199 and we can talk.'), [true, 'pending', true]);
+  eq('a cure claim → under review', await held(ret, 'This supplement cured my daughter’s ADHD in a month!'), [true, 'pending', true]);
+  eq('diagnosing someone’s child → under review', await held(ret, 'Your son has ADHD, obviously.'), [true, 'pending', true]);
+  eq('an insult → under review', await held(ret, 'You are an idiot.'), [true, 'pending', true]);
+  eq('a street address → under review', await held(ret, 'Drop by 12 Oak Street any time.'), [true, 'pending', true]);
+  eq('…but everyday numbers are fine (“2 kids and no way to nap”)', await held(kayla, 'With 2 kids and no way to nap, coffee is my co-parent.'), [false, 'visible', true]);
+  eq('…none of the held posts is visible to anyone else', (await ty.get(`/api/village/threads/${vth.id}`)).data.posts.map((p) => p.author.displayName), ['Ty', 'Sam', 'Kayla']);
+  eq('sharing your own experience is fine', await held(kayla, 'Our doctor adjusted my meds last spring and mornings got easier.'), [false, 'visible', true]);
+
+  section('community: crisis words → 988 shown, escalated to the top of the queue');
+  const mailBefore = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+  vr = (await kayla.post('/api/village/threads', { category: 'tough-days', title: 'Rough night', body: 'Some nights I want to die. I am so tired.' })).data;
+  eq('crisis post: held, flagged crisis', [vr.review.underReview, vr.review.crisis, vr.thread.status], [true, true, 'pending']);
+  const crisisMail = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(mailBefore).filter((m) => m.to === 'admin@example.com');
+  eq('moderators are emailed (without the post text)', [crisisMail.length, /urgent/i.test(crisisMail[0]?.subject ?? ''), /want to die/.test(crisisMail[0]?.text ?? '')], [1, true, false]);
+  const cmod = new Client('community-mod');
+  await cmod.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  eq('only moderators see the queue', (await ty.get('/api/community/moderation/queue')).status, 403);
+  let cq = (await cmod.get('/api/community/moderation/queue')).data;
+  eq('crisis is first in the queue', [cq.items[0].priority, cq.items[0].kind, cq.items[0].title], [2, 'village', 'Rough night']);
+  check('held posts are in the queue with why', cq.items.some((i) => /20mg/.test(i.body) && i.reasons.some((r) => /Dosage/.test(r))));
+  cq = (await cmod.post(`/api/community/moderation/village/${cq.items[0].id}/approve`)).data;
+  eq('a moderator approves the venting post → it shows', (await sam.get('/api/village?category=tough-days')).data.threads.map((t) => t.title), ['Rough night']);
+  const dose = cq.items.find((i) => /20mg/.test(i.body));
+  await cmod.post(`/api/community/moderation/village/${dose.id}/remove`);
+  eq('a removed post never shows, even to its writer', (await sam.get(`/api/village/threads/${vth.id}`)).data.posts.some((p) => /20mg/.test(p.body)), false);
+
+  section('community: The Feed — posts, follows, likes, tabs, 3 reports hide, blocks');
+  let fp = (await sam.post('/api/feed/posts', { body: 'Morning win: everyone out the door by 7:40!' })).data;
+  eq('feed post goes live', [fp.review.underReview, fp.post.status, fp.post.author.displayName], [false, 'visible', 'Sam']);
+  const samPost = fp.post;
+  eq('Everyone tab shows it', (await ty.get('/api/feed?tab=everyone')).data.posts.map((p) => p.body).includes(samPost.body), true);
+  eq('Following tab: nothing until you follow', (await ty.get('/api/feed?tab=following')).data.posts.some((p) => p.id === samPost.id), false);
+  let prof = (await ty.post(`/api/community/people/${samId}/follow`)).data;
+  eq('follow', [prof.followedByMe, prof.followers], [true, 1]);
+  eq('Following tab now shows Sam', (await ty.get('/api/feed?tab=following')).data.posts.some((p) => p.id === samPost.id), true);
+  eq('followers / following lists', [(await sam.get(`/api/community/people/${samId}/followers`)).data.people.map((a) => a.displayName), (await ty.get(`/api/community/people/${tyId}/following`)).data.people.map((a) => a.displayName)], [['Ty'], ['Sam']]);
+  eq('like', ((await kayla.post(`/api/feed/posts/${samPost.id}/like`)).data).likes, 1);
+  eq('you can’t follow a kid — they aren’t in the social graph (404)', (await ty.post(`/api/community/people/${await uid('avery')}/follow`)).status, 404);
+  eq('…or yourself', (await ty.post(`/api/community/people/${tyId}/follow`)).status, 400);
+  fp = (await ret.post('/api/feed/posts', { body: 'Use my code SAVE20 — buy now, limited time offer!' })).data;
+  eq('spam is held for review', [fp.review.underReview, fp.post.status], [true, 'pending']);
+  fp = (await ret.post('/api/feed/posts', { body: 'Honestly the worst advice I have ever read.' })).data;
+  const rude = fp.post;
+  eq('borderline post goes live (people decide by reporting)', rude.status, 'visible');
+  const rep1 = (await ty.post(`/api/feed/posts/${rude.id}/report`, { reason: 'Unkind or attacking' })).data;
+  await ty.post(`/api/feed/posts/${rude.id}/report`, { reason: 'again' });
+  await kayla.post(`/api/feed/posts/${rude.id}/report`, { reason: 'Unkind or attacking' });
+  eq('one report per person; still visible at 2', [rep1.hidden, (await sam.get('/api/feed')).data.posts.some((p) => p.id === rude.id)], [false, true]);
+  const rep3 = (await sam.post(`/api/feed/posts/${rude.id}/report`, { reason: 'Unkind or attacking' })).data;
+  eq('3 reports auto-hide it pending review', [rep3.hidden, (await ty.get('/api/feed')).data.posts.some((p) => p.id === rude.id)], [true, false]);
+  eq('…its writer sees it “under review”', (await ret.get('/api/feed')).data.posts.find((p) => p.id === rude.id)?.status, 'hidden');
+  eq('you can’t report your own post', (await ret.post(`/api/feed/posts/${rude.id}/report`, { reason: 'x' })).status, 400);
+  check('reported item is in the queue with its reports', (await cmod.get('/api/community/moderation/queue')).data.items.some((i) => i.kind === 'feed' && i.id === rude.id && i.reports.length === 3));
+  await kayla.post(`/api/community/people/${samId}/block`);
+  eq('block: you stop seeing each other', [(await kayla.get('/api/feed')).data.posts.some((p) => p.author.userId === samId), (await sam.get(`/api/community/people/${await uid('kayla')}`)).status], [false, 404]);
+  eq('…and can’t follow each other', (await sam.post(`/api/community/people/${await uid('kayla')}/follow`)).status, 404);
+  await kayla.del(`/api/community/people/${samId}/block`);
+  eq('unblock', (await kayla.get('/api/feed')).data.posts.some((p) => p.author.userId === samId), true);
+  eq('report a profile', (await ty.post(`/api/community/people/${await uid('retired@example.com')}/report`, { reason: 'Spam or selling' })).status, 201);
+
+  section('community: strikes — warn, then a 7-day mute, then a ban (logged)');
+  const strikeRet = async () => {
+    const q = (await cmod.get('/api/community/moderation/queue')).data;
+    const item = q.items.find((i) => i.author.displayName === 'Rhett' && i.kind !== 'profile');
+    return (await cmod.post(`/api/community/moderation/${item.kind}/${item.id}/strike`, { reason: 'Guidelines' })).data.struck;
+  };
+  eq('1st strike: warning', await strikeRet(), 'warn');
+  eq('…can still post', (await ret.post('/api/village/threads', { category: 'wins', title: 'Small win', body: 'Laundry folded!' })).status, 201);
+  eq('2nd strike: 7-day mute', await strikeRet(), 'mute');
+  const muted = await ret.post('/api/feed/posts', { body: 'hello?' });
+  eq('muted: can read, can’t post', [(await ret.get('/api/feed')).status, muted.status, muted.data.code], [200, 403, 'muted']);
+  check('…and the app says until when', !!(await ret.get('/api/community/me')).data.mutedUntil);
+  eq('3rd strike: ban', await strikeRet(), 'ban');
+  eq('banned: no community at all', [(await ret.get('/api/feed')).status, (await ret.get('/api/community/me')).data.banned], [403, true]);
+  eq('every strike is logged', (await sql("SELECT kind FROM social_strikes s JOIN users u ON u.id = s.user_id WHERE u.email = 'retired@example.com' ORDER BY s.id")).map((r) => r.kind), ['warn', 'mute', 'ban']);
+
+  section('community: encrypted at rest, in your export, never on kid/shared surfaces');
+  const plain = await sql("SELECT COUNT(*)::int AS n FROM social_posts WHERE position(convert_to('Morning win', 'UTF8') in body_enc) > 0");
+  const plainF = await sql("SELECT COUNT(*)::int AS n FROM forum_threads WHERE position(convert_to('Visual timers', 'UTF8') in title_enc) > 0");
+  eq('post bodies and thread titles are not stored in plain text', [plain[0].n, plainF[0].n], [0, 0]);
+  const cols = await sql("SELECT column_name FROM information_schema.columns WHERE table_name IN ('social_posts', 'forum_posts', 'forum_threads') AND column_name IN ('body', 'title')");
+  eq('…there is no plain-text body/title column at all', cols.length, 0);
+  const exp = (await sam.get('/api/account/export')).data;
+  eq('your export includes your own community posts (decrypted for you)', [exp.community.profile.displayName, exp.community.feedPosts.some((p) => /Morning win/.test(p.body)), exp.community.villagePosts.length > 0], ['Sam', true, true]);
+  eq('Circles never show community posts', (await sam.get('/api/circles')).data.circles.every((c) => c), true);
+
   section('6. Care Team: explicit, scoped, revocable access; every access logged');
   const tutor = new Client('tutor');
   await tutor.get(`/dev-login?token=${DEV_TOKEN}&email=tutor@example.com`);
@@ -2253,6 +2389,28 @@ async function uiGate() {
     await page.getByTestId('meal-tips').waitFor({ timeout: 10000 });
     eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allInnerTexts(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls'], 4]);
     check('meal page: step lead-ins in bold (“Mise en place…:”)', (await page.locator('ol.steps li b').first().innerText()).startsWith('Mise en place'));
+    await page.goto(`${BASE}/feed`);
+    await page.getByTestId('composer').waitFor({ timeout: 10000 });
+    check('Feed: the “not medical advice” line sits on top', /Ideas, not medical advice/.test(await page.getByTestId('safety-line').innerText()));
+    await page.getByLabel('Share something').fill('Hello from the UI — packed lunches the night before!');
+    await page.getByTestId('composer').getByRole('button', { name: 'Post' }).click();
+    await page.getByTestId('feed-post').filter({ hasText: 'packed lunches the night before' }).waitFor({ timeout: 10000 });
+    await page.getByLabel('Share something').fill('Just double his dose, 40mg is fine.');
+    await page.getByTestId('composer').getByRole('button', { name: 'Post' }).click();
+    await page.getByTestId('under-review').waitFor({ timeout: 10000 });
+    check('Feed: a held post shows “Under review” to its writer (not a silent delete)', /under review/i.test(await page.getByTestId('under-review').textContent()) && /under review/i.test(await page.getByTestId('feed-post').filter({ hasText: '40mg' }).locator('.pill.sun').textContent()));
+    await page.getByLabel('Share something').fill('I want to die tonight.');
+    await page.getByTestId('composer').getByRole('button', { name: 'Post' }).click();
+    await page.getByTestId('crisis-resources').waitFor({ timeout: 10000 });
+    check('Feed: crisis words surface 988', /988/.test(await page.getByTestId('crisis-resources').innerText()));
+    await page.goto(`${BASE}/village`);
+    await page.getByTestId('thread-list').locator('a').first().waitFor({ timeout: 10000 });
+    check('Village: categories + threads', (await page.getByRole('button', { name: 'School & IEPs' }).count()) === 1 && (await page.getByTestId('thread-list').innerText()).includes('Visual timers saved our mornings'));
+    await page.goto(`${BASE}/`);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    const cmenu = await page.getByTestId('menu').innerText();
+    check('grown-up menu has The Village and The Feed', cmenu.includes('The Village') && cmenu.includes('The Feed'));
+    await page.getByRole('button', { name: 'Menu' }).click();
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const dp = await desk.newPage();
@@ -2484,7 +2642,7 @@ async function uiGate() {
     await tyHealth.close();
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed'];
     const notFound = [];
     for (const p of pages) {
       await page.goto(BASE + p);
@@ -2509,6 +2667,15 @@ async function uiGate() {
       if (await kp.getByText('Page not found.').count()) notFound.push(`kid ${p}`);
     }
     eq('kid pages render', notFound, []);
+    await kp.goto(`${BASE}/`);
+    await kp.getByRole('button', { name: 'Menu' }).click();
+    const kmenu = await kp.getByTestId('menu').innerText();
+    check('kid menu: no Village, no Feed', !kmenu.includes('Village') && !kmenu.includes('Feed'));
+    for (const p of ['/feed', '/village', `/people/1`]) {
+      await kp.goto(BASE + p);
+      await kp.getByText('Page not found.').waitFor({ timeout: 10000 }).catch(() => undefined);
+      check(`kid can’t open ${p}`, (await kp.getByText('Page not found.').count()) === 1 && (await kp.getByTestId('composer').count()) === 0);
+    }
     await kp.goto(`${BASE}/focus`);
     await kp.getByRole('button', { name: 'Start' }).click();
     let seen = 0;

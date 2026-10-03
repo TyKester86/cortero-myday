@@ -5,6 +5,12 @@ const Homework = lazy(() => import('./homework/Homework'));
 const Rewards = lazy(() => import('./rewards/Rewards'));
 const Score = lazy(() => import('./score/Score'));
 const HealthToday = lazy(() => import('./health/HealthToday'));
+// Community (grown-ups 18+ only — never a kid route).
+const Village = lazy(() => import('./community/Community').then((m) => ({ default: m.Village })));
+const VillageThreadPage = lazy(() => import('./community/Community').then((m) => ({ default: m.VillageThreadPage })));
+const Feed = lazy(() => import('./community/Community').then((m) => ({ default: m.Feed })));
+const PersonPage = lazy(() => import('./community/Community').then((m) => ({ default: m.PersonPage })));
+const CommunityModeration = lazy(() => import('./community/Community').then((m) => ({ default: m.CommunityModeration })));
 const HealthPlan = lazy(() => import('./health/HealthPlan'));
 const Meals = lazy(() => import('./meals/Meals'));
 const MealPlan = lazy(() => import('./meals/MealPlan'));
@@ -129,6 +135,11 @@ export const MODULES: ModuleRoute[] = [
   { path: '/circles', element: <Circles />, audience: 'all', minKidAge: 13, module: 'circles', nav: { label: 'Circles', icon: 'circles', group: 'connect' } },
   { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },
   { path: '/circles/:id', element: <Circle />, audience: 'all', minKidAge: 13, module: 'circles' },
+  { path: '/village', element: <Village />, audience: 'adult', nav: { label: 'The Village', icon: 'village', group: 'connect' } },
+  { path: '/village/:id', element: <VillageThreadPage />, audience: 'adult' },
+  { path: '/feed', element: <Feed />, audience: 'adult', nav: { label: 'The Feed', icon: 'feed', group: 'connect' } },
+  { path: '/people/:id', element: <PersonPage />, audience: 'adult' },
+  { path: '/community/moderation', element: <CommunityModeration />, audience: 'admin' },
   { path: '/care', element: <Care />, audience: 'adult', module: 'care', nav: { label: 'Care team', icon: 'care', group: 'connect' } },
   { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: 'card', group: 'account' } },
   { path: '/admin', element: <Admin />, audience: 'admin', nav: { label: 'Admin', icon: 'admin', group: 'account' } },
