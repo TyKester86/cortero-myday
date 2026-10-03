@@ -41,6 +41,12 @@ Staging (`staging.conquermyday.app`) shares a server and a database with Opsentr
     - **Kroger** (also Ralphs, Fred Meyer, King Soopers, etc.): create an app at developer.kroger.com with the `cart.basic:write` and `product.compact` scopes; redirect URI `https://conquermyday.app/api/grocery/kroger/callback`. Set `KROGER_CLIENT_ID` / `KROGER_CLIENT_SECRET`. Each grown-up connects their own account on Kroger's sign-in page (MyDay never sees the password); tokens are encrypted at rest.
     - With neither set, the Order it card simply doesn't show.
 13. **Flight search** ("find flights to Denver the weekend of the 14th" to Hana). Hana always gives filled-in Google Flights and Kayak links; with `DUFFEL_API_KEY` (duffel.com, a live-mode access token) she also reads real prices, airlines, stops and times. She never books or pays.
+14. **Hana's errands** (saved logins + a real browser; `/errands`, or "go to Walmart and reorder our usual" to Hana). Off until a browser is configured:
+    - **Install the browser library on the server**: `playwright-core` must be a runtime dependency of `api` (today it is only a dev dependency, so the production image doesn't include it). Without it, errands stay off and the server runs normally.
+    - **A browser**: preferably a hosted one (`ROBOT_CDP_URL`, e.g. a Browserless `wss://…?token=…` URL — keeps Chromium's memory off the droplet), or a local Chromium (`ROBOT_CHROMIUM=/usr/bin/chromium-browser` after adding `apk add chromium` to the image; set `ROBOT_NO_SANDBOX=1` inside Docker). `ROBOT_MAX` (default 2) errands run at once.
+    - Uses `ANTHROPIC_KEY` (`ROBOT_MODEL` optional). `CONTENT_KEY` should be set so saved logins are sealed with their own key.
+    - Safety enforced by the server, not the AI: passwords are only typed by MyDay into a page on the site they were saved for (the AI never sees them); any button that orders, pays or books is blocked until the person approves that one step; no internal/private addresses; Hana only opens URLs on the errand's own site.
+    - Some stores' terms forbid automated access, and CAPTCHAs/2-step codes may stop an errand (Hana asks the person for texted codes). The legal pages should mention saved logins before launch.
 
 **Backups**
 9. **Set them up** as in `docs/BACKUP-RESTORE.md`: a nightly cron for `deploy/backup.sh` with off-server storage, plus a monthly restore drill.

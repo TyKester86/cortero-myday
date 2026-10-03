@@ -755,6 +755,39 @@ export interface GroceryFavorite {
   signedIn: boolean;
 }
 
+/** A saved website login (Hana step 5). The password never comes back. */
+export interface SavedLogin {
+  id: number;
+  site: string;
+  origin: string;
+  usernameHint: string;
+  updatedAt: string;
+}
+
+export type ErrandStatus = 'queued' | 'running' | 'needs_ok' | 'needs_input' | 'done' | 'failed' | 'cancelled';
+
+/** An errand Hana runs in a real browser. */
+export interface Errand {
+  id: number;
+  goal: string;
+  site: string;
+  status: ErrandStatus;
+  /** needs_ok: what she wants to do; needs_input: her question. */
+  ask: string;
+  result: string;
+  steps: Array<{ at: string; say: string }>;
+  hasShot: boolean;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+/** GET /api/errands */
+export interface ErrandsState {
+  available: boolean;
+  logins: SavedLogin[];
+  errands: Errand[];
+}
+
 /** GET /api/grocery/ordering: which stores can take the list for this grown-up. */
 export interface GroceryOrdering {
   instacart: boolean;

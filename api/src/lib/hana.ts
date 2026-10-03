@@ -14,6 +14,8 @@ import { pool } from '../db.js';
 import { profileFor, plannedSession } from '../routes/health.js';
 import { datesOf } from './recur.js';
 import { CABINS, checkQuery, searchFlights } from './flights.js';
+import { config } from '../config.js';
+import { createErrand } from '../routes/errands.js';
 import { kidsOverview } from '../routes/family.js';
 import { fillKrogerCart, sendToInstacart } from '../routes/grocers.js';
 import type { ToolKit } from './ai.js';
@@ -366,6 +368,23 @@ export const HANA_TOOLS = [
     },
   }),
   def({
+    name: 'run_errand',
+    description:
+      "Do something on a website for this person in a real browser, signed in with their saved login: reorder from a store, check an order, " +
+      "book a table, renew something. site is a saved login's name (e.g. 'Walmart') or a website (e.g. 'walmart.com'). goal says exactly " +
+      'what to do, including any limits ("under $50", "pickup Saturday"). It runs in the background; anything that spends money waits for their OK ' +
+      "in Hana's errands, and they get a notification.",
+    destructive: true,
+    schema: z.object({ site: z.string().min(2).max(120), goal: z.string().min(4).max(500) }),
+    json: { type: 'object', properties: { site: { type: 'string' }, goal: { type: 'string' } }, required: ['site', 'goal'], additionalProperties: false },
+    summary: (i) => `Go to ${i.site} and ${i.goal.replace(/^./, (c) => c.toLowerCase())}`,
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'That’s for grown-ups');
+      await createErrand(me.id, i.goal, { name: i.site });
+      return `I’m on it in the browser. I’ll ask before anything is bought, and you can watch along in Hana’s errands: ${config.publicUrl}/errands`;
+    },
+  }),
+  def({
     name: 'add_chore',
     description: 'Give one of the household kids a recurring chore: kid first name, chore name, days (Mon..Sun), points (0–100).',
     destructive: false,
@@ -550,6 +569,7 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if ((x = m.match(/^find flights from ([a-z]{3}) to ([a-z]{3}) on (\d{4}-\d{2}-\d{2})(?: returning (\d{4}-\d{2}-\d{2}))?(?: for (\d) adults?)?/i))) {
     return [{ name: 'find_flights', input: { from: x[1], to: x[2], depart: x[3], return: x[4] ?? null, adults: Number(x[5] ?? 1), cabin: 'economy' } }];
   }
+  if ((x = m.match(/^errand on ([^:]{2,60}):\s*(.{4,})$/i))) return [{ name: 'run_errand', input: { site: x[1], goal: x[2] } }];
   if (/^how are the kids/i.test(m)) return [{ name: 'kids_overview', input: {} }];
   if (/^how['’]?s (?:my|our) money/i.test(m)) return [{ name: 'money_summary', input: {} }];
   if ((x = m.match(/^add homework for (\w+):\s*(.+?)(?: due (\d{4}-\d{2}-\d{2}))?$/i))) {

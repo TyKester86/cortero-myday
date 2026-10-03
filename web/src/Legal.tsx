@@ -53,6 +53,9 @@ export function Privacy() {
         <li><b>Hosting:</b> our servers and database (DigitalOcean, United States).</li>
         <li><b>AI:</b> when you ask Hana, the tutor, or turn a lecture into notes, the relevant text is sent to Anthropic to produce the answer. Lecture audio is sent to OpenAI for transcription. These providers process it to answer the request.</li>
         <li><b>Banking:</b> Plaid, only if you link a bank.</li>
+        <li><b>Stores and travel:</b> only when you ask — your grocery list goes to Instacart or to your own Kroger account (connected through Kroger’s sign-in; we never see that password), and flight searches go to our flight-search provider.</li>
+        <li><b>Hana’s errands:</b> if you save a website login, it is encrypted, never shown again, never given to the AI, and only typed by MyDay into that website, in a browser we run (or a browser service we use) for the errand you ask for. Delete a saved login any time.</li>
+        <li><b>Forwarded email:</b> emails you forward to Hana are stored encrypted and read by AI to suggest bills, events and tasks.</li>
         <li><b>Sign-in:</b> Google.</li>
         <li><b>Payments:</b> our payment processor, once you subscribe. We never see or store full card numbers.</li>
       </ul>
@@ -103,6 +106,11 @@ export function Terms() {
       <p>MyDay shows information from your bank to help you plan. It is not financial advice and cannot move money.</p>
       <h2>AI features</h2>
       <p>Hana, the tutor and lecture notes are produced by AI and can be wrong. Check anything important.</p>
+      <p>
+        When Hana runs an errand on a website for you, she acts on your behalf with your saved login. She asks before anything is bought, booked or paid, and you
+        are responsible for what you approve and for following that website’s own terms (some don’t allow automated access). MyDay never places an order you didn’t
+        approve. Check prices and details on the store’s or airline’s site before you pay.
+      </p>
       <h2>Acceptable use</h2>
       <p>Don’t use MyDay to harass anyone, to record people without the permission your school or state requires, or to break the law. We may suspend accounts that do.</p>
       <h2>Your content</h2>

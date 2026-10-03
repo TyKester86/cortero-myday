@@ -67,6 +67,53 @@ const alertHook = createHttp((req, res) => {
 });
 await new Promise((r) => alertHook.listen(0, r));
 const ALERT_URL = `http://127.0.0.1:${alertHook.address().port}/hook`;
+
+// Hana's errands (step 5): a tiny fake store for the robot browser to shop at —
+// sign in (one shopper also gets a texted code), add to cart, check out, place
+// the order — and a look-alike page that must never receive a password.
+const shop = { logins: [], orders: [], cart: [], phished: [] };
+const shopPage = (title, body) => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${title}</h1>${body}</body></html>`;
+const formBody = (req) => new Promise((r) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => r(Object.fromEntries(new URLSearchParams(b)))); });
+const loginForm = (action) => `<form method="post" action="${action}"><label>Email <input type="email" name="email"></label><label>Password <input type="password" name="password"></label><button>Sign in</button></form>`;
+const storeServer = createHttp(async (req, res) => {
+  const u = new URL(req.url, 'http://x');
+  const sid = /sid=(\w+)/.exec(req.headers.cookie ?? '')?.[1];
+  const send = (html, headers = {}) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...headers }); res.end(html); };
+  const go = (to, cookie) => { res.writeHead(303, { Location: to, ...(cookie ? { 'Set-Cookie': `sid=${cookie}; Path=/` } : {}) }); res.end(); };
+  if (req.method === 'POST' && u.pathname === '/login') {
+    const b = await formBody(req);
+    shop.logins.push(b);
+    if (b.password !== 'S3cret-Pass!') return send(shopPage('Sign in', `<p>Wrong email or password.</p>${loginForm('/login')}`));
+    return b.email === 'code@example.com' ? go('/verify', 'pending') : go('/shop', 'ok');
+  }
+  if (u.pathname === '/login' || u.pathname === '/') return send(shopPage('Sign in', loginForm('/login')));
+  if (req.method === 'POST' && u.pathname === '/verify') return (await formBody(req)).code === '482913' ? go('/shop', 'ok') : send(shopPage('Verify', '<p>That code didn’t work.</p>'));
+  if (u.pathname === '/verify') return send(shopPage('Verify', '<p>Enter the verification code we texted you.</p><form method="post" action="/verify"><label>Code <input name="code"></label><button>Verify</button></form>'));
+  if (sid !== 'ok') return go('/login');
+  if (req.method === 'POST' && u.pathname === '/add') { shop.cart.push(u.searchParams.get('item')); return go('/shop'); }
+  if (u.pathname === '/shop') return send(shopPage('Corner Store', `<p>In your cart: ${shop.cart.length} item${shop.cart.length === 1 ? '' : 's'}</p><p>Milk $3.49 <form method="post" action="/add?item=milk"><button>Add Milk to cart</button></form></p><p>Eggs $2.99 <form method="post" action="/add?item=eggs"><button>Add Eggs to cart</button></form></p><a href="/cart">Go to cart</a>`));
+  if (u.pathname === '/cart') return send(shopPage('Your cart', `<ul>${shop.cart.map((i) => `<li>${i}</li>`).join('')}</ul><a href="/checkout">Checkout</a>`));
+  const total = () => shop.cart.reduce((t, i) => t + (i === 'milk' ? 3.49 : 2.99), 0).toFixed(2);
+  if (u.pathname === '/checkout') return send(shopPage('Review your order', `<p>Order total: $${total()}</p><form method="post" action="/place"><button>Place order</button></form>`));
+  if (req.method === 'POST' && u.pathname === '/place') { shop.orders.push({ items: [...shop.cart], total: total() }); shop.cart = []; return go(`/done?n=A${1000 + shop.orders.length}`); }
+  if (u.pathname === '/done') return send(shopPage('Thank you', `<p>Order #${u.searchParams.get('n')} placed. Pickup Saturday.</p>`));
+  send(shopPage('Not found', ''));
+});
+await new Promise((r) => storeServer.listen(0, '127.0.0.1', r));
+const STORE = `http://127.0.0.1:${storeServer.address().port}`;
+const phishServer = createHttp(async (req, res) => {
+  if (req.method === 'POST') shop.phished.push(await formBody(req));
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(shopPage('Corner Store — Sign in', loginForm('/login')));
+});
+await new Promise((r) => phishServer.listen(0, '127.0.0.1', r));
+const PHISH = `http://127.0.0.1:${phishServer.address().port}`;
+let robotChromium = '';
+try {
+  robotChromium = createRequire(path.join(root, 'package.json'))('playwright').chromium.executablePath();
+} catch {
+  robotChromium = '';
+}
 // Sign in with Apple, locally: our own RSA key stands in for Apple's signing key.
 const { generateKeyPairSync, createHash: sha, sign: rsaSign } = await import('node:crypto');
 const APPLE_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -100,6 +147,9 @@ const serverEnv = (fakeNow) => ({
   INBOUND_DOMAIN: 'in.example.test',
   GROCERY_STUB: '1',
   FLIGHT_STUB: '1',
+  ROBOT_STUB: '1',
+  ROBOT_ALLOW_LOCAL: '1',
+  ...(robotChromium ? { ROBOT_CHROMIUM: robotChromium } : {}),
   ERROR_WEBHOOK_URL: ALERT_URL,
   // The walk creates dozens of households from one machine; the real default is 5 an hour.
   SIGNUPS_PER_HOUR: '500',
@@ -1693,6 +1743,79 @@ async function careTeam() {
   fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to atl on ${fday(30)}` })).data;
   check('same airport both ways is refused', /are the same/.test(fl.reply.text), fl.reply.text);
 
+  section('Hana’s errands: saved logins (encrypted, never shown) + a real browser; nothing is bought without an OK');
+  eq('kids can’t use errands or saved logins', [(await avery.get('/api/errands')).status, (await avery.post('/api/errands/logins', { url: STORE, username: 'a', password: 'b' })).status], [403, 403]);
+  let er = await ty.post('/api/errands/logins', { site: 'Corner Store', url: STORE, username: 'shopper@example.com', password: 'S3cret-Pass!' });
+  eq('a login is saved', [er.status, er.data.logins.map((l) => [l.site, l.usernameHint])], [201, [['Corner Store', 'sh•••@example.com']]]);
+  check('…and the password never comes back', !JSON.stringify(er.data).includes('S3cret') && !JSON.stringify((await ty.get('/api/errands')).data).includes('S3cret'));
+  eq('…encrypted at rest (password and username)', (await sql("SELECT COUNT(*)::int AS n FROM saved_logins WHERE position(convert_to('S3cret', 'UTF8') in password_enc) > 0 OR position(convert_to('shopper', 'UTF8') in username_enc) > 0"))[0].n, 0);
+  eq('only the person who saved it sees it (not Kayla, not another household)', [(await kayla.get('/api/errands')).data.logins.length, (await sam.get('/api/errands')).data.logins.length], [0, 0]);
+  eq('a website with a login in the URL is refused', (await ty.post('/api/errands/logins', { url: 'https://user:pw@evil.example', username: 'x', password: 'y' })).status, 400);
+  const errandWait = async (who, pred, ms = 60000) => {
+    const until = Date.now() + ms;
+    for (;;) {
+      const e = (await who.get('/api/errands')).data.errands[0];
+      if (e && pred(e)) return e;
+      if (Date.now() > until) return e;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  };
+  if (!robotChromium) check('Playwright’s Chromium is installed (for the errand browser)', false);
+  let eh = (await ty.post('/api/chat/companion', { message: 'errand on Corner Store: buy milk' })).data;
+  const errAct = eh.actions.find((a) => a.tool === 'run_errand');
+  eq('“go to the store and buy milk” → Hana asks first', errAct?.status, 'pending');
+  eh = (await ty.post(`/api/hana/actions/${errAct.id}/confirm`)).data;
+  check('confirmed → she’s on it, with a link to follow along', /\/errands/.test(eh.action.result), eh.action.result);
+  let errand = await errandWait(ty, (e) => !['queued', 'running'].includes(e.status));
+  eq('she signs in, fills the cart, and stops at “Place order” for an OK', [errand.status, /Place order/.test(errand.ask) && /\$3\.49/.test(errand.ask)], ['needs_ok', true]);
+  eq('…nothing bought yet', shop.orders.length, 0);
+  eq('the store got the saved login, typed by MyDay', [shop.logins[0]?.email, shop.logins[0]?.password], ['shopper@example.com', 'S3cret-Pass!']);
+  check('the steps never show the password', !JSON.stringify(errand.steps).includes('S3cret') && errand.steps.some((st) => /saved login/.test(st.say)), JSON.stringify(errand.steps).slice(0, 300));
+  eq('Kayla can’t approve Ty’s errand', (await kayla.post(`/api/errands/${errand.id}/approve`)).status, 404);
+  await ty.post(`/api/errands/${errand.id}/approve`);
+  errand = await errandWait(ty, (e) => ['done', 'failed', 'cancelled'].includes(e.status));
+  eq('Approve → the order is placed and she reports the confirmation', [errand.status, /A1001/.test(errand.result), shop.orders.length, shop.orders[0]?.total], ['done', true, 1, '3.49']);
+  const shot = await fetch(`${BASE}/api/errands/${errand.id}/shot`, { headers: { Cookie: ty.cookie } });
+  eq('what Hana saw: a screenshot, only for Ty, never cached', [shot.status, shot.headers.get('content-type'), shot.headers.get('cache-control'), (await kayla.get(`/api/errands/${errand.id}/shot`)).status], [200, 'image/jpeg', 'no-store', 404]);
+  await ty.post('/api/errands', { goal: 'buy eggs', loginId: (await ty.get('/api/errands')).data.logins[0].id });
+  errand = await errandWait(ty, (e) => e.goal === 'buy eggs' && !['queued', 'running'].includes(e.status));
+  eq('a second errand waits for its own OK', errand.status, 'needs_ok');
+  await ty.post(`/api/errands/${errand.id}/cancel`);
+  await new Promise((r) => setTimeout(r, 1500));
+  errand = (await ty.get('/api/errands')).data.errands.find((e) => e.id === errand.id);
+  eq('Stop → cancelled, nothing bought', [errand.status, shop.orders.length], ['cancelled', 1]);
+  shop.cart = [];
+  // Kayla's shopper account texts a code.
+  er = await kayla.post('/api/errands/logins', { url: STORE, username: 'code@example.com', password: 'S3cret-Pass!' });
+  await kayla.post('/api/errands', { goal: 'buy milk', loginId: er.data.logins[0].id });
+  errand = await errandWait(kayla, (e) => !['queued', 'running'].includes(e.status));
+  eq('a texted code → Hana asks the person', [errand.status, /code/.test(errand.ask)], ['needs_input', true]);
+  eq('Ty can’t answer Kayla’s', (await ty.post(`/api/errands/${errand.id}/answer`, { text: '000000' })).status, 404);
+  await kayla.post(`/api/errands/${errand.id}/answer`, { text: '482913' });
+  errand = await errandWait(kayla, (e) => e.status !== 'running' && e.status !== 'needs_input');
+  eq('…answered → she carries on to the OK', errand.status, 'needs_ok');
+  eq('…and the code isn’t kept', (await sql('SELECT COUNT(*)::int AS n FROM robot_errands WHERE answer_enc IS NOT NULL'))[0].n, 0);
+  await kayla.post(`/api/errands/${errand.id}/approve`);
+  errand = await errandWait(kayla, (e) => ['done', 'failed', 'cancelled'].includes(e.status));
+  eq('Kayla’s order goes through', [errand.status, shop.orders.length], ['done', 2]);
+  await ty.post('/api/errands', { goal: 'buy milk', url: PHISH });
+  errand = await errandWait(ty, (e) => e.goal === 'buy milk' && ['done', 'failed', 'cancelled'].includes(e.status) && e.site === '127.0.0.1' && e.id > 0 && e.steps.length > 0 && !/A100/.test(e.result));
+  eq('a look-alike site never gets a saved password', [errand.status, shop.phished.length], ['failed', 0]);
+  eq('only 2 running errands per person', await (async () => {
+    const lid = (await ty.get('/api/errands')).data.logins[0].id;
+    await sql("UPDATE robot_errands SET status = 'needs_ok' WHERE id IN (SELECT id FROM robot_errands WHERE member_id = (SELECT member_id FROM saved_logins WHERE id = $1) ORDER BY id DESC LIMIT 2)", [lid]);
+    const r = (await ty.post('/api/errands', { goal: 'buy eggs', loginId: lid })).status;
+    await sql("UPDATE robot_errands SET status = 'cancelled' WHERE status = 'needs_ok'");
+    return r;
+  })(), 409);
+  const lid = (await ty.get('/api/errands')).data.logins[0].id;
+  er = await ty.del(`/api/errands/logins/${lid}`);
+  eq('Forget → the login is deleted', [er.data.logins.length, (await sql('SELECT COUNT(*)::int AS n FROM saved_logins WHERE id = $1', [lid]))[0].n], [0, 0]);
+  const finished = (await ty.get('/api/errands')).data.errands.find((e) => e.status === 'cancelled');
+  eq('a finished errand can be removed', (await ty.del(`/api/errands/${finished.id}`)).data.errands.some((e) => e.id === finished.id), false);
+  // Leave one saved login for the browser check.
+  await ty.post('/api/errands/logins', { site: 'Corner Store', url: STORE, username: 'shopper@example.com', password: 'S3cret-Pass!' });
+
   section('solo grown-ups (“Just me”): no kid or partner tools until someone joins full time');
   const { liveFeatures } = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
   const sol = new Client('solo-one');
@@ -2872,6 +2995,14 @@ async function uiGate() {
     await flLink.first().waitFor({ timeout: 20000 });
     eq('the Google Flights link opens in a new tab, safely', [await flLink.first().getAttribute('target'), await flLink.first().getAttribute('rel')], ['_blank', 'noopener noreferrer']);
 
+    section('Hana’s errands in the browser: saved logins show no password; past errands and their steps');
+    await page.goto(`${BASE}/errands`);
+    await page.getByTestId('saved-logins').waitFor({ timeout: 10000 });
+    const loginsText = await page.getByTestId('saved-logins').innerText();
+    check('the saved login shows its name and a hint, never the password', /Corner Store/.test(loginsText) && /sh•••@example\.com/.test(loginsText) && !/S3cret/.test(await page.content()));
+    check('the finished order shows with its confirmation', (await page.getByTestId('errand').filter({ hasText: 'A1001' }).count()) > 0);
+    eq('the add-login password box is a real password field', await page.getByTestId('add-login').getByLabel('Password').getAttribute('type'), 'password');
+
     section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
     const soloCtx = await browser.newContext(phone);
     const sp = await soloCtx.newPage();
@@ -3001,7 +3132,7 @@ async function uiGate() {
     await tyHealth.close();
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed', '/errands', '/inbox', '/calendar'];
     const notFound = [];
     const tooWide = [];
     // Wider than the phone = the page slides (shakes) sideways under your thumb and boxes run off the edge.
