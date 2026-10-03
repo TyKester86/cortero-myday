@@ -633,6 +633,8 @@ export interface MealDetail extends MealSummary {
   servings: number | null;
   ingredients: string[];
   steps: string[];
+  /** "Common mistakes" — what usually goes wrong with this dish. */
+  tips: string[];
 }
 
 export interface MealListResponse {

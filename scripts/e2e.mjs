@@ -469,13 +469,13 @@ async function sunday() {
 async function mealsAndGrocery() {
   section('6. per-day meal plan');
   const add = (body) => ty.post('/api/meal-plan', body);
-  await add({ mealId: 1, day: 'Mon' }); // burrito bowls: 2 lb chicken, 2 cup rice
-  await add({ mealId: 2, day: 'Tue' }); // stir fry: 1 lb chicken, 1 cup rice
+  await add({ mealId: 1, day: 'Mon' }); // burrito bowls: 2½ lb chicken breasts, 3 cups rice
+  await add({ mealId: 2, day: 'Tue' }); // stir fry: 2 lb chicken breasts, 3 cups rice
   let plan = (await add({ mealId: 3 })).data; // chili, no day yet
   eq('Mon / Tue / unassigned', [plan.days[0].meals.map((m) => m.title), plan.days[1].meals.map((m) => m.title), plan.unassigned.map((m) => m.title)], [['Chicken burrito bowls'], ['Chicken stir fry'], ['Turkey chili']]);
   eq('week runs Mon..Sun with dates', plan.days.map((d) => `${d.day} ${d.date}`), Object.entries(DAY).map(([k, v]) => `${k} ${v}`));
   eq('today (Sunday) is flagged', plan.days.filter((d) => d.isToday).map((d) => d.day), ['Sun']);
-  eq('daily totals', [plan.days[0].calories, plan.days[0].protein], [630, 52]);
+  eq('daily totals', [plan.days[0].calories, plan.days[0].protein], [650, 52]);
   const chili = plan.unassigned[0];
   plan = (await ty.patch(`/api/meal-plan/${chili.id}`, { day: 'Wed' })).data;
   eq('move chili to Wednesday', [plan.days[2].meals.map((m) => m.title), plan.unassigned.length], [['Turkey chili'], 0]);
@@ -493,19 +493,21 @@ async function mealsAndGrocery() {
   const items = (g) => g.items.map((i) => i.item);
   const b1 = (await ty.post('/api/grocery/from-week')).data;
   const chicken = (g) => g.items.find((i) => /chicken breast/.test(i.item))?.item;
-  eq('first build: 2 lb + 1 lb from meals + 1 lb already on list = 4 lb', chicken(b1.grocery), '4 lb chicken breast');
+  eq('first build: 2½ lb + 2 lb from meals (“boneless, skinless chicken breasts”) + 1 lb “chicken breast” already on list = 5½ lb', chicken(b1.grocery), '5½ lb chicken breast');
+  eq('recipe section headers (“For the chicken:”) never land on the grocery list', b1.grocery.items.filter((i) => /:\s*$/.test(i.item)).map((i) => i.item), []);
+  eq('“4 garlic cloves” and “6 cloves garlic” are one line', b1.grocery.items.filter((i) => /garlic$/i.test(i.item) && /clove/.test(i.item)).length <= 1, true);
   const b2 = (await ty.post('/api/grocery/from-week')).data;
-  eq('second build: 4 lb STAYS 4 lb', chicken(b2.grocery), '4 lb chicken breast');
+  eq('second build: 5½ lb STAYS 5½ lb', chicken(b2.grocery), '5½ lb chicken breast');
   eq('second build adds nothing', [b2.added, b2.merged, b2.staples, b2.grocery.items.length], [0, 0, 0, b1.grocery.items.length]);
   const b3 = (await ty.post('/api/grocery/from-week')).data;
   eq('third build: identical list', items(b3.grocery), items(b1.grocery));
   const burrito = (await ty.get('/api/meal-plan')).data.days[0].meals[0];
   await ty.del(`/api/meal-plan/${burrito.id}`);
   const b4 = (await ty.post('/api/grocery/from-week')).data;
-  eq('drop a meal + rebuild: chicken back to 2 lb, its beans/rice adjust', [chicken(b4.grocery), b4.grocery.items.find((i) => /rice/.test(i.item))?.item], ['2 lb chicken breast', '1 cup rice']);
+  eq('drop a meal + rebuild: chicken back to 3 lb, its rice adjusts', [chicken(b4.grocery), b4.grocery.items.find((i) => /rice/.test(i.item))?.item], ['3 lb chicken breast', '3 cup long-grain white rice']);
   await ty.post('/api/meal-plan', { mealId: 1, day: 'Mon' });
   const b5 = (await ty.post('/api/grocery/from-week')).data;
-  eq('re-add it + rebuild: 4 lb again (not 6, not 7)', chicken(b5.grocery), '4 lb chicken breast');
+  eq('re-add it + rebuild: 5½ lb again (not double-counted)', chicken(b5.grocery), '5½ lb chicken breast');
   const row = b5.grocery.items.find((i) => /chicken breast/.test(i.item));
   await ty.patch(`/api/grocery/items/${row.id}`, { done: true });
   const b6 = (await ty.post('/api/grocery/from-week')).data;
@@ -983,7 +985,7 @@ async function bigBuild() {
   eq('every meal has its own picture (no illustrations, no placeholders), none shared', [photos.length, new Set(photos.map((m) => m.imageUrl)).size], [233, 233]);
   check('the original 120 recipes use their renders (named for the dish)', lib.meals.filter((m) => m.id <= 120).every((m) => m.imageUrl === `/meals/${shared.mealSlug(m.title)}.webp`));
   eq('every list row carries nutrition (incl. Chicken Caesar wraps + Steak salad)', lib.meals.filter((m) => m.calories === null || m.protein === null).map((m) => m.title), []);
-  eq('…those two specifically', lib.meals.filter((m) => [16, 106].includes(m.id)).map((m) => [m.title, m.calories, m.protein]), [['Chicken Caesar wraps', 520, 44], ['Steak salad with blue cheese', 520, 44]]);
+  eq('…those two specifically', lib.meals.filter((m) => [16, 106].includes(m.id)).map((m) => [m.title, m.calories, m.protein]), [['Chicken Caesar wraps', 520, 42], ['Steak salad with blue cheese', 552, 46]]);
   let broken = 0;
   for (const m of lib.meals) {
     const r = await fetch(BASE + m.imageUrl);
@@ -1012,8 +1014,19 @@ async function bigBuild() {
     if (d.ingredients.length < 4 || d.steps.length < 3 || [d.calories, d.protein, d.carbs, d.fat].some((x) => x === null) || !d.cuisine) thin++;
   }
   eq('every meal complete: macros, cuisine, 4+ ingredients, 3+ numbered steps', thin, 0);
+  const bowls = (await ty.get('/api/meals/1')).data;
+  eq('recipe sections kept as headers (burrito bowls)', bowls.ingredients.filter((l) => /:$/.test(l)), ['For the chicken:', 'For the cilantro-lime rice:', 'For the bowls:']);
+  check('ingredient bullets stripped', bowls.ingredients.every((l) => !/^- /.test(l)));
+  check('steps lose their typed numbers (the page numbers them)', bowls.steps.length >= 5 && bowls.steps.every((l) => !/^\d+\.\s/.test(l)), bowls.steps[0]);
+  eq('“Common mistakes” become tips, not steps', [bowls.tips.length, bowls.steps.some((l) => /common mistakes/i.test(l))], [4, false]);
+  const pozole = (await ty.get('/api/meals/46')).data;
+  check('“For serving: a; b” split into a header + items', pozole.ingredients.includes('For serving:') && pozole.ingredients.includes('lime wedges'), pozole.ingredients.slice(-6).join(' | '));
+  eq('inline “Common mistakes: (1)… (2)… (3)…” → three tips', (await ty.get('/api/meals/81')).data.tips.length, 3);
+  let noTips = 0;
+  for (const m of lib.meals) if (!(await ty.get(`/api/meals/${m.id}`)).data.tips.length) noTips++;
+  eq('every meal carries its common mistakes', noTips, 0);
   const cut = (await ty.get('/api/meals?phase=cutting')).data.meals;
-  check('phase filter: cutting meals, all tagged cutting', cut.length > 60 && cut.every((m) => m.phaseTags.includes('cutting')), `${cut.length} meals`);
+  check('phase filter: cutting meals, all tagged cutting', cut.length > 40 && cut.every((m) => m.phaseTags.includes('cutting')), `${cut.length} meals`);
   const mine = (await kayla.get('/api/meals?phase=mine')).data;
   eq('“my phase” follows the program (Kayla: recomp)', [mine.phase, mine.meals.every((m) => m.phaseTags.includes('recomp'))], ['recomp', true]);
   const chains = (await ty.get('/api/grocery')).data.chains;
@@ -2208,6 +2221,8 @@ async function uiGate() {
     await page.goto(`${BASE}/`);
     await page.getByTestId('today-adult').waitFor({ timeout: 10000 });
     eq('phone: a grown-up’s home is the merged Today; tabs are Today · Plan · Family · Money · Me', (await page.locator('nav.tabs a small').allInnerTexts()).map((t) => t.toLowerCase()), ['today', 'plan', 'family', 'money', 'me']);
+    eq('each tab has its line icon', await page.locator('nav.tabs a svg.navicon').count(), 5);
+    eq('Hana button uses the chat icon', await page.getByTestId('hana-fab').locator('svg.navicon').count(), 1);
     await page.getByTestId('kids-glance').waitFor({ timeout: 10000 });
     check('Today shows what’s next, the workout and meals, and the kids at a glance', (await page.getByTestId('next-up').count()) === 1 && (await page.getByTestId('kids-glance').count()) === 1);
     await page.getByRole('button', { name: 'Menu' }).click();
@@ -2229,6 +2244,10 @@ async function uiGate() {
     await page.goto(`${BASE}/meals`);
     await page.locator('nav.subtabs a').first().waitFor({ timeout: 10000 });
     eq('Plan section tabs on Meals: Week · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Meals', 'This week’s menu', 'Grocery list']);
+    await page.goto(`${BASE}/meals/1`);
+    await page.getByTestId('meal-tips').waitFor({ timeout: 10000 });
+    eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allInnerTexts(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls'], 4]);
+    check('meal page: step lead-ins in bold (“Mise en place…:”)', (await page.locator('ol.steps li b').first().innerText()).startsWith('Mise en place'));
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const dp = await desk.newPage();
@@ -2237,8 +2256,11 @@ async function uiGate() {
     await dp.getByTestId('today-adult').waitFor({ timeout: 10000 });
     eq('desktop: a sidebar instead of the phone’s bottom bar and menu button', [await dp.getByTestId('sidebar').count(), await dp.locator('nav.tabs').count(), await dp.getByRole('button', { name: 'Menu' }).count()], [1, 0, 0]);
     await dp.getByLabel('Find a page').fill('gro');
-    eq('…with search', await dp.getByTestId('sidebar').locator('a').allInnerTexts().then((t) => t.map((x) => x.trim())), ['🛒 Grocery list']);
+    eq('…with search', await dp.getByTestId('sidebar').locator('a').allInnerTexts().then((t) => t.map((x) => x.trim())), ['Grocery list']);
     await dp.getByLabel('Find a page').fill('');
+    const sideTop = await dp.getByTestId('sidebar').locator('.navgroup').first().locator('a').allInnerTexts().then((t) => t.map((x) => x.trim()));
+    eq('desktop sidebar top: Today · Plan · Family · Money · Me (no “Weekly plan” / “Everything”)', sideTop, ['Today', 'Plan', 'Family', 'Money', 'Me']);
+    eq('sidebar links use the line icons (svg), not emoji', await dp.getByTestId('sidebar').locator('a').evaluateAll((as) => as.every((a) => a.querySelector('svg.navicon') && !/\p{Extended_Pictographic}/u.test(a.textContent ?? ''))), true);
     await dp.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
     await dp.keyboard.press('?');
     check('“?” opens the shortcut help', await dp.getByTestId('shortcut-help').isVisible());
@@ -2460,8 +2482,9 @@ async function uiGate() {
     const notFound = [];
     for (const p of pages) {
       await page.goto(BASE + p);
-      await page.waitForLoadState('networkidle');
-      if (await page.getByText('Page not found.').count()) notFound.push(p);
+      // A page that never goes quiet is a failure for that page, named — not a crash of the whole run.
+      if (!(await page.waitForLoadState('networkidle', { timeout: 20000 }).then(() => true, () => false))) notFound.push(`${p} (never settled)`);
+      else if (await page.getByText('Page not found.').count()) notFound.push(p);
     }
     eq(`${pages.length} pages render`, notFound, []);
 

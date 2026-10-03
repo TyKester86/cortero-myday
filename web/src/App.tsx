@@ -16,6 +16,7 @@ import Join from './Join';
 import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
+import { NavIcon } from './components/NavIcon';
 import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
@@ -117,7 +118,7 @@ function Shell() {
           <small className="navgroup-label">{g.label}</small>
           {items.map((i) => (
             <NavLink key={i.path} to={i.path} end={i.path === '/'} onClick={onPick}>
-              <span aria-hidden="true">{i.icon}</span> {i.label}
+              <NavIcon name={i.icon} /> {i.label}
             </NavLink>
           ))}
         </div>
@@ -163,7 +164,7 @@ function Shell() {
               .filter((t) => !needle || t.label.toLowerCase().includes(needle))
               .map((t) => (
                 <NavLink key={t.path} to={t.path} end={t.path === '/'}>
-                  <span aria-hidden="true">{t.icon}</span> {t.path === '/me' ? 'Everything' : t.label}
+                  <NavIcon name={t.icon} /> {t.label}
                 </NavLink>
               ))}
           </div>
@@ -188,14 +189,14 @@ function Shell() {
       <Shortcuts enabled={wide} />
       {nav.hana && location.pathname !== '/hana' && (
         <Link to="/hana" className="hana-fab" aria-label="Ask Hana" data-testid="hana-fab">
-          💬
+          <NavIcon name="chat" size={26} />
         </Link>
       )}
       {!sidebar && (
         <nav className="tabs">
           {nav.tabs.map((t) => (
             <NavLink key={t.path} to={t.path} end={t.path === '/'}>
-              <span>{t.icon}</span>
+              <NavIcon name={t.icon} size={24} />
               <small>{t.tabLabel}</small>
             </NavLink>
           ))}

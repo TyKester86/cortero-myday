@@ -5,7 +5,31 @@ import { api, useLoad, withMember } from '../../api';
 import { useSession } from '../../session';
 import { onImgError } from './Meals';
 
-/** One meal: picture, macros, ingredients, numbered steps — and add it to this week on chosen days. */
+/** Ingredient lines → sections ("For the sauce:" lines start a new one). */
+function sections(lines: string[]): Array<{ head: string | null; items: string[] }> {
+  const out: Array<{ head: string | null; items: string[] }> = [];
+  for (const l of lines) {
+    if (/:\s*$/.test(l)) out.push({ head: l.replace(/:\s*$/, ''), items: [] });
+    else {
+      if (!out.length) out.push({ head: null, items: [] });
+      out[out.length - 1]?.items.push(l);
+    }
+  }
+  return out.filter((s) => s.head || s.items.length);
+}
+
+/** "Mise en place: chop everything…" → the short lead-in in bold. */
+function LeadIn({ text }: { text: string }) {
+  const m = text.match(/^([^:]{2,60}):\s+(.+)$/);
+  if (!m?.[1] || !m[2]) return <>{text}</>;
+  return (
+    <>
+      <b>{m[1]}:</b> {m[2]}
+    </>
+  );
+}
+
+/** One meal: picture, macros, ingredients, numbered steps, common mistakes — and add it to this week on chosen days. */
 export default function MealDetail() {
   const { id } = useParams();
   const { viewing } = useSession();
@@ -74,17 +98,36 @@ export default function MealDetail() {
       </div>
 
       <h2>Ingredients</h2>
-      <ul>
-        {data.ingredients.map((l, i) => (
-          <li key={i}>{l}</li>
-        ))}
-      </ul>
+      {sections(data.ingredients).map((sec, i) => (
+        <div key={i} className="ing-section">
+          {sec.head && <h3 className="ing-head">{sec.head}</h3>}
+          <ul>
+            {sec.items.map((l, j) => (
+              <li key={j}>{l}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
       <h2>Steps</h2>
       <ol className="steps">
         {data.steps.map((l, i) => (
-          <li key={i}>{l}</li>
+          <li key={i}>
+            <LeadIn text={l} />
+          </li>
         ))}
       </ol>
+      {data.tips.length > 0 && (
+        <div className="card tips" data-testid="meal-tips">
+          <h2>Common mistakes</h2>
+          <ul>
+            {data.tips.map((l, i) => (
+              <li key={i}>
+                <LeadIn text={l} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }

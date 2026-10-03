@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { BUILDS, mealPhaseTags, mealSlug } from '@myday/shared';
 import { asSystem, inHousehold, pool, tx } from './db.js';
 import { loadBuildPlan, loadCsvPlan } from './lib/planload.js';
+import { cleanIngredients, splitSteps } from './lib/recipe.js';
 import { logEvent } from './lib/events.js';
 import { mergeHouseholds, planMerge } from './lib/householdMove.js';
 
@@ -261,7 +262,6 @@ const commands: Record<string, (pos: string[], flags: Flags) => Promise<void>> =
   async 'meals:seed'(pos) {
     const file = pos[0] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'content', 'meals.csv');
     const rows = await csvRows(file);
-    const lines = (v: string): string[] => v.split('\n').map((l) => l.trim()).filter(Boolean);
     await tx(async (c) => {
       for (const r of rows) {
         const id = Math.round(num(cell(r, 0)));
@@ -270,18 +270,19 @@ const commands: Record<string, (pos: string[], flags: Flags) => Promise<void>> =
         const calories = Math.round(num(cell(r, 3)));
         const protein = Math.round(num(cell(r, 4)));
         const slug = mealSlug(title);
+        const recipe = splitSteps(r[8] ?? '');
         await c.query(
-          `INSERT INTO meals (id, title, cuisine, calories, protein, carbs, fat, ingredients, steps, servings, prep_min, slug, image_url, phase_tags, region)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          `INSERT INTO meals (id, title, cuisine, calories, protein, carbs, fat, ingredients, steps, servings, prep_min, slug, image_url, phase_tags, region, tips)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
            ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, cuisine = EXCLUDED.cuisine, calories = EXCLUDED.calories,
              protein = EXCLUDED.protein, carbs = EXCLUDED.carbs, fat = EXCLUDED.fat, ingredients = EXCLUDED.ingredients,
              steps = EXCLUDED.steps, servings = EXCLUDED.servings, prep_min = EXCLUDED.prep_min, slug = EXCLUDED.slug,
-             image_url = EXCLUDED.image_url, phase_tags = EXCLUDED.phase_tags, region = EXCLUDED.region`,
-          [id, title, cell(r, 2), calories, protein, numOrNull(cell(r, 5)), numOrNull(cell(r, 6)), lines(r[7] ?? ''),
-            lines(r[8] ?? ''), numOrNull(cell(r, 9)), numOrNull(cell(r, 10)), slug,
+             image_url = EXCLUDED.image_url, phase_tags = EXCLUDED.phase_tags, region = EXCLUDED.region, tips = EXCLUDED.tips`,
+          [id, title, cell(r, 2), calories, protein, numOrNull(cell(r, 5)), numOrNull(cell(r, 6)), cleanIngredients(r[7] ?? ''),
+            recipe.steps, numOrNull(cell(r, 9)), numOrNull(cell(r, 10)), slug,
             // A photo when the meal has one (Image column), else its drawn illustration.
             cell(r, 12) ? `/meals/${cell(r, 12)}` : `/meals/${slug}.svg`,
-            mealPhaseTags(calories, protein), cell(r, 11)],
+            mealPhaseTags(calories, protein), cell(r, 11), recipe.tips],
         );
       }
       await c.query("SELECT setval(pg_get_serial_sequence('meals', 'id'), GREATEST((SELECT MAX(id) FROM meals), 1))");

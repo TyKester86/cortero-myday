@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
 import { useSession } from '../../session';
 import { navFor } from '../nav';
+import { NavIcon } from '../../components/NavIcon';
 
 /** Everything in one calm, grouped place (the phone's "Me" tab). */
 export default function MeHub() {
@@ -17,7 +18,7 @@ export default function MeHub() {
             <div className="hubtiles">
               {g.items.map((i) => (
                 <Link key={i.path} to={i.path} className="hubtile">
-                  <span aria-hidden="true">{i.icon}</span>
+                  <NavIcon name={i.icon} size={28} />
                   {i.label}
                 </Link>
               ))}

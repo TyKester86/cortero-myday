@@ -46,6 +46,7 @@ interface MealRow {
   fat: number | null;
   ingredients: string[];
   steps: string[];
+  tips: string[];
   image_url: string | null;
   prep_min: number | null;
   servings: number | null;
@@ -101,7 +102,7 @@ mealsRouter.get('/api/meals/:id', async (req, res) => {
   const { rows } = await pool.query<MealRow>('SELECT * FROM meals WHERE id = $1', [idParam(req.params.id)]);
   const r = rows[0];
   if (!r) throw new HttpError(404, 'Meal not found');
-  const out: MealDetail = { ...toSummary(r), carbs: r.carbs, fat: r.fat, servings: r.servings, ingredients: r.ingredients, steps: r.steps };
+  const out: MealDetail = { ...toSummary(r), carbs: r.carbs, fat: r.fat, servings: r.servings, ingredients: r.ingredients, steps: r.steps, tips: r.tips ?? [] };
   res.json(out);
 });
 

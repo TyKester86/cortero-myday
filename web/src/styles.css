@@ -452,7 +452,7 @@ small.next { display: block; color: var(--sun); margin-top: 2px; }
 .hubgroup h2 { margin: 18px 0 8px; }
 .hubtiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .hubtile { display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 1px solid var(--line); background: var(--card); border-radius: 12px; text-decoration: none; color: var(--text); font-weight: 600; }
-.hubtile span { font-size: 22px; }
+.hubtile .navicon { color: var(--navy-2); }
 .setup-steps li { padding: 4px 0; }
 .setup-steps li.done { color: var(--muted); text-decoration: line-through; }
 @media (min-width: 1100px) {
@@ -500,3 +500,15 @@ h2, h3 { font-family: inherit; text-transform: none; letter-spacing: 0; font-wei
 h2 { font-size: 19px; line-height: 1.25; }
 .card { border-top-width: 2px; }
 .card + .card { margin-top: 14px; }
+
+/* Nav icons (components/NavIcon): outlined, inherit the link color. */
+.navicon { flex: none; vertical-align: -0.2em; }
+.top .menu a, .side a { display: flex; align-items: center; gap: 10px; }
+.tabs a .navicon { display: block; margin: 0 auto 2px; }
+/* Meal page: ingredient sections + common mistakes. */
+.ing-head { font-size: 15px; margin: 12px 0 4px; }
+.ing-section ul { margin-top: 4px; }
+.tips { margin-top: 16px; }
+.tips ul { padding-left: 18px; }
+.tips li + li { margin-top: 8px; }
+.steps li { margin: 10px 0; }
