@@ -1876,7 +1876,8 @@ async function uiGate() {
     check('Playwright installed (npm i, then npx playwright install chromium)', false);
     return;
   }
-  const browser = await chromium.launch();
+  // A fake microphone (a test tone), so the recorder can really record.
+  const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
   try {
     const phone = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true };
     const errors = [];
@@ -2121,6 +2122,76 @@ async function uiGate() {
     await kp.getByTestId('lecture-upload').setInputFiles({ name: 'class.m4a', mimeType: 'audio/mp4', buffer: Buffer.from(`STUB-TRANSCRIPT: ${'Mitosis is how a cell divides. '.repeat(5)}`) });
     await kp.waitForURL(/\/lectures\/\d+$/);
     check('(a) uploading an audio file opens the new lecture', /\/lectures\/\d+$/.test(kp.url()));
+
+    section('offline lecture recording: saved on the phone as it records, survives a killed tab, uploads itself when signal returns');
+    const bioId = (await avery.get('/api/school')).data.classes.find((c) => c.name === 'Biology').id;
+    const raw = (q, body = Buffer.from(`STUB-TRANSCRIPT: ${'Cells divide by mitosis. '.repeat(4)}`)) =>
+      avery.req('POST', `/api/lectures/upload?${q}`, body, { json: false, headers: { 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1' } });
+    const u1 = await raw(`classId=${bioId}&durationS=60&clientId=rec-test-0001&recordedOn=2026-09-30`);
+    const u2 = await raw(`classId=${bioId}&durationS=60&clientId=rec-test-0001&recordedOn=2026-09-30`);
+    eq('a retried upload (lost answer on bad signal) returns the same lecture, never a second one', [u1.status, u2.status, u2.data.lecture.id === u1.data.lecture.id, (await sql("SELECT COUNT(*)::int AS n FROM lectures WHERE client_id = 'rec-test-0001'"))[0].n], [201, 200, true, 1]);
+    eq('…dated the day it was recorded, not the day it uploaded', u1.data.lecture.recordedOn, '2026-09-30');
+    eq('…a future date is ignored (today instead)', (await raw(`classId=${bioId}&durationS=5&clientId=rec-test-0002&recordedOn=2030-01-01`)).data.lecture.recordedOn, (await avery.get('/api/workouts/today')).data.date);
+
+    const rc = await browser.newContext({ ...phone, permissions: ['microphone'] });
+    const rp = await rc.newPage();
+    watch(rp);
+    await rp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`);
+    await rp.goto(`${BASE}/record`);
+    await rp.getByTestId('record-class').waitFor({ timeout: 10000 });
+    await rp.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+    await rp.reload();
+    await rp.getByTestId('record-class').waitFor({ timeout: 10000 });
+    const shell = await rp.evaluate(async () => {
+      const keys = await caches.keys();
+      const shellKey = keys.find((k) => k.endsWith('-shell'));
+      const c = shellKey ? await caches.open(shellKey) : null;
+      const reqs = c ? await c.keys() : [];
+      return { controlled: !!navigator.serviceWorker.controller, page: !!(c && (await c.match('/index.html'))), assets: reqs.filter((r) => new URL(r.url).pathname.startsWith('/assets/')).length };
+    });
+    eq('the app shell (page + all its scripts/styles) is cached on the phone', [shell.controlled, shell.page, shell.assets > 0], [true, true, true]);
+    const lecCount = async () => (await avery.get('/api/lectures')).data.lectures.length;
+    const before = await lecCount();
+
+    await rc.setOffline(true);
+    await rp.getByTestId('record-class').selectOption({ label: 'Biology' });
+    await rp.getByRole('button', { name: '● Start recording' }).click();
+    await rp.getByTestId('recorder-live').waitFor({ timeout: 10000 });
+    await rp.waitForTimeout(6500); // at least one 5-second chunk is on the phone
+    await rp.close(); // the phone kills the tab mid-class
+
+    const rp2 = await rc.newPage();
+    watch(rp2);
+    await rp2.goto(`${BASE}/record`);
+    await rp2.getByTestId('waiting-item').first().waitFor({ timeout: 15000 });
+    eq('offline, tab killed mid-recording, reopened: the recorder opens and the lecture is waiting (not lost)', [await rp2.getByTestId('waiting-item').count(), /Biology/.test(await rp2.getByTestId('waiting-item').first().textContent())], [1, true]);
+
+    await rp2.getByTestId('record-class').selectOption({ label: 'Biology' });
+    await rp2.getByRole('button', { name: '● Start recording' }).click();
+    await rp2.getByTestId('recorder-live').waitFor({ timeout: 10000 });
+    await rp2.waitForTimeout(6000);
+    const stop = await rp2.getByRole('button', { name: 'Press and hold to stop recording' }).boundingBox();
+    await rp2.mouse.move(stop.x + stop.width / 2, stop.y + stop.height / 2);
+    await rp2.mouse.down();
+    await rp2.waitForTimeout(1900);
+    await rp2.mouse.up();
+    await rp2.getByTestId('recording-saved').waitFor({ timeout: 15000 });
+    eq('a second lecture recorded offline and stopped normally: “Saved on this phone”, both waiting, nothing uploaded yet', [await rp2.getByTestId('waiting-item').count(), (await lecCount()) - before], [2, 0]);
+
+    await rc.setOffline(false); // signal returns
+    const gone = await rp2.waitForFunction(() => !document.querySelector('[data-testid="waiting-uploads"]'), null, { timeout: 60000 }).then(() => true, () => false);
+    eq('signal back: both upload on their own (oldest first) and leave the phone', [gone, (await lecCount()) - before, await rp2.evaluate(() => new Promise((ok) => { const r = indexedDB.open('myday-recordings'); r.onsuccess = () => { const q = r.result.transaction('chunks').objectStore('chunks').count(); q.onsuccess = () => ok(q.result); }; }))], [true, 2, 0]);
+    const fresh = (await avery.get('/api/lectures')).data.lectures.slice(0, 2);
+    let ready = [];
+    for (let i = 0; i < 40; i++) {
+      ready = await Promise.all(fresh.map(async (l) => (await avery.get(`/api/lectures/${l.id}`)).data.status));
+      if (ready.every((s) => s === 'ready')) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    eq('…turned into structured notes on the server, as today', ready, ['ready', 'ready']);
+    eq('…and the audio is deleted from the server after the notes', (await sql('SELECT COUNT(*)::int AS n FROM lectures WHERE id = ANY($1) AND audio_path IS NOT NULL', [fresh.map((l) => l.id)]))[0].n, 0);
+    check('…the killed-tab lecture kept its audio up to the last saved chunk', fresh.every((l) => l.durationS >= 4), fresh.map((l) => l.durationS).join(','));
+    await rc.close();
     // (b) Focus timer for everyone
     await page.goto(`${BASE}/focus`);
     eq('(b) /focus renders for a grown-up too', await page.getByTestId('focus-clock').waitFor({ timeout: 10000 }).then(() => true, () => false), true);

@@ -15,6 +15,7 @@ import Join from './Join';
 import Login from './Login';
 import { MODULES, type ModuleRoute } from './modules';
 import GroceryPopout from './modules/meals/GroceryPopout';
+import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
 
 function OfflineBar() {
@@ -31,6 +32,8 @@ function Shell() {
   const { me, members, viewing, setViewing, isAdult } = useSession();
   const [menu, setMenu] = useState(false);
   const wide = useWide();
+  // Lecture recordings saved on this device upload on their own (load, reconnect, back to the app).
+  useRecordingUploads(me.member ? me.userId : null);
   useEffect(() => {
     applyLook(me.prefs?.theme ?? 'system', me.prefs?.accent ?? 'navy');
   }, [me.prefs]);

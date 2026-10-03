@@ -1,7 +1,9 @@
 /* MyDay service worker: offline reads + push notifications.
  *
  * - App shell (index.html, hashed /assets, icons, meal pictures) is cached so
- *   the app opens with no connection.
+ *   the app opens with no connection (re-cached on every page load).
+ * - Lecture recordings never pass through here: they wait in IndexedDB and
+ *   the page uploads them when there's signal (see src/recordings.ts).
  * - API reads are network-first; the last good answer is served offline.
  * - Writes are NOT handled here: the page queues them and replays them with
  *   an Idempotency-Key when the connection returns (see src/api.ts).
@@ -12,8 +14,35 @@ const SHELL = `${VERSION}-shell`;
 const API = `${VERSION}-api`;
 const SHELL_FILES = ['/', '/index.html', '/manifest.webmanifest', '/icons/myday-icon-192.png', '/icons/myday-mark.svg'];
 
+/**
+ * Cache the page and every script/style it loads, so the app (and the lecture
+ * recorder) opens with no signal — even right after a deploy.
+ */
+async function cacheShell(res) {
+  const cache = await caches.open(SHELL);
+  const page = res ?? (await fetch('/index.html', { cache: 'no-store' }));
+  if (!page.ok || !(page.headers.get('content-type') || '').includes('text/html')) return;
+  const html = await page.clone().text();
+  await cache.put('/index.html', page.clone());
+  await cache.put('/', page.clone());
+  const assets = [...new Set(html.match(/\/assets\/[^"'\s)]+/g) || [])];
+  await Promise.all(
+    assets.map(async (a) => {
+      if (await cache.match(a)) return;
+      const r = await fetch(a);
+      if (r.ok) await cache.put(a, r);
+    }),
+  );
+}
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches
+      .open(SHELL)
+      .then((c) => c.addAll(SHELL_FILES))
+      .then(() => cacheShell().catch(() => undefined))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -70,7 +99,15 @@ self.addEventListener('fetch', (event) => {
   }
   if (req.mode === 'navigate') {
     if (p.startsWith('/dev-login') || p === '/install' || p.startsWith('/install/')) return;
-    event.respondWith(fetch(req).catch(async () => (await caches.match('/index.html')) || (await caches.match('/'))));
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          // Every page is the app shell: keep the cached copy current.
+          if (res.ok) event.waitUntil(cacheShell(res.clone()).catch(() => undefined));
+          return res;
+        })
+        .catch(async () => (await caches.match('/index.html')) || (await caches.match('/'))),
+    );
     return;
   }
   if (p.startsWith('/assets/') || p.startsWith('/icons/') || p.startsWith('/meals/') || p.startsWith('/exercises/') || p.startsWith('/roles/')) {

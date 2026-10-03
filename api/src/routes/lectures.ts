@@ -29,7 +29,7 @@ import type {
   UploadLectureResponse,
 } from '@myday/shared';
 import { detached, inHousehold, pool, tx } from '../db.js';
-import { today } from '../lib/dates.js';
+import { addDays, today } from '../lib/dates.js';
 import { logEvent } from '../lib/events.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
@@ -148,6 +148,16 @@ lectureUploadRouter.post(
     const durationS = int(req.query.durationS ?? 0, 'durationS', 0, 6 * 3600);
     const { rows: cls } = await pool.query<{ id: number }>('SELECT id FROM classes WHERE id = $1 AND member_id = $2', [classId, me.id]);
     if (!cls[0]) throw new HttpError(404, 'Pick one of your classes');
+    // Offline recordings carry the phone's id: a retried upload returns the lecture it already made.
+    const clientId = typeof req.query.clientId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(req.query.clientId) ? req.query.clientId : null;
+    if (clientId) {
+      const { rows: dup } = await pool.query<{ id: number }>('SELECT id FROM lectures WHERE member_id = $1 AND client_id = $2', [me.id, clientId]);
+      if (dup[0]) {
+        const again: UploadLectureResponse = { lecture: await lectureView(dup[0].id, me.id) };
+        res.status(200).json(again);
+        return;
+      }
+    }
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length < 10) throw new HttpError(400, 'The recording was empty');
     const mime = (req.headers['content-type'] ?? 'audio/webm').split(';')[0] ?? 'audio/webm';
@@ -156,14 +166,17 @@ lectureUploadRouter.post(
     const file = path.join(dir, `${randomUUID()}.${EXT[mime] ?? 'webm'}`);
     await writeFile(file, body);
     const t = today();
+    // Recorded offline and uploaded later: keep the day it was actually recorded (up to 2 weeks back).
+    const rq = typeof req.query.recordedOn === 'string' ? req.query.recordedOn : '';
+    const recordedOn = /^\d{4}-\d{2}-\d{2}$/.test(rq) && rq <= t && rq >= addDays(t, -14) ? rq : t;
     // Scaffold by how many lectures this class already has.
     const { rows: prior } = await pool.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM lectures WHERE class_id = $1 AND status <> 'failed'", [classId]);
     const n = prior[0]?.n ?? 0;
     const scaffold = n >= 5 ? 'key_points' : n >= 2 ? 'summary' : 'none';
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO lectures (member_id, class_id, recorded_on, duration_s, audio_path, scaffold, revealed)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [me.id, classId, t, durationS, file, scaffold, scaffold === 'none'],
+      `INSERT INTO lectures (member_id, class_id, recorded_on, duration_s, audio_path, scaffold, revealed, client_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [me.id, classId, recordedOn, durationS, file, scaffold, scaffold === 'none', clientId],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('lecture insert returned nothing');
