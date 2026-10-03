@@ -512,3 +512,9 @@ h2 { font-size: 19px; line-height: 1.25; }
 .tips ul { padding-left: 18px; }
 .tips li + li { margin-top: 8px; }
 .steps li { margin: 10px 0; }
+/* Hana's face (components/NavIcon HanaFace): always a circle. */
+.hana-face { border-radius: 50%; object-fit: cover; flex: none; display: inline-block; vertical-align: middle; }
+.hana-fab { overflow: hidden; padding: 0; }
+.hana-fab .hana-face { width: 100%; height: 100%; }
+.chat-title { display: flex; align-items: center; gap: 12px; }
+.chat-title .hana-face { border: 2px solid var(--sun); }

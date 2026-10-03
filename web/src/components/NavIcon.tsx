@@ -42,9 +42,17 @@ const P: Record<string, string> = {
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/><circle cx="12" cy="12" r="6.3"/>',
 };
 
-export const NAV_ICON_KEYS = Object.keys(P);
+export const NAV_ICON_KEYS = [...Object.keys(P), 'hana'];
+
+/** Hana's portrait (web/public/images/hana-face.webp) — wherever Hana appears. */
+export const HANA_FACE = '/images/hana-face.webp';
+
+export function HanaFace({ size = 20, className = '' }: { size?: number; className?: string }) {
+  return <img className={`hana-face ${className}`.trim()} src={HANA_FACE} width={size} height={size} alt="" aria-hidden="true" decoding="async" />;
+}
 
 export function NavIcon({ name, size = 20 }: { name: string; size?: number }) {
+  if (name === 'hana') return <HanaFace size={size} className="navicon" />;
   const body = P[name] ?? P.everything ?? '';
   return (
     <svg

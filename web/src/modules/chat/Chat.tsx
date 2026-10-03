@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { HanaFace } from '../../components/NavIcon';
 import { useSession } from '../../session';
 
 const COPY: Record<ChatMode, { title: string; intro: string; placeholder: string }> = {
   companion: {
-    title: '💬 Ask Hana',
+    title: 'Ask Hana',
     intro: 'Hana can see your day, your tasks, this week’s meals and the grocery list. One clear next step at a time.',
     placeholder: 'What’s on your mind?',
   },
   tutor: {
-    title: '📚 Homework helper',
+    title: 'Homework helper',
     intro: 'Hana helps you figure it out — she won’t just give you the answer. That’s her one rule.',
     placeholder: 'What are you working on?',
   },
@@ -77,7 +78,10 @@ export default function Chat({ mode }: { mode: ChatMode }) {
 
   return (
     <section className="chat">
-      <h1>{copy.title}</h1>
+      <h1 className="chat-title">
+        <HanaFace size={44} />
+        {copy.title}
+      </h1>
       <p className="muted small">{copy.intro}</p>
       {lectureId && <p className="pill sun">Quiz mode: questions from your lecture</p>}
       {!data.available && <p className="warn">Hana isn’t set up yet — a grown-up needs to add the AI key on the server.</p>}

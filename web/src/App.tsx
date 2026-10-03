@@ -16,7 +16,7 @@ import Join from './Join';
 import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
-import { NavIcon } from './components/NavIcon';
+import { HanaFace, NavIcon } from './components/NavIcon';
 import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
@@ -189,7 +189,7 @@ function Shell() {
       <Shortcuts enabled={wide} />
       {nav.hana && location.pathname !== '/hana' && (
         <Link to="/hana" className="hana-fab" aria-label="Ask Hana" data-testid="hana-fab">
-          <NavIcon name="chat" size={26} />
+          <HanaFace size={52} />
         </Link>
       )}
       {!sidebar && (

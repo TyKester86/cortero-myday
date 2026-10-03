@@ -2222,7 +2222,12 @@ async function uiGate() {
     await page.getByTestId('today-adult').waitFor({ timeout: 10000 });
     eq('phone: a grown-up’s home is the merged Today; tabs are Today · Plan · Family · Money · Me', (await page.locator('nav.tabs a small').allInnerTexts()).map((t) => t.toLowerCase()), ['today', 'plan', 'family', 'money', 'me']);
     eq('each tab has its line icon', await page.locator('nav.tabs a svg.navicon').count(), 5);
-    eq('Hana button uses the chat icon', await page.getByTestId('hana-fab').locator('svg.navicon').count(), 1);
+    eq('Hana button shows her face (local image, not an emoji)', await page.getByTestId('hana-fab').locator('img.hana-face').getAttribute('src'), '/images/hana-face.webp');
+    check('…and it loads (served from the app, not hotlinked)', await page.waitForFunction(() => { const i = document.querySelector('[data-testid="hana-fab"] img.hana-face'); return !!i && i.complete && i.naturalWidth > 0; }, null, { timeout: 10000 }).then(() => true, () => false));
+    await page.getByTestId('hana-fab').click();
+    await page.locator('h1.chat-title img.hana-face').waitFor({ timeout: 10000 });
+    eq('Ask Hana header: her face + “Ask Hana”, no emoji', (await page.locator('h1.chat-title').textContent()).trim(), 'Ask Hana');
+    await page.goto(`${BASE}/`);
     await page.getByTestId('kids-glance').waitFor({ timeout: 10000 });
     check('Today shows what’s next, the workout and meals, and the kids at a glance', (await page.getByTestId('next-up').count()) === 1 && (await page.getByTestId('kids-glance').count()) === 1);
     await page.getByRole('button', { name: 'Menu' }).click();
@@ -2260,7 +2265,7 @@ async function uiGate() {
     await dp.getByLabel('Find a page').fill('');
     const sideTop = await dp.getByTestId('sidebar').locator('.navgroup').first().locator('a').allInnerTexts().then((t) => t.map((x) => x.trim()));
     eq('desktop sidebar top: Today · Plan · Family · Money · Me (no “Weekly plan” / “Everything”)', sideTop, ['Today', 'Plan', 'Family', 'Money', 'Me']);
-    eq('sidebar links use the line icons (svg), not emoji', await dp.getByTestId('sidebar').locator('a').evaluateAll((as) => as.every((a) => a.querySelector('svg.navicon') && !/\p{Extended_Pictographic}/u.test(a.textContent ?? ''))), true);
+    eq('sidebar links use the line icons (svg), not emoji', await dp.getByTestId('sidebar').locator('a').evaluateAll((as) => as.every((a) => a.querySelector('svg.navicon, img.hana-face') && !/\p{Extended_Pictographic}/u.test(a.textContent ?? ''))), true);
     await dp.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
     await dp.keyboard.press('?');
     check('“?” opens the shortcut help', await dp.getByTestId('shortcut-help').isVisible());
@@ -2279,6 +2284,7 @@ async function uiGate() {
     await dp.getByLabel('Country of origin').selectOption('Spanish');
     await dp.getByLabel('Region of origin').selectOption('Basque Country');
     await dp.waitForResponse((r) => r.url().includes('region=Basque'));
+    await dp.waitForFunction(() => document.querySelectorAll('.mealcard').length === 1, null, { timeout: 5000 }).catch(() => undefined);
     eq('UI: country + region filter narrows the library', await dp.locator('.mealcard').count(), 1);
     check('UI: cards show country · region and nutrition', (await dp.getByTestId('meal-origin').first().innerText()).includes('Spanish · Basque Country') && /cal/.test(await dp.getByTestId('meal-nutrition').first().innerText()));
 

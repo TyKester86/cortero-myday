@@ -95,7 +95,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/rewards', element: <Rewards />, audience: 'all', kidsOnly: true, nav: { label: 'Rewards', icon: 'rewards', group: 'family', tabFor: ['kid'] } },
   { path: '/score', element: <Score />, audience: 'all', nav: { label: 'My progress', icon: 'my-progress', group: 'me', tabFor: ['kid'], tabLabel: 'Score' } },
   { path: '/day', element: <MyDay />, audience: 'adult', nav: { label: 'My day', icon: 'my-day', group: 'me' } },
-  { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', module: 'hana', nav: { label: 'Ask Hana', icon: 'chat', group: 'connect' } },
+  { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', module: 'hana', nav: { label: 'Ask Hana', icon: 'hana', group: 'connect' } },
   { path: '/health', element: <HealthToday />, audience: 'all', module: 'health', nav: { label: 'Health', icon: 'health', group: 'me' } },
   { path: '/health/plan', element: <HealthPlan />, audience: 'all', module: 'health' },
   { path: '/meals', element: <Meals />, audience: 'all', module: 'meals', nav: { label: 'Meals', icon: 'meals', group: 'home' } },
