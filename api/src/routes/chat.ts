@@ -5,9 +5,10 @@
  * stored server-side and the model sees the last 10 turns.
  */
 import { Router, type Request } from 'express';
-import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction, HouseholdMember } from '@myday/shared';
+import type { CalRepeat, ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction, HouseholdMember } from '@myday/shared';
 import { pool } from '../db.js';
-import { today } from '../lib/dates.js';
+import { addDays, today } from '../lib/dates.js';
+import { datesOf } from '../lib/recur.js';
 import { logEvent } from '../lib/events.js';
 import { decideAction, hanaKit, pendingActions } from '../lib/hana.js';
 import { HttpError, idParam, str } from '../lib/http.js';
@@ -94,6 +95,18 @@ async function dayContext(me: HouseholdMember, mode: ChatMode): Promise<string> 
   if (meals.length) {
     bits.push(`This week’s meals: ${meals.map((m) => (m.day ? `${isoToWeekday(m.day)}: ` : '') + m.title).join('; ')}`);
   }
+  // The household calendar, today and tomorrow.
+  const { rows: ev } = await pool.query<{ title: string; starts_on: string; start_time: string | null; repeat: CalRepeat; repeat_until: string | null; adults_only: boolean }>(
+    'SELECT title, starts_on::text AS starts_on, start_time::text AS start_time, repeat, repeat_until::text AS repeat_until, adults_only FROM calendar_events',
+  );
+  const cal: string[] = [];
+  for (const e of ev) for (const d of datesOf(e, t, addDays(t, 1))) cal.push(`${d === t ? 'today' : 'tomorrow'}${e.start_time ? ` ${e.start_time.slice(0, 5)}` : ''} ${e.title}`);
+  if (cal.length) bits.push(`On the household calendar: ${cal.sort().join('; ')}`);
+  // What they asked Hana to remember, and reminders still to come.
+  const { rows: mem } = await pool.query<{ id: number; fact: string }>('SELECT id, fact FROM hana_memories WHERE member_id = $1 ORDER BY id LIMIT 100', [me.id]);
+  if (mem.length) bits.push(`Things you remember about ${me.name} (memory ids): ${mem.map((m) => `#${m.id} ${m.fact}`).join('; ')}`);
+  const { rows: rem } = await pool.query<{ text: string; remind_at: Date }>('SELECT text, remind_at FROM hana_reminders WHERE member_id = $1 AND sent_at IS NULL ORDER BY remind_at LIMIT 10', [me.id]);
+  if (rem.length) bits.push(`Reminders you set for them: ${rem.map((r) => `${r.text} (${r.remind_at.toISOString()})`).join('; ')}`);
   return bits.join('. ');
 }
 
@@ -129,9 +142,12 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     (ctx ? `What you can see of their day: ${ctx}. ` : '') +
     'Be brief (under 120 words unless they ask for more), concrete, encouraging. ADHD-friendly: one clear next step, no ' +
     'lectures, no shame. Reference their day when useful. Never invent data you were not given. ' +
-    'You can act in MyDay with your tools (tasks, groceries, notes, homework, workouts, bills) — when they ask you to do ' +
-    'something, do it rather than telling them how. Deleting or clearing anything only happens after they tap Confirm, so ' +
-    'never say a delete is done until it is.'
+    'You are their personal assistant and can act in MyDay with your tools: tasks, groceries, notes, homework, workouts, bills, ' +
+    'the shared household calendar (add and read events), push reminders at a time ("remind me at 5 to…"), planning meals from ' +
+    'the recipe library, kids’ chores, how the kids are doing, and a read-only money picture. When they ask you to do something, ' +
+    'do it rather than telling them how. When they tell you a lasting preference or fact about themselves or their family ' +
+    '("I’m vegetarian", "soccer is every Tuesday"), save it with remember. Times are the household’s local time. Deleting, ' +
+    'clearing or forgetting anything only happens after they tap Confirm, so never say it is done until it is.'
   );
 }
 

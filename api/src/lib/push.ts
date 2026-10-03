@@ -11,11 +11,12 @@
  * been sent without contacting a push service.
  */
 import webpush from 'web-push';
-import type { DateStr } from '@myday/shared';
+import type { CalRepeat, DateStr } from '@myday/shared';
 import { config } from '../config.js';
 import { asSystem, inHousehold, pool } from '../db.js';
 import { addDays, isoWeekday, today } from './dates.js';
 import { logEvent } from './events.js';
+import { datesOf } from './recur.js';
 
 /** Whole words MyDay never sends (case-insensitive). */
 export const BANNED_WORDS = [
@@ -88,6 +89,14 @@ export interface Prefs {
 export async function digestFor(memberId: number, kind: 'kid' | 'adult', p: Pick<Prefs, 'bills' | 'chores' | 'homework'>): Promise<{ title: string; body: string } | null> {
   const t = today();
   const bits: string[] = [];
+  // The household calendar today, for this person (or everyone); count only, so event titles never trip the copy rules.
+  const { rows: ev } = await pool.query<{ starts_on: string; repeat: CalRepeat; repeat_until: string | null; adults_only: boolean; people: number[] | null }>(
+    `SELECT e.starts_on::text AS starts_on, e.repeat, e.repeat_until::text AS repeat_until, e.adults_only,
+            (SELECT array_agg(p.member_id) FROM calendar_event_people p WHERE p.event_id = e.id) AS people
+       FROM calendar_events e`,
+  );
+  const mine = ev.filter((e) => (!e.adults_only || kind === 'adult') && (!e.people?.length || e.people.includes(memberId)) && datesOf(e, t, t).length > 0).length;
+  if (mine) bits.push(`${mine} thing${mine === 1 ? '' : 's'} on the calendar today`);
   if (p.chores) {
     const { rows } = await pool.query<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM chores c WHERE c.active AND c.member_id = $1 AND $2 = ANY(c.days)

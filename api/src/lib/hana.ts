@@ -9,11 +9,13 @@
  */
 import type { BetaTool } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { z } from 'zod';
-import { ENERGIES, PRIORITIES, type HanaAction, type HouseholdMember } from '@myday/shared';
+import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type HanaAction, type HouseholdMember, type Weekday } from '@myday/shared';
 import { pool } from '../db.js';
 import { profileFor, plannedSession } from '../routes/health.js';
+import { datesOf } from './recur.js';
+import { kidsOverview } from '../routes/family.js';
 import type { ToolKit } from './ai.js';
-import { addDays, today } from './dates.js';
+import { addDays, localToInstant, today, weekdayToIso } from './dates.js';
 import { logEvent } from './events.js';
 import { HttpError } from './http.js';
 import { listMembers } from './members.js';
@@ -30,6 +32,7 @@ interface ToolDef<S extends z.ZodType> {
 
 const def = <S extends z.ZodType>(d: ToolDef<S>): ToolDef<S> => d;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 async function ownTask(me: HouseholdMember, id: number): Promise<string> {
   const { rows } = await pool.query<{ task: string }>('SELECT task FROM tasks WHERE id = $1 AND member_id = $2', [id, me.id]);
@@ -162,6 +165,222 @@ export const HANA_TOOLS = [
       return `Now tracking ${i.name}: $${i.amount}${i.due_day ? ` due on the ${i.due_day}` : ''}${i.autopay ? ' (autopay)' : ''}.`;
     },
   }),
+  def({
+    name: 'add_calendar_event',
+    description:
+      'Put an event on the shared household calendar. date is YYYY-MM-DD; start_time/end_time are HH:MM (24h) or null for all day. ' +
+      'for_people is a list of first names from the household ([] = everyone). repeat is none|daily|weekly|monthly|yearly. ' +
+      'remind_minutes sends a push that many minutes before (timed events only) or null.',
+    destructive: false,
+    schema: z.object({
+      title: z.string().min(1).max(120),
+      date: z.string().regex(DATE),
+      start_time: z.string().regex(TIME).nullable(),
+      end_time: z.string().regex(TIME).nullable(),
+      for_people: z.array(z.string().max(40)).max(20),
+      repeat: z.enum(CAL_REPEATS),
+      remind_minutes: z.number().int().min(0).max(10080).nullable(),
+      location: z.string().max(200),
+    }),
+    json: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        start_time: { type: ['string', 'null'], description: 'HH:MM 24h, or null for all day' },
+        end_time: { type: ['string', 'null'] },
+        for_people: { type: 'array', items: { type: 'string' } },
+        repeat: { type: 'string', enum: [...CAL_REPEATS] },
+        remind_minutes: { type: ['integer', 'null'] },
+        location: { type: 'string' },
+      },
+      required: ['title', 'date', 'start_time', 'end_time', 'for_people', 'repeat', 'remind_minutes', 'location'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Add “${i.title}” to the calendar on ${i.date}${i.start_time ? ` at ${i.start_time}` : ''}`,
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'Only grown-ups add calendar events');
+      const members = await listMembers();
+      const people = i.for_people.map((n) => {
+        const m = members.find((x) => x.name.toLowerCase() === n.trim().toLowerCase());
+        if (!m) throw new HttpError(404, `There's no ${n} in this household`);
+        return m.id;
+      });
+      if (i.start_time && i.end_time && i.end_time <= i.start_time) throw new HttpError(400, 'The end time is before the start');
+      const { rows } = await pool.query<{ id: number }>(
+        `INSERT INTO calendar_events (title, location, starts_on, start_time, end_time, repeat, remind_minutes, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+        [i.title, i.location, i.date, i.start_time, i.start_time ? i.end_time : null, i.repeat, i.start_time ? i.remind_minutes : null, me.id],
+      );
+      const id = rows[0]?.id ?? 0;
+      for (const p of [...new Set(people)]) await pool.query('INSERT INTO calendar_event_people (event_id, member_id) VALUES ($1, $2)', [id, p]);
+      const who = people.length ? ` for ${members.filter((m) => people.includes(m.id)).map((m) => m.name).join(', ')}` : '';
+      return `Added “${i.title}” to the calendar on ${i.date}${i.start_time ? ` at ${i.start_time}` : ' (all day)'}${who}${i.repeat !== 'none' ? `, repeating ${i.repeat}` : ''}.`;
+    },
+  }),
+  def({
+    name: 'get_calendar',
+    description: 'Read the household calendar: what is on it from a date (YYYY-MM-DD, or null for today) for the next N days (1–31).',
+    destructive: false,
+    schema: z.object({ from: z.string().regex(DATE).nullable(), days: z.number().int().min(1).max(31) }),
+    json: {
+      type: 'object',
+      properties: { from: { type: ['string', 'null'] }, days: { type: 'integer' } },
+      required: ['from', 'days'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Look at the calendar (${i.days} day${i.days === 1 ? '' : 's'})`,
+    run: async (me, i) => {
+      const from = i.from ?? today();
+      const to = addDays(from, i.days - 1);
+      const { rows } = await pool.query<{ id: number; title: string; starts_on: string; start_time: string | null; repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'; repeat_until: string | null; adults_only: boolean; people: string[] | null }>(
+        `SELECT e.id, e.title, e.starts_on::text AS starts_on, e.start_time::text AS start_time, e.repeat, e.repeat_until::text AS repeat_until, e.adults_only,
+                (SELECT array_agg(m.name) FROM calendar_event_people p JOIN household_members m ON m.id = p.member_id WHERE p.event_id = e.id) AS people
+           FROM calendar_events e`,
+      );
+      const lines: string[] = [];
+      for (const r of rows) {
+        if (r.adults_only && me.kind !== 'adult') continue;
+        for (const d of datesOf(r, from, to)) lines.push(`${d}${r.start_time ? ` ${r.start_time.slice(0, 5)}` : ' (all day)'} ${r.title}${r.people?.length ? ` — ${r.people.join(', ')}` : ''}`);
+      }
+      lines.sort();
+      return lines.length ? `Calendar ${from} to ${to}:\n${lines.join('\n')}` : `Nothing on the calendar from ${from} to ${to}.`;
+    },
+  }),
+  def({
+    name: 'set_reminder',
+    description: 'Remind this person with a push notification at a time: date YYYY-MM-DD and time HH:MM (24h, household time). Use for "remind me at 5 to…".',
+    destructive: false,
+    schema: z.object({ text: z.string().min(1).max(200), date: z.string().regex(DATE), time: z.string().regex(TIME) }),
+    json: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'What to remind them about' }, date: { type: 'string' }, time: { type: 'string', description: 'HH:MM 24h' } },
+      required: ['text', 'date', 'time'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Remind you “${i.text}” on ${i.date} at ${i.time}`,
+    run: async (me, i) => {
+      const at = localToInstant(i.date, i.time);
+      if (at.getTime() < Date.now() - 60_000) throw new HttpError(400, 'That time has already passed');
+      await pool.query('INSERT INTO hana_reminders (member_id, text, remind_at) VALUES ($1, $2, $3)', [me.id, i.text, at]);
+      return `Okay — I'll send you a reminder “${i.text}” on ${i.date} at ${i.time}.`;
+    },
+  }),
+  def({
+    name: 'remember',
+    description: 'Save something about this person to remember in future chats (a preference, a routine, a fact they told you). Keep it short.',
+    destructive: false,
+    schema: z.object({ fact: z.string().min(1).max(300) }),
+    json: { type: 'object', properties: { fact: { type: 'string' } }, required: ['fact'], additionalProperties: false },
+    summary: (i) => `Remember: ${i.fact}`,
+    run: async (me, i) => {
+      const { rows } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM hana_memories WHERE member_id = $1', [me.id]);
+      if ((rows[0]?.n ?? 0) >= 100) throw new HttpError(409, 'I already remember 100 things — remove a few on the Ask Hana page first');
+      await pool.query('INSERT INTO hana_memories (member_id, fact) VALUES ($1, $2)', [me.id, i.fact]);
+      return `Got it — I'll remember that.`;
+    },
+  }),
+  def({
+    name: 'plan_meal',
+    description: "Add a meal from the MyDay recipe library to this person's week, by (part of) its name; day is Mon..Sun or null for no day yet.",
+    destructive: false,
+    schema: z.object({ meal: z.string().min(2).max(120), day: z.enum(WEEKDAYS).nullable() }),
+    json: {
+      type: 'object',
+      properties: { meal: { type: 'string' }, day: { type: ['string', 'null'], enum: [...WEEKDAYS, null] } },
+      required: ['meal', 'day'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Plan ${i.meal}${i.day ? ` on ${i.day}` : ''}`,
+    run: async (me, i) => {
+      const { rows } = await pool.query<{ id: number; title: string }>(
+        `SELECT id, title FROM meals WHERE title ILIKE '%' || $1 || '%' ORDER BY (lower(title) = lower($1)) DESC, length(title), id LIMIT 1`,
+        [i.meal.trim()],
+      );
+      const meal = rows[0];
+      if (!meal) throw new HttpError(404, `I couldn't find “${i.meal}” in the recipe library`);
+      const day = i.day ? weekdayToIso(i.day as Weekday) : null;
+      await pool.query(
+        `INSERT INTO meal_plan_entries (member_id, meal_id, day, slot) SELECT $1, $2, $3, NULL
+          WHERE NOT EXISTS (SELECT 1 FROM meal_plan_entries WHERE member_id = $1 AND meal_id = $2 AND day IS NOT DISTINCT FROM $3)`,
+        [me.id, meal.id, day],
+      );
+      return `Added ${meal.title} to your week${i.day ? ` on ${i.day}` : ''}. Its ingredients go on the grocery list when you build it.`;
+    },
+  }),
+  def({
+    name: 'add_chore',
+    description: 'Give one of the household kids a recurring chore: kid first name, chore name, days (Mon..Sun), points (0–100).',
+    destructive: false,
+    schema: z.object({ kid_name: z.string().min(1).max(40), chore: z.string().min(1).max(80), days: z.array(z.enum(WEEKDAYS)).min(1).max(7), points: z.number().int().min(0).max(100) }),
+    json: {
+      type: 'object',
+      properties: { kid_name: { type: 'string' }, chore: { type: 'string' }, days: { type: 'array', items: { type: 'string', enum: [...WEEKDAYS] } }, points: { type: 'integer' } },
+      required: ['kid_name', 'chore', 'days', 'points'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Give ${i.kid_name} the chore “${i.chore}” (${i.days.join(' ')})`,
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'Only grown-ups assign chores');
+      const kid = (await listMembers()).find((m) => m.kind === 'kid' && m.name.toLowerCase() === i.kid_name.trim().toLowerCase());
+      if (!kid) throw new HttpError(404, `There's no kid named ${i.kid_name} in this household`);
+      try {
+        await pool.query('INSERT INTO chores (name, member_id, days, points, created_on) VALUES ($1, $2, $3, $4, $5)', [
+          i.chore,
+          kid.id,
+          [...new Set(i.days)].map((d) => weekdayToIso(d as Weekday)),
+          i.points,
+          today(),
+        ]);
+      } catch (e) {
+        if ((e as { code?: unknown }).code === '23505') throw new HttpError(409, `${kid.name} already has a chore called ${i.chore}`);
+        throw e;
+      }
+      return `${kid.name} now has “${i.chore}” on ${i.days.join(' ')} for ${i.points} points.`;
+    },
+  }),
+  def({
+    name: 'kids_overview',
+    description: "How the household's kids are doing today: chores done, points, homework open/overdue, reward requests, last sign-in.",
+    destructive: false,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, required: [], additionalProperties: false },
+    summary: () => 'Check on the kids',
+    run: async (me) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'That’s for grown-ups');
+      const kids = await kidsOverview();
+      if (!kids.length) return 'There are no kids on the roster.';
+      return kids
+        .map((k) => `${k.member.name}: chores ${k.choresDone}/${k.choresToday}, ${k.pointsToday} points today, ${k.bank} to spend, ${k.openHomework} homework open${k.overdueHomework ? ` (${k.overdueHomework} past due)` : ''}${k.pendingRewards ? `, ${k.pendingRewards} reward request(s)` : ''}`)
+        .join('\n');
+    },
+  }),
+  def({
+    name: 'money_summary',
+    description: "A read-only money picture: linked account balances (if a bank is linked), this person's tracked bills and which are due in the next 7 days, and recent spending.",
+    destructive: false,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, required: [], additionalProperties: false },
+    summary: () => 'Look at the money picture',
+    run: async (me) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'That’s for grown-ups');
+      const out: string[] = [];
+      const { rows: acc } = await pool.query<{ name: string; mask: string; current: string | null; available: string | null }>('SELECT name, mask, current, available FROM money_accounts ORDER BY id LIMIT 12');
+      if (acc.length) out.push(`Accounts: ${acc.map((a) => `${a.name}${a.mask ? ` …${a.mask}` : ''} $${Number(a.available ?? a.current ?? 0).toFixed(2)}`).join('; ')}`);
+      else out.push('No bank linked yet.');
+      const { rows: bills } = await pool.query<{ name: string; amount: string; due_day: number | null; autopay: boolean }>('SELECT name, amount, due_day, autopay FROM bills WHERE member_id = $1 ORDER BY due_day NULLS LAST', [me.id]);
+      const t = today();
+      const soon = new Set([0, 1, 2, 3, 4, 5, 6].map((n) => Number(addDays(t, n).slice(8))));
+      if (bills.length) {
+        out.push(`Bills: ${bills.map((b) => `${b.name} $${Number(b.amount)}${b.due_day ? ` (day ${b.due_day})` : ''}${b.autopay ? ' autopay' : ''}`).join('; ')}`);
+        const due = bills.filter((b) => b.due_day && soon.has(b.due_day) && !b.autopay);
+        out.push(due.length ? `Due in the next 7 days (not autopay): ${due.map((b) => b.name).join(', ')}` : 'Nothing due in the next 7 days that isn’t on autopay.');
+      }
+      const { rows: sp } = await pool.query<{ total: string | null }>("SELECT SUM(amount) AS total FROM money_transactions WHERE amount > 0 AND day > $1", [addDays(t, -30)]);
+      if (sp[0]?.total) out.push(`Spent in the last 30 days: $${Number(sp[0].total).toFixed(2)}`);
+      return out.join('\n');
+    },
+  }),
   // ---------- destructive: proposed, then confirmed in the chat ----------
   def({
     name: 'delete_task',
@@ -199,6 +418,19 @@ export const HANA_TOOLS = [
       const r = await pool.query<{ name: string }>('DELETE FROM bills WHERE id = $1 AND member_id = $2 RETURNING name', [i.bill_id, me.id]);
       if (!r.rows[0]) throw new HttpError(404, `There is no bill #${i.bill_id}`);
       return `Stopped tracking ${r.rows[0].name}.`;
+    },
+  }),
+  def({
+    name: 'forget',
+    description: 'Forget one thing you remembered about this person, by memory id (from the list you can see).',
+    destructive: true,
+    schema: z.object({ memory_id: z.number().int() }),
+    json: { type: 'object', properties: { memory_id: { type: 'integer' } }, required: ['memory_id'], additionalProperties: false },
+    summary: (i) => `Forget memory #${i.memory_id}`,
+    run: async (me, i) => {
+      const r = await pool.query<{ fact: string }>('DELETE FROM hana_memories WHERE id = $1 AND member_id = $2 RETURNING fact', [i.memory_id, me.id]);
+      if (!r.rows[0]) throw new HttpError(404, `There is no memory #${i.memory_id}`);
+      return `Forgotten: “${r.rows[0].fact}”.`;
     },
   }),
 ] as const;
@@ -244,6 +476,21 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if (/^move (?:my )?workout to tomorrow/i.test(m)) return [{ name: 'move_workout', input: { to: 'tomorrow' } }];
   if (/^clear (?:the )?(?:checked|done)(?:[- ]off)? groceries/i.test(m)) return [{ name: 'clear_checked_groceries', input: {} }];
   if ((x = m.match(/^(?:note|remember):?\s+(.+)$/i))) return [{ name: 'capture_note', input: { note: x[1] } }];
+  if ((x = m.match(/^remind me (?:on (\d{4}-\d{2}-\d{2}) )?at (\d{1,2}):(\d{2}) to (.+)$/i))) {
+    return [{ name: 'set_reminder', input: { text: x[4], date: x[1] ?? today(), time: `${String(x[2]).padStart(2, '0')}:${x[3]}` } }];
+  }
+  if ((x = m.match(/^put (.+?) on the calendar (?:on )?(\d{4}-\d{2}-\d{2})(?: at (\d{2}:\d{2}))?(?: for (\w+))?$/i))) {
+    return [{ name: 'add_calendar_event', input: { title: x[1], date: x[2], start_time: x[3] ?? null, end_time: null, for_people: x[4] ? [x[4]] : [], repeat: 'none', remind_minutes: null, location: '' } }];
+  }
+  if (/^what['’]?s on (?:the )?calendar/i.test(m)) return [{ name: 'get_calendar', input: { from: null, days: 7 } }];
+  if ((x = m.match(/^always remember:?\s+(.+)$/i))) return [{ name: 'remember', input: { fact: x[1] } }];
+  if ((x = m.match(/^forget memory #?(\d+)/i))) return [{ name: 'forget', input: { memory_id: Number(x[1]) } }];
+  if ((x = m.match(/^plan (.+?)(?: on (Mon|Tue|Wed|Thu|Fri|Sat|Sun))?$/i))) return [{ name: 'plan_meal', input: { meal: x[1], day: x[2] ? x[2].slice(0, 1).toUpperCase() + x[2].slice(1, 3).toLowerCase() : null } }];
+  if ((x = m.match(/^give (\w+) the chore (.+?) on ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[ ,]+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)(?: for (\d+) points)?$/i))) {
+    return [{ name: 'add_chore', input: { kid_name: x[1], chore: x[2], days: (x[3] ?? '').split(/[ ,]+/).map((d) => d.slice(0, 1).toUpperCase() + d.slice(1, 3).toLowerCase()), points: Number(x[4] ?? 10) } }];
+  }
+  if (/^how are the kids/i.test(m)) return [{ name: 'kids_overview', input: {} }];
+  if (/^how['’]?s (?:my|our) money/i.test(m)) return [{ name: 'money_summary', input: {} }];
   if ((x = m.match(/^add homework for (\w+):\s*(.+?)(?: due (\d{4}-\d{2}-\d{2}))?$/i))) {
     return [{ name: 'add_homework', input: { kid_name: x[1], assignment: x[2], subject: '', due: x[3] ?? null } }];
   }

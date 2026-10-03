@@ -63,7 +63,7 @@ function ratio(pos: number, neg: number): string {
   return pos > 0 ? '∞' : '—';
 }
 
-async function kidsOverview(): Promise<KidOverview[]> {
+export async function kidsOverview(): Promise<KidOverview[]> {
   const t = today();
   const ws = weekStart(t);
   const kids = (await listMembers()).filter((m) => m.kind === 'kid');

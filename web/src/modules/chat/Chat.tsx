@@ -125,6 +125,58 @@ export default function Chat({ mode }: { mode: ChatMode }) {
           Send
         </button>
       </form>
+      {mode === 'companion' && <HanaKnows refreshKey={data.history.length} />}
     </section>
+  );
+}
+
+interface Knows {
+  memories: Array<{ id: number; fact: string; at: string }>;
+  reminders: Array<{ id: number; text: string; at: string }>;
+}
+
+/** What Hana remembers about you and the reminders she'll send — yours to see and delete. */
+function HanaKnows({ refreshKey }: { refreshKey: number }) {
+  const { data, reload } = useLoad<Knows>(`/api/hana/memory?r=${refreshKey}`);
+  if (!data || (!data.memories.length && !data.reminders.length)) return null;
+  const when = (iso: string): string => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return (
+    <details className="card" data-testid="hana-knows">
+      <summary>
+        <b>What Hana remembers ({data.memories.length}) · reminders ({data.reminders.length})</b>
+      </summary>
+      {data.reminders.length > 0 && (
+        <>
+          <h3 className="ing-head">Reminders coming up</h3>
+          <ul className="plain rows">
+            {data.reminders.map((r) => (
+              <li key={r.id} data-testid="hana-reminder">
+                <span>
+                  {r.text} <small className="muted">· {when(r.at)}</small>
+                </span>
+                <button className="link danger small" onClick={() => void api(`/api/hana/reminders/${r.id}`, 'DELETE').then(reload)}>
+                  Cancel
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {data.memories.length > 0 && (
+        <>
+          <h3 className="ing-head">Things she remembers about you</h3>
+          <ul className="plain rows">
+            {data.memories.map((m) => (
+              <li key={m.id} data-testid="hana-memory">
+                <span>{m.fact}</span>
+                <button className="link danger small" onClick={() => void api(`/api/hana/memory/${m.id}`, 'DELETE').then(reload)}>
+                  Forget
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </details>
   );
 }

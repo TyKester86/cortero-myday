@@ -107,6 +107,7 @@ export default function Settings() {
         ) : !p?.enabled ? (
           <>
             {!notif.data.vapidPublicKey && <p className="muted small">Push isn't set up on this server yet — your choices are saved for when it is.</p>}
+            <InstallHint />
             <button className="btn small" onClick={() => void enablePush()}>
               Turn on notifications
             </button>
@@ -202,5 +203,23 @@ export default function Settings() {
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Phones only deliver web push to an installed app: on iPhone that means
+ * Share → Add to Home Screen first (iOS 16.4+); Android/desktop Chrome can
+ * install from the browser prompt.
+ */
+function InstallHint() {
+  const standalone = typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  if (standalone) return null;
+  return (
+    <p className="small" data-testid="install-hint">
+      {ios
+        ? 'On iPhone, add MyDay to your Home Screen first (Share → Add to Home Screen), open it from there, then turn on notifications.'
+        : 'Tip: install MyDay (your browser menu → Install app / Add to Home screen) so reminders arrive like any other app.'}
+    </p>
   );
 }
