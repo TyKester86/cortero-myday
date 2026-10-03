@@ -5,6 +5,7 @@ import { api, useLoad } from '../../api';
 import QuickNote from '../../components/QuickNote';
 import { day as fmtDay, due as fmtDue } from '../../dates';
 import { useSession } from '../../session';
+import { TodayOnCalendar } from '../calendar/Calendar';
 
 const greeting = (h: number): string => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
 
@@ -115,6 +116,7 @@ export default function Today() {
       <QuickNote />
       {msg && <p className="error">{msg}</p>}
       {hh && <SetupChecklist hh={hh} program={!!health.data?.program} meals={meals.data?.meals.length ?? 0} notif={notif.data} />}
+      <TodayOnCalendar />
       <div className="desk-grid two">
         <div>
           {evening && closeOut}

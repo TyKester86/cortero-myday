@@ -34,9 +34,10 @@ function OfflineBar() {
 /** Sub-tabs inside a section, so related pages are one tap apart (grown-ups). */
 const SECTIONS: Array<{ paths: string[]; links: Array<{ to: string; label: string; module?: ModuleKey; kids?: boolean }> }> = [
   {
-    paths: ['/weekly', '/meals', '/meals/plan', '/meals/grocery'],
+    paths: ['/weekly', '/calendar', '/meals', '/meals/plan', '/meals/grocery'],
     links: [
       { to: '/weekly', label: 'Week' },
+      { to: '/calendar', label: 'Calendar' },
       { to: '/meals', label: 'Meals', module: 'meals' },
       { to: '/meals/plan', label: 'This week’s menu', module: 'meals' },
       { to: '/meals/grocery', label: 'Grocery list', module: 'meals' },

@@ -1521,6 +1521,55 @@ async function circles() {
 }
 
 async function careTeam() {
+  section('household calendar: events, repeats, who it’s for, grown-ups-only, kids read-only');
+  const calToday = (await ty.get('/api/calendar')).data.from;
+  const plus = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  const roster = (await ty.get('/api/household')).data.members;
+  const averyId = roster.find((m) => m.key === 'avery').id;
+  const dentist = await ty.post('/api/calendar/events', { title: 'Dentist', startsOn: plus(calToday, 2), startTime: '15:30', endTime: '16:15', location: 'Main St Dental', people: [averyId] });
+  eq('a grown-up adds a timed event for Avery', [dentist.status, dentist.data.startTime, dentist.data.people], [201, '15:30', [averyId]]);
+  const soccer = (await ty.post('/api/calendar/events', { title: 'Soccer', startsOn: calToday, repeat: 'weekly', repeatUntil: plus(calToday, 27) })).data;
+  await ty.post('/api/calendar/events', { title: 'Rent', startsOn: '2026-10-31', repeat: 'monthly' });
+  await ty.post('/api/calendar/events', { title: 'Surprise party planning', startsOn: plus(calToday, 3), adultsOnly: true });
+  const cal = (await ty.get(`/api/calendar?from=${calToday}&to=${plus(calToday, 40)}`)).data;
+  eq('weekly repeats expand (every week until the end date)', cal.occurrences.filter((o) => o.eventId === soccer.id).map((o) => o.date), [calToday, plus(calToday, 7), plus(calToday, 14), plus(calToday, 21)]);
+  const rent = (await ty.get('/api/calendar?from=2026-10-01&to=2027-03-31')).data.occurrences.filter((o) => o.title === 'Rent').map((o) => o.date);
+  eq('monthly on the 31st skips short months', rent, ['2026-10-31', '2026-12-31', '2027-01-31', '2027-03-31']);
+  eq('who it’s for comes with each day', cal.occurrences.find((o) => o.title === 'Dentist').people.map((p) => p.name), ['Avery']);
+  const kidCal = (await avery.get(`/api/calendar?from=${calToday}&to=${plus(calToday, 40)}`)).data;
+  eq('kids see the calendar, but not grown-ups-only events, and can’t edit', [kidCal.occurrences.some((o) => o.title === 'Dentist'), kidCal.occurrences.some((o) => /Surprise/.test(o.title)), kidCal.canEdit, kidCal.events.length], [true, false, false, 0]);
+  eq('kids can’t add events', (await avery.post('/api/calendar/events', { title: 'Party', startsOn: calToday })).status, 403);
+  eq('end before start → 400', (await ty.post('/api/calendar/events', { title: 'x', startsOn: calToday, startTime: '10:00', endTime: '09:00' })).status, 400);
+  eq('someone from another household in “who” → 400', (await ty.post('/api/calendar/events', { title: 'x', startsOn: calToday, people: [999999] })).status, 400);
+  eq('another household never sees our calendar', (await sam.get(`/api/calendar?from=${calToday}&to=${plus(calToday, 40)}`)).data.occurrences.length, 0);
+  const moved = await ty.put(`/api/calendar/events/${dentist.data.id}`, { title: 'Dentist', startsOn: plus(calToday, 2), startTime: '16:00', people: [averyId], remindMinutes: 60 });
+  eq('edit an event (time + a reminder)', [moved.data.startTime, moved.data.remindMinutes], ['16:00', 60]);
+
+  section('household calendar: the private subscription link (Google / Apple / Outlook)');
+  eq('kids can’t make the link', (await avery.post('/api/calendar/feed')).status, 403);
+  const feed1 = (await ty.post('/api/calendar/feed')).data.url;
+  check('a private .ics link', /\/cal\/[A-Za-z0-9_-]{20,}\.ics$/.test(feed1), feed1);
+  const icsPath = (u) => u.slice(u.indexOf('/cal/'));
+  const ics = await fetch(`${BASE}${icsPath(feed1)}`);
+  const icsText = await ics.text();
+  eq('it works without signing in (calendar apps fetch it)', [ics.status, (ics.headers.get('content-type') ?? '').startsWith('text/calendar')], [200, true]);
+  check('valid iCalendar: name, events, repeats, time zone, who', icsText.startsWith('BEGIN:VCALENDAR') && /X-WR-CALNAME:Our family \(MyDay\)/.test(icsText) && /SUMMARY:Soccer/.test(icsText) && /RRULE:FREQ=WEEKLY;UNTIL=/.test(icsText) && /DTSTART;TZID=America\/Chicago:\d{8}T160000/.test(icsText) && /DESCRIPTION:For: Avery/.test(icsText) && icsText.endsWith('END:VCALENDAR\r\n'), icsText.slice(0, 300));
+  check('only a hash of the link is stored', !(await sql('SELECT token_hash FROM calendar_feeds')).some((r) => feed1.includes(r.token_hash)));
+  const feed2 = (await ty.post('/api/calendar/feed')).data.url;
+  eq('a new link replaces the old one', [(await fetch(`${BASE}${icsPath(feed1)}`)).status, (await fetch(`${BASE}${icsPath(feed2)}`)).status], [404, 200]);
+  await ty.del('/api/calendar/feed');
+  eq('turn the link off → it stops working', (await fetch(`${BASE}${icsPath(feed2)}`)).status, 404);
+  eq('a made-up link → 404', (await fetch(`${BASE}/cal/aaaaaaaaaaaaaaaaaaaaaaaa.ics`)).status, 404);
+
+  section('household calendar: push reminders, once each');
+  const remindDay = plus(calToday, 1);
+  await ty.post('/api/calendar/events', { title: 'Piano lesson', startsOn: remindDay, startTime: '17:00', remindMinutes: 30, people: [averyId] });
+  const at = (hm) => `${remindDay}T${hm}:00-05:00`; // America/Chicago in October (CDT)
+  eq('not yet (an hour before)', (await ty.post(`/api/calendar/run-reminders?at=${encodeURIComponent(at('16:00'))}`)).data.sent, 0);
+  eq('30 minutes before → one reminder', (await ty.post(`/api/calendar/run-reminders?at=${encodeURIComponent(at('16:31'))}`)).data.sent, 1);
+  eq('…never twice', (await ty.post(`/api/calendar/run-reminders?at=${encodeURIComponent(at('16:40'))}`)).data.sent, 0);
+  eq('the calendar is in your data export', ((await ty.get('/api/account/export')).data.data.calendar_events ?? []).some((e) => e.title === 'Dentist'), true);
+
   section('solo grown-ups (“Just me”): no kid or partner tools until someone joins full time');
   const { liveFeatures } = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
   const sol = new Client('solo-one');
@@ -2437,7 +2486,7 @@ async function uiGate() {
     eq('“+ Add a chore for …” picks that kid', await page.getByTestId('chore-who').locator('option:checked').innerText(), kidNames[1]);
     await page.goto(`${BASE}/meals`);
     await page.locator('nav.subtabs a').first().waitFor({ timeout: 10000 });
-    eq('Plan section tabs on Meals: Week · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Meals', 'This week’s menu', 'Grocery list']);
+    eq('Plan section tabs on Meals: Week · Calendar · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Calendar', 'Meals', 'This week’s menu', 'Grocery list']);
     await page.goto(`${BASE}/meals/1`);
     await page.getByTestId('meal-tips').waitFor({ timeout: 10000 });
     eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allInnerTexts(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls'], 4]);
@@ -2657,6 +2706,33 @@ async function uiGate() {
     eq('the new PIN works', await kidSignIn('739104'), 'Avery');
     check('…and the old one doesn’t', /didn't match/.test(await kidSignIn(genPin)));
     await pairCtx.close();
+    section('household calendar in the browser: add an event, see it on Today, kids read-only');
+    await page.goto(`${BASE}/calendar`);
+    await page.getByTestId('add-event').click();
+    const ef = page.getByTestId('event-form');
+    await ef.getByLabel('What').fill('Family movie night');
+    const browserToday = await page.evaluate(() => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`; });
+    await ef.getByLabel('Date').fill(browserToday);
+    await ef.getByLabel('All day').uncheck();
+    await ef.getByLabel('Starts').fill('19:00');
+    await ef.getByRole('button', { name: 'Add to calendar' }).click();
+    await page.getByTestId('cal-event').filter({ hasText: 'Family movie night' }).waitFor({ timeout: 10000 });
+    check('added: shows on the calendar with its time', (await page.getByTestId('cal-event').filter({ hasText: 'Family movie night' }).innerText()).includes('7:00 PM'));
+    await page.goto(`${BASE}/`);
+    await page.getByTestId('today-calendar').waitFor({ timeout: 10000 });
+    check('Today shows what’s on the calendar today', (await page.getByTestId('today-calendar').innerText()).includes('Family movie night'));
+    await page.goto(`${BASE}/calendar`);
+    await page.getByTestId('cal-subscribe').getByRole('button', { name: /private link|new link/ }).click();
+    await page.getByTestId('cal-link').waitFor({ timeout: 10000 });
+    check('Calendar → a private link to add it to Google / Apple', /\/cal\/.+\.ics$/.test(await page.getByTestId('cal-link').inputValue()));
+    const calKid = await browser.newContext(phone);
+    const ckp = await calKid.newPage();
+    await ckp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`);
+    await ckp.goto(`${BASE}/calendar`);
+    await ckp.getByTestId('agenda').waitFor({ timeout: 10000 });
+    eq('kids see the calendar without the add button or grown-ups-only events', [await ckp.getByTestId('add-event').count(), await ckp.getByText('Surprise party planning').count(), (await ckp.getByText('Family movie night').count()) > 0], [0, 0, true]);
+    await calKid.close();
+
     section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
     const soloCtx = await browser.newContext(phone);
     const sp = await soloCtx.newPage();

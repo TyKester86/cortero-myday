@@ -27,7 +27,7 @@ import { householdRouter } from './routes/household.js';
 import { householdsRouter } from './routes/households.js';
 import { chatRouter } from './routes/chat.js';
 import { moneyRouter } from './routes/money.js';
-import { extraRouters, preHouseholdRouters, uploadRoutes } from './routes/index.js';
+import { extraRouters, preHouseholdRouters, publicRoutes, uploadRoutes } from './routes/index.js';
 import { signinRouter } from './routes/signin.js';
 import { startSchedulers } from './lib/schedulers.js';
 
@@ -95,6 +95,8 @@ app.use('/api', loadUser);
 // Binary uploads (lecture audio) come before the JSON body parser and the
 // JSON-only CSRF rule; they require a custom header a cross-site form can't send.
 for (const r of uploadRoutes) app.use(r);
+// Public, no sign-in (the calendar .ics feed: calendar apps fetch it with the secret link).
+for (const r of publicRoutes) app.use(r);
 
 app.use(express.json({ limit: '200kb' }));
 

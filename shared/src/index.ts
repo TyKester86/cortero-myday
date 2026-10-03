@@ -2325,3 +2325,60 @@ export interface CommunityQueueItem {
 export interface CommunityQueue {
   items: CommunityQueueItem[];
 }
+
+/* ---------- the household calendar ---------- */
+
+export const CAL_REPEATS = ['none', 'daily', 'weekly', 'monthly', 'yearly'] as const;
+export type CalRepeat = (typeof CAL_REPEATS)[number];
+
+/** What a grown-up fills in. Times are "HH:MM" (24h, household time zone); no start time = all day. */
+export interface CalendarEventFields {
+  title: string;
+  notes: string;
+  location: string;
+  startsOn: DateStr;
+  startTime: string | null;
+  endTime: string | null;
+  repeat: CalRepeat;
+  repeatUntil: DateStr | null;
+  /** Hidden from kids (e.g. a surprise party). */
+  adultsOnly: boolean;
+  /** Push reminder this many minutes before (timed events), or null. */
+  remindMinutes: number | null;
+  /** Who it's for (member ids); empty = the whole household. */
+  people: number[];
+}
+
+export interface CalendarEvent extends CalendarEventFields {
+  id: number;
+}
+
+/** One day an event happens on (repeats expanded). */
+export interface CalendarOccurrence {
+  eventId: number;
+  date: DateStr;
+  title: string;
+  startTime: string | null;
+  endTime: string | null;
+  location: string;
+  notes: string;
+  repeat: CalRepeat;
+  adultsOnly: boolean;
+  /** Empty = everyone. */
+  people: Array<{ id: number; name: string }>;
+}
+
+export interface CalendarResponse {
+  from: DateStr;
+  to: DateStr;
+  occurrences: CalendarOccurrence[];
+  /** The events themselves, for editing (grown-ups only; empty for kids). */
+  events: CalendarEvent[];
+  canEdit: boolean;
+  /** A subscription link exists (its address is only shown when it's made). */
+  feed: { active: boolean; createdAt: string | null } | null;
+}
+
+export interface CalendarFeedLink {
+  url: string;
+}

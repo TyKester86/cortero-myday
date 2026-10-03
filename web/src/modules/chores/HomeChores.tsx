@@ -6,6 +6,7 @@ import QuickNote from '../../components/QuickNote';
 import { useSession } from '../../session';
 import { QuestsCard, useEngagement } from '../engagement/Wins';
 import { due } from '../../dates';
+import { TodayOnCalendar } from '../calendar/Calendar';
 
 /** Today's checklist for one person. Checking a chore pays out instantly. */
 export default function HomeChores() {
@@ -64,6 +65,7 @@ export default function HomeChores() {
         )}
       </div>
 
+      <TodayOnCalendar />
       {data.curfew && (
         <div className="card curfew" data-testid="curfew">
           {data.curfew.phoneOff && (

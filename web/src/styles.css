@@ -542,3 +542,11 @@ h2 { font-size: 19px; line-height: 1.25; }
 .thread-row { display: block; text-decoration: none; color: var(--text); }
 .card.opening { border-left: 4px solid var(--navy-2); }
 .guidelines li + li { margin-top: 4px; }
+/* Calendar: an agenda by day. */
+.cal-date { font-size: 15px; margin: 16px 0 6px; }
+.cal-date.today { color: var(--navy-2); }
+.cal-event { display: flex; gap: 12px; align-items: baseline; width: 100%; text-align: left; font: inherit; color: var(--text); cursor: pointer; margin: 0 0 8px; }
+.cal-event:disabled { cursor: default; opacity: 1; }
+.cal-time { flex: 0 0 92px; font-weight: 700; font-size: 14px; }
+.cal-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cal-body b { overflow-wrap: anywhere; }
