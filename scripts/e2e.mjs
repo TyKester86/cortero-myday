@@ -1512,9 +1512,10 @@ async function exercisePictures() {
     const r = await fetch(BASE + url);
     if (r.status !== 200 || r.headers.get('content-type') !== 'image/webp') broken.push(n);
   }
-  eq('real demo renders: all 29 program exercises wired, every one loads as webp', [Object.keys(real).length, broken], [29, []]);
-  eq('…each exercise shows its own render (named for it)', Object.entries(real).filter(([n, u]) => u !== `/exercises/${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.webp`), []);
-  eq('…each mapped to an exercise the programs actually use', Object.keys(real).filter((n) => !names.has(n)), []);
+  const progMap = Object.entries(real).filter(([n]) => names.has(n));
+  eq('real demo renders: all 29 program exercises wired, every picture loads as webp', [progMap.length, broken], [29, []]);
+  eq('…each program exercise shows its own render (named for it)', progMap.filter(([n, u]) => u !== `/exercises/${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.webp`), []);
+  eq('…plus 18 renders for movements not yet in the programs (leg extension, cable crunch, face pull…)', [Object.keys(real).length - progMap.length, ['Leg extension', 'Cable crunch', 'Face pull', 'Seated calf raise'].every((n) => real[n])], [18, true]);
 }
 
 async function householdJoin() {
