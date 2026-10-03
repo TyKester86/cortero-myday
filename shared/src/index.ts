@@ -755,6 +755,28 @@ export interface GroceryFavorite {
   signedIn: boolean;
 }
 
+/** GET /api/grocery/ordering: which stores can take the list for this grown-up. */
+export interface GroceryOrdering {
+  instacart: boolean;
+  kroger: { available: boolean; connected: boolean; store: string | null };
+  /** Open (unchecked) items on the shared grocery list. */
+  openItems: number;
+}
+
+/** POST /api/grocery/send/(instacart|kroger): the list went over; check out at `url`. */
+export interface GrocerySendResult {
+  provider: 'instacart' | 'kroger';
+  url: string;
+  added: string[];
+  notFound: string[];
+}
+
+export interface KrogerStore {
+  id: string;
+  name: string;
+  address: string;
+}
+
 export interface GroceryState {
   items: GroceryItem[];
   staples: GroceryStaple[];

@@ -9,11 +9,13 @@
  */
 import type { BetaTool } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { z } from 'zod';
-import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type HanaAction, type HouseholdMember, type Weekday } from '@myday/shared';
+import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type DateStr, type HanaAction, type HouseholdMember, type Weekday } from '@myday/shared';
 import { pool } from '../db.js';
 import { profileFor, plannedSession } from '../routes/health.js';
 import { datesOf } from './recur.js';
+import { CABINS, checkQuery, searchFlights } from './flights.js';
 import { kidsOverview } from '../routes/family.js';
+import { fillKrogerCart, sendToInstacart } from '../routes/grocers.js';
 import type { ToolKit } from './ai.js';
 import { addDays, localToInstant, today, weekdayToIso } from './dates.js';
 import { logEvent } from './events.js';
@@ -309,6 +311,61 @@ export const HANA_TOOLS = [
     },
   }),
   def({
+    name: 'send_groceries',
+    description: "Send the household's open grocery list to a store: 'instacart' builds an Instacart shopping list (they pick a store and check out there); 'kroger' fills this person's own Kroger cart for pickup at their chosen store. They always check out and pay on the store's site — never say an order was placed.",
+    destructive: true,
+    schema: z.object({ to: z.enum(['instacart', 'kroger']) }),
+    json: { type: 'object', properties: { to: { type: 'string', enum: ['instacart', 'kroger'] } }, required: ['to'], additionalProperties: false },
+    summary: (i) => (i.to === 'kroger' ? 'Put the grocery list in your Kroger cart' : 'Send the grocery list to Instacart'),
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'That’s for grown-ups');
+      const r = i.to === 'kroger' ? await fillKrogerCart(me.id) : await sendToInstacart('Our grocery list (MyDay)');
+      const store = i.to === 'kroger' ? 'your Kroger cart' : 'an Instacart list';
+      const missed = r.notFound.length ? ` I couldn’t find: ${r.notFound.join(', ')}.` : '';
+      return `Put ${r.added.length} item${r.added.length === 1 ? '' : 's'} in ${store}.${missed} Check out here: ${r.url}`;
+    },
+  }),
+  def({
+    name: 'find_flights',
+    description:
+      'Search flights and give booking links (you never book or pay — they book on the airline, Google Flights or Kayak). ' +
+      'from/to are 3-letter IATA airport or city codes (Atlanta = ATL, New York = NYC, Los Angeles = LAX). depart/return are YYYY-MM-DD ' +
+      '(return null = one way). adults 1–9. cabin economy|premium_economy|business|first. If the city or dates are unclear, ask first.',
+    destructive: false,
+    schema: z.object({
+      from: z.string().regex(/^[A-Za-z]{3}$/),
+      to: z.string().regex(/^[A-Za-z]{3}$/),
+      depart: z.string().regex(DATE),
+      return: z.string().regex(DATE).nullable(),
+      adults: z.number().int().min(1).max(9),
+      cabin: z.enum(CABINS),
+    }),
+    json: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' },
+        to: { type: 'string' },
+        depart: { type: 'string' },
+        return: { type: ['string', 'null'] },
+        adults: { type: 'integer' },
+        cabin: { type: 'string', enum: [...CABINS] },
+      },
+      required: ['from', 'to', 'depart', 'return', 'adults', 'cabin'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Find flights ${i.from.toUpperCase()} → ${i.to.toUpperCase()} on ${i.depart}${i.return ? `, back ${i.return}` : ''}`,
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'That’s for grown-ups');
+      const q = { ...i, from: i.from.toUpperCase(), to: i.to.toUpperCase(), depart: i.depart as DateStr, return: (i.return ?? null) as DateStr | null };
+      checkQuery(q, today());
+      const r = await searchFlights(q);
+      const found = r.offers.length
+        ? `Cheapest I found: ${r.offers.map((o, n) => `${n + 1}) ${o.airline} ${o.price}${q.adults > 1 ? ' total' : ''} — ${o.legs.join('; ')}`).join(' ')}.`
+        : 'I can’t see live prices from here, so here are the searches ready to go.';
+      return `${found} Compare and book: Google Flights ${r.links.googleFlights} · Kayak ${r.links.kayak} (prices change fast — booking happens on their site).`;
+    },
+  }),
+  def({
     name: 'add_chore',
     description: 'Give one of the household kids a recurring chore: kid first name, chore name, days (Mon..Sun), points (0–100).',
     destructive: false,
@@ -488,6 +545,10 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if ((x = m.match(/^plan (.+?)(?: on (Mon|Tue|Wed|Thu|Fri|Sat|Sun))?$/i))) return [{ name: 'plan_meal', input: { meal: x[1], day: x[2] ? x[2].slice(0, 1).toUpperCase() + x[2].slice(1, 3).toLowerCase() : null } }];
   if ((x = m.match(/^give (\w+) the chore (.+?) on ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[ ,]+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)(?: for (\d+) points)?$/i))) {
     return [{ name: 'add_chore', input: { kid_name: x[1], chore: x[2], days: (x[3] ?? '').split(/[ ,]+/).map((d) => d.slice(0, 1).toUpperCase() + d.slice(1, 3).toLowerCase()), points: Number(x[4] ?? 10) } }];
+  }
+  if ((x = m.match(/^(?:order|send) the groceries(?: (?:to|from|on) (instacart|kroger))?/i))) return [{ name: 'send_groceries', input: { to: (x[1] ?? 'instacart').toLowerCase() } }];
+  if ((x = m.match(/^find flights from ([a-z]{3}) to ([a-z]{3}) on (\d{4}-\d{2}-\d{2})(?: returning (\d{4}-\d{2}-\d{2}))?(?: for (\d) adults?)?/i))) {
+    return [{ name: 'find_flights', input: { from: x[1], to: x[2], depart: x[3], return: x[4] ?? null, adults: Number(x[5] ?? 1), cabin: 'economy' } }];
   }
   if (/^how are the kids/i.test(m)) return [{ name: 'kids_overview', input: {} }];
   if (/^how['’]?s (?:my|our) money/i.test(m)) return [{ name: 'money_summary', input: {} }];

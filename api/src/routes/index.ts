@@ -8,6 +8,7 @@ import { adminRouter, billingRouter, billingWebhookRouter } from './billing.js';
 import { billsRouter } from './bills.js';
 import { careRouter, proRouter } from './care.js';
 import { assistantRouter } from './assistant.js';
+import { grocersRouter } from './grocers.js';
 import { inboundRouter, inboxRouter } from './inbox.js';
 import { calendarFeedRouter, calendarRouter } from './calendar.js';
 import { circlesRouter, circlesStaffRouter } from './circles.js';
@@ -26,7 +27,7 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, communityRouter, calendarRouter, assistantRouter, inboxRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, communityRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
 export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, communityStaffRouter, proRouter, joinRouter];

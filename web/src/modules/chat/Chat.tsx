@@ -88,7 +88,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
       <div className="bubbles" data-testid="chat-history">
         {data.history.map((m) => (
           <div key={m.id} className={m.who === 'user' ? 'bubble me' : 'bubble hana'}>
-            {m.text}
+            {m.who === 'user' ? m.text : <Linked text={m.text} />}
           </div>
         ))}
         {pending && (
@@ -127,6 +127,24 @@ export default function Chat({ mode }: { mode: ChatMode }) {
       </form>
       {mode === 'companion' && <HanaKnows refreshKey={data.history.length} />}
     </section>
+  );
+}
+
+/** Hana's replies with https links made tappable (checkout links, booking links). */
+function Linked({ text }: { text: string }): React.JSX.Element {
+  const parts = text.split(/(https:\/\/[^\s<>"]+[^\s<>".,;:!?)])/);
+  return (
+    <>
+      {parts.map((p, n) =>
+        n % 2 ? (
+          <a key={n} href={p} target="_blank" rel="noopener noreferrer">
+            {p.length > 48 ? `${p.slice(0, 45)}…` : p}
+          </a>
+        ) : (
+          p
+        ),
+      )}
+    </>
   );
 }
 

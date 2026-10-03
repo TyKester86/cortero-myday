@@ -36,6 +36,11 @@ Staging (`staging.conquermyday.app`) shares a server and a database with Opsentr
     - DNS: an MX record for `in.conquermyday.app` pointing at the service.
     - Webhook: `https://conquermyday.app/inbound/email?key=<INBOUND_SECRET>` (JSON). Postmark, Resend inbound and a plain `{from,to,subject,text,html}` body are all understood.
     - Set `INBOUND_DOMAIN` and a long random `INBOUND_SECRET` (`openssl rand -hex 24`). Without `INBOUND_SECRET` the webhook is off.
+12. **Grocery ordering** (Grocery list → Order it, or "order the groceries" to Hana). MyDay only builds the list or fills the cart; people always check out and pay on the store's site.
+    - **Instacart**: apply for the Instacart Developer Platform (shopping-list links), then set `INSTACART_API_KEY`. `INSTACART_BASE_URL` defaults to `https://connect.instacart.com` (use their dev URL while testing).
+    - **Kroger** (also Ralphs, Fred Meyer, King Soopers, etc.): create an app at developer.kroger.com with the `cart.basic:write` and `product.compact` scopes; redirect URI `https://conquermyday.app/api/grocery/kroger/callback`. Set `KROGER_CLIENT_ID` / `KROGER_CLIENT_SECRET`. Each grown-up connects their own account on Kroger's sign-in page (MyDay never sees the password); tokens are encrypted at rest.
+    - With neither set, the Order it card simply doesn't show.
+13. **Flight search** ("find flights to Denver the weekend of the 14th" to Hana). Hana always gives filled-in Google Flights and Kayak links; with `DUFFEL_API_KEY` (duffel.com, a live-mode access token) she also reads real prices, airlines, stops and times. She never books or pays.
 
 **Backups**
 9. **Set them up** as in `docs/BACKUP-RESTORE.md`: a nightly cron for `deploy/backup.sh` with off-server storage, plus a monthly restore drill.

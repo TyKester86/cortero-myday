@@ -6,6 +6,9 @@ import type {
   GroceryChain,
   GroceryFavorite,
   GroceryFromWeekResult,
+  GroceryOrdering,
+  GrocerySendResult,
+  KrogerStore,
   GroceryState,
   SetFavoriteRequest,
   StoreAvailability,
@@ -17,7 +20,7 @@ import { openGroceryPopout } from './GroceryPopout';
 
 /** One household grocery list — one family, one grocery run. */
 export default function Grocery() {
-  const { viewing } = useSession();
+  const { viewing, me } = useSession();
   const { data, error, setData } = useLoad<GroceryState>('/api/grocery');
   const [item, setItem] = useState('');
   const [qty, setQty] = useState('');
@@ -97,6 +100,8 @@ export default function Grocery() {
         </button>
       )}
 
+      {me.member?.kind === 'adult' && <OrderIt key={data.items.filter((i) => !i.done).length} />}
+
       <Stores state={data} onChange={setData} />
 
       <div className="card">
@@ -124,6 +129,128 @@ export default function Grocery() {
         </form>
       </div>
     </section>
+  );
+}
+
+/**
+ * Hana step 3: send the list to a store. MyDay builds the Instacart list or
+ * fills the Kroger cart; checking out and paying always happens on the store's
+ * own site.
+ */
+function OrderIt() {
+  const { data, setData, reload } = useLoad<GroceryOrdering>('/api/grocery/ordering');
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState<GrocerySendResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [zip, setZip] = useState('');
+  const [stores, setStores] = useState<KrogerStore[] | null>(null);
+  const flash = new URLSearchParams(window.location.search).get('kroger');
+  if (!data || (!data.instacart && !data.kroger.available)) return null;
+
+  const go = async <T,>(p: Promise<T>): Promise<T | null> => {
+    setBusy(true);
+    setErr(null);
+    try {
+      return await p;
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'That didn’t go through');
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async (to: 'instacart' | 'kroger'): Promise<void> => {
+    const r = await go(api<GrocerySendResult>(`/api/grocery/send/${to}`, 'POST'));
+    if (r) setSent(r);
+  };
+  const connect = async (): Promise<void> => {
+    const r = await go(api<{ url: string }>('/api/grocery/kroger/connect'));
+    if (r) window.location.assign(r.url);
+  };
+  const findStores = async (e: FormEvent): Promise<void> => {
+    e.preventDefault();
+    const r = await go(api<{ stores: KrogerStore[] }>(`/api/grocery/kroger/stores?zip=${encodeURIComponent(zip)}`));
+    if (r) setStores(r.stores);
+  };
+  const pick = async (s: KrogerStore): Promise<void> => {
+    if (await go(api('/api/grocery/kroger/store', 'PUT', { id: s.id, name: `${s.name}${s.address ? ` — ${s.address}` : ''}` }))) {
+      setStores(null);
+      reload();
+    }
+  };
+  const disconnect = async (): Promise<void> => {
+    if (await go(api('/api/grocery/kroger', 'DELETE'))) setData({ ...data, kroger: { ...data.kroger, connected: false, store: null } });
+  };
+  const empty = data.openItems === 0;
+
+  return (
+    <div className="card" data-testid="order-it">
+      <h2>Order it</h2>
+      <p className="muted small">MyDay sends the list over — you check out and pay on the store’s site. Or ask Hana: “order the groceries”.</p>
+      {flash === 'connected' && <p className="pill">Kroger connected ✓</p>}
+      {flash === 'failed' && <p className="error">Kroger didn’t finish connecting — try again.</p>}
+      {empty && <p className="muted">Add something to the list first.</p>}
+      {data.instacart && (
+        <button className="btn" disabled={busy || empty} onClick={() => void send('instacart')} data-testid="send-instacart">
+          Send to Instacart
+        </button>
+      )}
+      {data.kroger.available && (
+        <div className="kroger">
+          {!data.kroger.connected ? (
+            <button className="btn ghost" disabled={busy} onClick={() => void connect()} data-testid="kroger-connect">
+              Connect Kroger
+            </button>
+          ) : (
+            <>
+              <p className="small">
+                Kroger: <b>{data.kroger.store ?? 'pick your store'}</b>{' '}
+                <button className="link danger" onClick={() => void disconnect()}>
+                  Disconnect
+                </button>
+              </p>
+              <form className="inline" onSubmit={(e) => void findStores(e)}>
+                <input value={zip} onChange={(e) => setZip(e.target.value.replace(/\D/g, '').slice(0, 5))} placeholder="ZIP for your store" inputMode="numeric" aria-label="ZIP for your Kroger store" />
+                <button className="btn small ghost" disabled={busy || zip.length !== 5}>
+                  Find stores
+                </button>
+              </form>
+              {stores && (
+                <ul className="plain rows" data-testid="kroger-stores">
+                  {stores.length === 0 && <li className="muted">No Kroger stores near that ZIP.</li>}
+                  {stores.map((s) => (
+                    <li key={s.id}>
+                      <span>
+                        {s.name} <span className="muted small">{s.address}</span>
+                      </span>
+                      <button className="btn small" onClick={() => void pick(s)}>
+                        Use this one
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {data.kroger.store && (
+                <button className="btn" disabled={busy || empty} onClick={() => void send('kroger')} data-testid="send-kroger">
+                  Fill my Kroger cart
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      {err && <p className="error">{err}</p>}
+      {sent && (
+        <div className="sent" data-testid="order-sent">
+          <p>
+            {sent.added.length} item{sent.added.length === 1 ? '' : 's'} sent{sent.notFound.length ? ` · couldn’t find: ${sent.notFound.join(', ')}` : ''}.
+          </p>
+          <a className="btn" href={sent.url} target="_blank" rel="noopener noreferrer">
+            {sent.provider === 'kroger' ? 'Check out at Kroger →' : 'Check out on Instacart →'}
+          </a>
+        </div>
+      )}
+    </div>
   );
 }
 

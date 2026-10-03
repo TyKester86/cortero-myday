@@ -49,6 +49,8 @@ declare module 'express-session' {
     inviteToken: string;
     /** An invite to ANOTHER household, held until the person says "leave mine and join". */
     pendingInvite: string;
+    /** Kroger account connect (OAuth state). */
+    krogerState: string;
   }
 }
 

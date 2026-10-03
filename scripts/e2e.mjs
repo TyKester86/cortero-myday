@@ -98,6 +98,8 @@ const serverEnv = (fakeNow) => ({
   MAIL_PROVIDER: 'stub',
   INBOUND_SECRET: 'e2e-inbound-secret-0123456789',
   INBOUND_DOMAIN: 'in.example.test',
+  GROCERY_STUB: '1',
+  FLIGHT_STUB: '1',
   ERROR_WEBHOOK_URL: ALERT_URL,
   // The walk creates dozens of households from one machine; the real default is 5 an hour.
   SIGNUPS_PER_HOUR: '500',
@@ -1642,6 +1644,55 @@ async function careTeam() {
   eq('another household never sees our inbox', (await sam.get('/api/inbox')).data.emails.length, 0);
   eq('emails are encrypted at rest', (await sql("SELECT COUNT(*)::int AS n FROM inbox_emails WHERE position(convert_to('statement', 'UTF8') in subject_enc) > 0"))[0].n, 0);
 
+  section('Order it: the grocery list goes to Instacart or the grown-up’s own Kroger cart; checkout stays on the store’s site');
+  eq('kids can’t order groceries', [(await avery.get('/api/grocery/ordering')).status, (await avery.post('/api/grocery/send/instacart')).status], [403, 403]);
+  await ty.post('/api/grocery', { item: 'Milk', qty: '' });
+  await ty.post('/api/grocery', { item: 'Unobtainium zzz', qty: '' });
+  let ord = (await ty.get('/api/grocery/ordering')).data;
+  eq('both stores offered; Kroger not connected yet', [ord.instacart, ord.kroger.available, ord.kroger.connected, ord.openItems > 0], [true, true, false, true]);
+  let sent = (await ty.post('/api/grocery/send/instacart')).data;
+  check('Instacart → a shopping-list link with the open items', /^https:\/\/www\.instacart\.com\//.test(sent.url) && sent.added.includes('Milk'), JSON.stringify(sent).slice(0, 200));
+  eq('Kroger before connecting → asked to connect', (await ty.post('/api/grocery/send/kroger')).data.code, 'kroger_not_connected');
+  const kc = (await ty.get('/api/grocery/kroger/connect')).data;
+  const cb = new URL(kc.url, BASE);
+  eq('a forged callback (someone else’s browser) is refused', (await kayla.get(cb.pathname + cb.search)).location, '/meals/grocery?kroger=failed');
+  eq('Ty’s own callback connects his Kroger account', (await ty.get(cb.pathname + cb.search)).location, '/meals/grocery?kroger=connected');
+  eq('…and the same sign-in answer can’t be replayed', (await ty.get(cb.pathname + cb.search)).location, '/meals/grocery?kroger=failed');
+  ord = (await ty.get('/api/grocery/ordering')).data;
+  eq('connected, store not picked yet', [ord.kroger.connected, ord.kroger.store], [true, null]);
+  eq('Kroger is per grown-up: Kayla isn’t connected', (await kayla.get('/api/grocery/ordering')).data.kroger.connected, false);
+  eq('another household never sees it', (await sam.get('/api/grocery/ordering')).data.kroger.connected, false);
+  eq('filling the cart needs a store first', (await ty.post('/api/grocery/send/kroger')).data.code, 'kroger_no_store');
+  eq('a bad ZIP is refused', (await ty.get('/api/grocery/kroger/stores?zip=12')).status, 400);
+  const kstores = (await ty.get('/api/grocery/kroger/stores?zip=40202')).data.stores;
+  eq('stores near a ZIP', kstores.length, 2);
+  await ty.put('/api/grocery/kroger/store', { id: kstores[0].id, name: `${kstores[0].name} — ${kstores[0].address}` });
+  eq('store saved', (await ty.get('/api/grocery/ordering')).data.kroger.store, 'Kroger — 123 Main St');
+  sent = (await ty.post('/api/grocery/send/kroger')).data;
+  eq('Kroger cart filled; what it can’t find is listed', [sent.url, sent.added.includes('Milk'), sent.notFound], ['https://www.kroger.com/cart', true, ['Unobtainium zzz']]);
+  eq('Kroger tokens are encrypted at rest', (await sql("SELECT COUNT(*)::int AS n FROM grocer_links WHERE position(convert_to('stub-', 'UTF8') in access_enc) > 0 OR position(convert_to('stub-', 'UTF8') in refresh_enc) > 0"))[0].n, 0);
+  let gh = (await ty.post('/api/chat/companion', { message: 'order the groceries from Kroger' })).data;
+  const gAct = gh.actions.find((a) => a.tool === 'send_groceries');
+  eq('“order the groceries” → Hana asks first (nothing sent yet)', gAct?.status, 'pending');
+  eq('kids can’t confirm it', (await avery.post(`/api/hana/actions/${gAct.id}/confirm`)).status, 403);
+  gh = (await ty.post(`/api/hana/actions/${gAct.id}/confirm`)).data;
+  check('confirmed → in the Kroger cart, with the checkout link', gh.action.status === 'done' && /kroger\.com\/cart/.test(gh.action.result) && /Unobtainium/.test(gh.action.result), gh.action.result);
+  await ty.del('/api/grocery/kroger');
+  eq('Disconnect → gone (tokens deleted)', [(await ty.get('/api/grocery/ordering')).data.kroger.connected, (await sql("SELECT COUNT(*)::int AS n FROM grocer_links"))[0].n], [false, 0]);
+  await ty.del(`/api/grocery/items/${(await ty.get('/api/grocery')).data.items.find((i) => i.item === 'Unobtainium zzz').id}`);
+
+  section('Flights: Hana searches and hands over booking links; she never books or pays');
+  const fday = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  let fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to lax on ${fday(30)} returning ${fday(34)} for 2 adults` })).data;
+  check('cheapest first, priced for both travelers, stops and times', /1\) Spirit \$378 total — ATL 6:00 AM → LAX 1:40 PM, 1 stop; LAX 3:30 PM → ATL 10:45 PM, nonstop/.test(fl.reply.text), fl.reply.text.slice(0, 300));
+  check('a Google Flights search, filled in', fl.reply.text.includes('https://www.google.com/travel/flights?q=Flights%20to%20LAX%20from%20ATL%20on%20' + fday(30) + '%20through%20' + fday(34) + '%20for%202%20adults'), fl.reply.text);
+  check('…and Kayak', fl.reply.text.includes(`https://www.kayak.com/flights/ATL-LAX/${fday(30)}/${fday(34)}/2adults?sort=price_a`), fl.reply.text);
+  check('nothing to confirm — searching books nothing', fl.actions.every((a) => a.status === 'done'));
+  fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to lax on 2020-01-01` })).data;
+  check('a date in the past is refused', /already passed/.test(fl.reply.text), fl.reply.text);
+  fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to atl on ${fday(30)}` })).data;
+  check('same airport both ways is refused', /are the same/.test(fl.reply.text), fl.reply.text);
+
   section('solo grown-ups (“Just me”): no kid or partner tools until someone joins full time');
   const { liveFeatures } = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
   const sol = new Client('solo-one');
@@ -2804,6 +2855,22 @@ async function uiGate() {
     await ckp.getByTestId('agenda').waitFor({ timeout: 10000 });
     eq('kids see the calendar without the add button or grown-ups-only events', [await ckp.getByTestId('add-event').count(), await ckp.getByText('Surprise party planning').count(), (await ckp.getByText('Family movie night').count()) > 0], [0, 0, true]);
     await calKid.close();
+
+    section('Order it in the browser: send the list to Instacart, get the checkout link');
+    await page.goto(`${BASE}/meals/grocery`);
+    await page.getByTestId('order-it').waitFor({ timeout: 10000 });
+    await page.getByTestId('send-instacart').click();
+    await page.getByTestId('order-sent').waitFor({ timeout: 10000 });
+    check('“Send to Instacart” → a checkout link', /instacart\.com/.test((await page.getByTestId('order-sent').getByRole('link').getAttribute('href')) ?? ''));
+    eq('Kroger shows a Connect button until connected', await page.getByTestId('kroger-connect').count(), 1);
+
+    section('Hana’s booking links are tappable in the chat');
+    await page.goto(`${BASE}/hana`);
+    await page.getByPlaceholder('What’s on your mind?').fill(`find flights from bos to mia on ${new Date(Date.now() + 40 * 86400000).toISOString().slice(0, 10)}`);
+    await page.getByRole('button', { name: 'Send' }).click();
+    const flLink = page.getByTestId('chat-history').locator('a[href^="https://www.google.com/travel/flights"]');
+    await flLink.first().waitFor({ timeout: 20000 });
+    eq('the Google Flights link opens in a new tab, safely', [await flLink.first().getAttribute('target'), await flLink.first().getAttribute('rel')], ['_blank', 'noopener noreferrer']);
 
     section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
     const soloCtx = await browser.newContext(phone);

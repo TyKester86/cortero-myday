@@ -552,3 +552,9 @@ h2 { font-size: 19px; line-height: 1.25; }
 .cal-body b { overflow-wrap: anywhere; }
 /* Hana's inbox suggestions. */
 .inbox-item { gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+
+/* Grocery: Order it (Hana step 3) */
+.card .kroger,
+.card .sent {
+  margin-top: 0.75rem;
+}
