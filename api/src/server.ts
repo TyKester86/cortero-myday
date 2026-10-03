@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { rawPool, requestScope } from './db.js';
 import { authRouter, kidAccessRouter, loadUser, meHandler, requireAuth, requireHousehold } from './auth.js';
 import { errorHandler, HttpError } from './lib/http.js';
+import { securityHeaders } from './lib/security.js';
 import { listMembers } from './lib/members.js';
 import { idempotency, moduleUsed } from './lib/requestlog.js';
 import { homeworkRouter } from './routes/homework.js';
@@ -35,6 +36,7 @@ if (!config.sessionSecret || config.sessionSecret.length < 32) {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1); // behind Caddy
+app.use(securityHeaders(config.production));
 
 app.get('/api/health', (_req, res: Response<HealthCheck>) => {
   res.json({ ok: true });
@@ -120,6 +122,8 @@ const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..',
 app.get('/sw.js', (_req, res) => {
   res.sendFile(path.join(webDist, 'sw.js'), { headers: { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' } });
 });
+// Hashed build files never change under the same name: cache them for a year.
+app.use('/assets', express.static(path.join(webDist, 'assets'), { index: false, maxAge: '365d', immutable: true }));
 app.use(express.static(webDist, { index: false, maxAge: '1h' }));
 app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });

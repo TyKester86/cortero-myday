@@ -1747,6 +1747,39 @@ async function bodyScience() {
   eq('“delete all” needs the confirm word', (await kayla.del('/api/progress-photos')).status, 409);
 }
 
+/** Audit 1a: a grown-up acts for themselves and the kids — never for another grown-up. */
+async function privacyRules() {
+  section('audit 1a. no grown-up can open or act as another grown-up (only themselves + the kids)');
+  const kaylaId = (await kayla.get('/api/me')).data.member.id;
+  const blocked = await Promise.all([
+    ty.get('/api/chores/today?member=kayla'),
+    ty.get('/api/workouts/today?member=kayla'),
+    ty.get('/api/program?member=kayla'),
+    ty.get('/api/score?member=kayla'),
+    ty.get('/api/homework?member=kayla'),
+    ty.get('/api/meal-plan?member=kayla'),
+    ty.get('/api/weekly-plan?member=kayla'),
+    ty.put('/api/program?member=kayla', { build: 'hourglass', level: 'beginner', bodyweightLb: 140 }),
+  ]);
+  eq('Ty → Kayla: her day, workouts, program, score, homework, meals, week, and changing her build are all refused', blocked.map((r) => r.status), [403, 403, 403, 403, 403, 403, 403, 403]);
+  eq('…while Ty → Evan (a kid) still works', [(await ty.get('/api/chores/today?member=evan')).status, (await ty.get('/api/homework?member=evan')).status], [200, 200]);
+  const ch = await ty.post('/api/chores', { name: 'Kayla’s own chore', memberId: kaylaId, days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], points: 5 });
+  const chId = (await kayla.get('/api/chores/today')).data.chores.find((c) => c.name === 'Kayla’s own chore')?.id;
+  eq('Ty can’t check off Kayla’s chore; Kayla can', [ch.status < 300, (await ty.post(`/api/chores/${chId}/toggle`, { done: true })).status, (await kayla.post(`/api/chores/${chId}/toggle`, { done: true })).status], [true, 403, 200]);
+  eq('Ty can’t add a tutor or coach for Kayla (only for himself or the kids)', (await ty.post('/api/care/grants', { kind: 'tutor', subject: 'kayla', scopes: ['school'] })).status, 403);
+
+  section('audit: security headers on every response; build files cached for a year');
+  const page = await fetch(`${BASE}/`);
+  const h = (k) => page.headers.get(k) ?? '';
+  eq('CSP (own scripts + Plaid only; no framing), no-sniff, referrer, permissions', [
+    /script-src 'self' https:\/\/cdn\.plaid\.com/.test(h('content-security-policy')), /frame-ancestors 'none'/.test(h('content-security-policy')), /object-src 'none'/.test(h('content-security-policy')),
+    h('x-frame-options'), h('x-content-type-options'), h('referrer-policy'), /microphone=\(self\)/.test(h('permissions-policy')),
+  ], [true, true, true, 'DENY', 'nosniff', 'strict-origin-when-cross-origin', true]);
+  eq('…on API answers too', (await fetch(`${BASE}/api/health`)).headers.get('x-frame-options'), 'DENY');
+  const asset = (await (await fetch(`${BASE}/`)).text()).match(/\/assets\/[^"']+\.js/)?.[0];
+  eq('hashed build files: cached a year, immutable', (await fetch(BASE + asset)).headers.get('cache-control'), 'public, max-age=31536000, immutable');
+}
+
 async function householdJoin() {
   const tokenOf = (link) => link.split('/join/')[1];
   const tyHh = (await ty.get('/api/me')).data.household;
@@ -2027,6 +2060,14 @@ async function uiGate() {
     eq('…', [await tpg.getByTestId('macros').count(), await tpg.getByTestId('weighins-on').count(), await tpg.getByTestId('habits').getByText('Protein shake').count(), await tpg.getByTestId('program').getByText(/^Athletic ·/).count()], [0, 0, 0, 1]);
     await tc.close();
 
+    section('audit 1a in the browser: the “whose day” picker offers me + the kids, never another grown-up');
+    const pick = await kpg.locator('select[aria-label="Whose day"] option').allInnerTexts();
+    eq('Kayla’s picker', [pick.includes('Kayla (me)'), pick.includes('Ty'), pick.includes('Avery'), pick.includes('Evan')], [true, false, true, true]);
+    await kpg.evaluate(() => localStorage.setItem('myday.viewing', 'ty'));
+    await kpg.reload();
+    await kpg.getByRole('heading').first().waitFor({ timeout: 10000 });
+    eq('…a remembered choice of another grown-up falls back to her own day', await kpg.locator('select[aria-label="Whose day"]').inputValue(), 'kayla');
+
     section('progress photos in the browser: add a pose (re-encoded on the phone), compare months, delete all (in-page)');
     await kpg.goto(`${BASE}/health`);
     await kpg.getByTestId('photos').waitFor({ timeout: 10000 });
@@ -2056,10 +2097,11 @@ async function uiGate() {
     const tyHealth = await browser.newContext(phone);
     const typ = await tyHealth.newPage();
     await typ.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
-    await typ.evaluate(() => localStorage.setItem('myday.viewing', 'kayla'));
+    await typ.evaluate(() => localStorage.setItem('myday.viewing', 'evan'));
     await typ.goto(`${BASE}/health`);
-    await typ.getByTestId('program').waitFor({ timeout: 10000 });
-    eq('a grown-up viewing someone else’s Health page sees no photo section', [await typ.getByTestId('photos').count(), await typ.getByTestId('photos-off').count()], [0, 0]);
+    await typ.locator('h1').first().waitFor({ timeout: 10000 });
+    await typ.waitForLoadState('networkidle');
+    eq('a parent viewing a kid’s Health page sees no photo section', [await typ.locator('select[aria-label="Whose day"]').inputValue(), await typ.getByTestId('photos').count(), await typ.getByTestId('photos-off').count()], ['evan', 0, 0]);
     await tyHealth.close();
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
@@ -2286,6 +2328,7 @@ try {
   await careTeam();
   await exercisePictures();
   await bodyScience();
+  await privacyRules();
   await householdJoin();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
