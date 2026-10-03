@@ -7,6 +7,8 @@ export class ApiFail extends Error {
     message: string,
     /** True when an offline write was queued to sync later. */
     readonly queued = false,
+    /** The server's machine-readable reason, when it sent one. */
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -134,7 +136,7 @@ export async function api<T>(path: string, method: Method = 'GET', body?: unknow
     throw new ApiFail(0, 'You’re offline right now.');
   }
   const data: unknown = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiFail(res.status, isApiError(data) ? data.error : `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiFail(res.status, isApiError(data) ? data.error : `Request failed (${res.status})`, false, isApiError(data) ? data.code : undefined);
   return data as T;
 }
 

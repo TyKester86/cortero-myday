@@ -76,6 +76,7 @@ main { padding: 8px 16px 24px; }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; margin: 12px 0; }
 .card.current { border-color: var(--sun); }
+.card.warn { border-color: var(--warn); color: inherit; border-left: 4px solid var(--warn); }
 .tag { margin-left: 8px; font-size: 11px; background: var(--sun); color: var(--navy); border-radius: 6px; padding: 2px 6px; vertical-align: middle; }
 
 .stats { display: flex; gap: 10px; margin: 8px 0; }
@@ -387,3 +388,4 @@ h3 { text-transform: uppercase; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .role-art { filter: invert(1); mix-blend-mode: screen; } }
 .buildopt .role-art { width: 56px; height: 56px; float: right; margin-left: 6px; }
 .exdemo { width: 100%; max-height: 220px; object-fit: contain; background: #fff; border: 1px solid var(--line); margin-bottom: 8px; display: block; }
+small.next { display: block; color: var(--sun); margin-top: 2px; }

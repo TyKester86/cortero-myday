@@ -178,6 +178,8 @@ export interface HouseholdResponse {
 
 export interface ApiError {
   error: string;
+  /** Machine-readable reason, when the page should react (e.g. 'clinician_needed'). */
+  code?: string;
 }
 
 export interface HealthCheck {
@@ -391,6 +393,8 @@ export interface WorkoutExercise {
   subs: string;
   /** Demo picture, when one is wired for this exercise (api/content/exercise-images.json). */
   image: string | null;
+  /** Double progression from the last log: "Add a little weight" / "Same weight — aim for 9 reps". */
+  next?: string | null;
 }
 
 export interface WorkoutSession {
@@ -435,6 +439,16 @@ export interface HealthToday {
   moved: { to?: DateStr; from?: DateStr } | null;
   /** Build program (phase, week, macros, shakes) when a build is set up. */
   program: ProgramStatus | null;
+  /** Sessions this week: 2 is a "minimum week" and counts as a win. */
+  week: { planned: number; done: number; minimumMet: boolean };
+  /** The first 28 days: attendance (not load) is the success metric. */
+  onboarding: { day: number; attended: number } | null;
+  /** Back after time off: resume lighter, ramp up, or restart the phase. */
+  comeback: { daysOff: number; mode: 'resume' | 'ramp' | 'restart'; message: string } | null;
+  /** Single-run cap (runners, or anyone who has logged runs). */
+  runCap: RunCap | null;
+  /** Habits offered to this member (teens: no shakes or creatine). */
+  habitKeys: HabitKey[];
 }
 
 export interface MoveWorkoutRequest {
@@ -449,6 +463,7 @@ export interface SessionLog {
   date: DateStr;
   activity: string;
   minutes: number;
+  miles?: number | null;
 }
 
 export interface ExerciseLog {
@@ -522,6 +537,8 @@ export interface HealthPlan {
   weeks: PlanWeek[];
   hasPlan: boolean;
   build: BuildKey | null;
+  /** The year as four ~13-week chapters, each a fresh starting point. */
+  chapters: Array<{ n: number; weekStart: number; weekEnd: number; title: string }>;
 }
 
 export interface LogExerciseRequest {
@@ -1204,19 +1221,75 @@ export type NutritionMode = 'gaining' | 'cutting' | 'recomp' | 'maintenance';
 export type PhaseKind = 'foundation' | 'hypertrophy' | 'strength' | 'cut' | 'maintenance' | 'deload';
 export type TrainingLevel = 'beginner' | 'experienced';
 
-/** Protein in g per lb bodyweight per day — same for men and women. */
+/**
+ * Protein in g per lb of REFERENCE weight per day (see referenceWeightLb) —
+ * same for men and women. Benefit levels off near 0.73 g/lb (1.6 g/kg);
+ * lean people cutting do best toward 1.0–1.1.
+ */
 export const PROTEIN_G_PER_LB: Record<NutritionMode, { min: number; max: number; target: number }> = {
-  // 0.73 is the breakpoint; 1.0 is the ceiling (never higher).
-  gaining: { min: 0.7, max: 1.0, target: 0.8 },
-  // Spec default 1.0–1.1.
-  cutting: { min: 0.8, max: 1.2, target: 1.05 },
+  gaining: { min: 0.73, max: 1.0, target: 0.8 },
+  cutting: { min: 0.9, max: 1.1, target: 1.05 },
   recomp: { min: 0.8, max: 1.0, target: 0.9 },
-  maintenance: { min: 0.65, max: 0.73, target: 0.7 },
+  maintenance: { min: 0.73, max: 0.9, target: 0.73 },
 };
 
-/** Per-meal protein: 0.11–0.14 g/lb (≈20–40 g), across 3–5 meals. */
-export const PROTEIN_PER_MEAL_G_PER_LB = { min: 0.11, max: 0.14 } as const;
+/** Per-meal protein: daily target ÷ meals, never under 0.18 g/lb (≈0.4 g/kg); up to 0.25 g/lb is fine. */
+export const PROTEIN_PER_MEAL_G_PER_LB = { min: 0.18, max: 0.25 } as const;
 export const SHAKE_PROTEIN_G = 25;
+/** Never more than this many shakes a day, whatever the arithmetic says. */
+export const SHAKE_CAP = 3;
+/** Simple low-energy floor (kcal/day) — no plan ever goes below it. */
+export const CALORIE_FLOOR: Record<Sex, number> = { female: 1200, male: 1500 };
+/** Biggest daily deficit for anyone keeping or building muscle (750 only with BMI ≥ 30). */
+export const MAX_DEFICIT_KCAL = 500;
+export const MAX_DEFICIT_KCAL_HIGHER_BF = 750;
+/** Under this age: teen mode (no calorie, weight or shake targets; builds are training styles). */
+export const ADULT_AGE = 18;
+
+export type Sex = 'male' | 'female';
+export type Activity = 'sedentary' | 'light' | 'moderate' | 'very';
+export type LifeStage = 'none' | 'pregnant' | 'postpartum';
+/** Mifflin-St Jeor activity factors (they include planned exercise). */
+export const ACTIVITY: Record<Activity, { factor: number; label: string }> = {
+  sedentary: { factor: 1.2, label: 'Mostly sitting, little exercise' },
+  light: { factor: 1.375, label: 'On my feet some, or 1–3 workouts a week' },
+  moderate: { factor: 1.55, label: 'Active: 3–5 workouts a week' },
+  very: { factor: 1.725, label: 'Very active: hard training most days or a physical job' },
+};
+
+export interface BodyInputs {
+  sex: Sex;
+  ageYears: number;
+  heightIn: number;
+  weightLb: number;
+  activity: Activity;
+  goalWeightLb?: number | null;
+}
+
+export const LB_PER_KG = 2.20462;
+export const bmiOf = (weightLb: number, heightIn: number): number => (703 * weightLb) / (heightIn * heightIn);
+
+/** Resting energy (kcal/day), Mifflin-St Jeor — the most accurate standard equation. */
+export function mifflinStJeor(b: Pick<BodyInputs, 'sex' | 'ageYears' | 'heightIn' | 'weightLb'>): number {
+  return 10 * (b.weightLb / LB_PER_KG) + 6.25 * (b.heightIn * 2.54) - 5 * b.ageYears + (b.sex === 'male' ? 5 : -161);
+}
+
+/** Estimated maintenance calories: resting energy × activity factor. */
+export function maintenanceCalories(b: BodyInputs): number {
+  return mifflinStJeor(b) * ACTIVITY[b.activity].factor;
+}
+
+/**
+ * The weight protein, fat and shakes scale with: the lower of current weight
+ * and goal weight, and — with BMI ≥ 30 — the weight at BMI 25. Stops outputs
+ * like 315 g protein or 9 shakes a day for heavier users.
+ */
+export function referenceWeightLb(weightLb: number, heightIn: number | null, goalWeightLb?: number | null): number {
+  let ref = weightLb;
+  if (goalWeightLb && goalWeightLb > 0) ref = Math.min(ref, goalWeightLb);
+  if (heightIn && bmiOf(weightLb, heightIn) >= 30) ref = Math.min(ref, (25 * heightIn * heightIn) / 703);
+  return Math.round(ref);
+}
 
 export interface ShakeMath {
   proteinTarget: number;
@@ -1226,10 +1299,13 @@ export interface ShakeMath {
   label: string;
 }
 
-/** shakes/day = (bodyweight × phase target − food protein) ÷ 25, rounded, never below 0. */
-export function shakesPerDay(bodyweightLb: number, mode: NutritionMode, foodProtein: number): ShakeMath {
-  const proteinTarget = Math.round(bodyweightLb * PROTEIN_G_PER_LB[mode].target);
-  const shakes = Math.max(0, Math.round((proteinTarget - foodProtein) / SHAKE_PROTEIN_G));
+/**
+ * shakes/day = (reference weight × phase target − food protein) ÷ 25,
+ * rounded UP, never below 0 and never above SHAKE_CAP.
+ */
+export function shakesPerDay(referenceLb: number, mode: NutritionMode, foodProtein: number): ShakeMath {
+  const proteinTarget = Math.round(referenceLb * PROTEIN_G_PER_LB[mode].target);
+  const shakes = Math.min(SHAKE_CAP, Math.max(0, Math.ceil((proteinTarget - foodProtein) / SHAKE_PROTEIN_G)));
   return {
     proteinTarget,
     foodProtein,
@@ -1237,6 +1313,49 @@ export function shakesPerDay(bodyweightLb: number, mode: NutritionMode, foodProt
     label: `${shakes} shake${shakes === 1 ? '' : 's'}/day to hit ${proteinTarget}g protein`,
   };
 }
+
+/** Protein per meal that actually adds up to the day's target. */
+export function perMealProtein(dailyTarget: number, meals: number, referenceLb: number): number {
+  return Math.round(Math.max(dailyTarget / Math.max(1, meals), referenceLb * PROTEIN_PER_MEAL_G_PER_LB.min));
+}
+
+/** Teen mode: builds are training styles, never body targets. Shredded isn't offered. */
+export const TEEN_STYLE: Record<BuildKey, string | null> = {
+  lean_athletic: 'Athletic',
+  toned_athletic: 'Athletic',
+  v_taper: 'Athletic',
+  hourglass: 'Athletic',
+  thick_powerful: 'Power',
+  strong_dense: 'Strong',
+  strong_curvy: 'Strong',
+  lean_runner: 'Runner',
+  shredded: null,
+};
+
+/** The 4-weekly body check-in. Red flags pause any cut and suggest a clinician. */
+export interface BodyCheckinAnswers {
+  /** Periods stopped or changed (women; hormonal birth control can hide this). */
+  periodChange?: boolean;
+  /** Months since the last period, when it has stopped. */
+  monthsNoPeriod?: number;
+  /** A stress fracture or bone-stress injury. */
+  boneInjury?: boolean;
+  /** Unusually tired, or sick more often than normal. */
+  fatigue?: boolean;
+  /** Food or weight feels like it's running your life. */
+  foodWorry?: boolean;
+  sleepPoor?: boolean;
+  aches?: boolean;
+}
+
+/** Paraphrased 5-question eating-disorder screen (2+ "yes" = not a good time for Shredded). */
+export const ED_SCREEN = [
+  'Do you make yourself sick because you feel uncomfortably full?',
+  'Do you worry that you have lost control over how much you eat?',
+  'Have you lost more than 14 lb in the last 3 months?',
+  'Do you believe you are fat when others say you are too thin?',
+  'Would you say that food dominates your life?',
+] as const;
 
 export interface ProgramPhase {
   kind: PhaseKind;
@@ -1256,25 +1375,100 @@ export interface Macros {
   fat: number;
 }
 
+/** How today's calories were worked out (shown under the numbers). */
+export interface EnergyMath {
+  /** Estimated maintenance, after any recalibration. */
+  maintenance: number;
+  /** kcal/day learned from the weigh-in trend (every 2 weeks). */
+  adjust: number;
+  /** The phase asked for a bigger deficit than the cap allows. */
+  capped: boolean;
+  /** The calorie floor raised the number. */
+  floored: boolean;
+  referenceLb: number;
+}
+
+export interface ProgramCheckin {
+  /** This build gets the 4-weekly check-in (women cutting, Lean Runner, Shredded). */
+  needed: boolean;
+  due: boolean;
+  lastOn: DateStr | null;
+  askPeriods: boolean;
+}
+
 export interface ProgramStatus {
   build: BuildInfo;
+  /** Teen mode: label is the training style ("Athletic", "Strong", "Runner", "Power"). */
+  teen: boolean;
+  label: string;
   level: TrainingLevel;
-  bodyweightLb: number;
+  /** null in teen mode when no weight was given (it isn't needed). */
+  bodyweightLb: number | null;
   week: number;
+  /** Which of the four ~13-week chapters this week is in. */
+  chapter: number;
   phase: ProgramPhase;
   phases: ProgramPhase[];
-  macros: Macros;
-  shakes: ShakeMath;
+  /** null in teen mode and during pregnancy (the clinician sets food targets). */
+  macros: Macros | null;
+  energy: EnergyMath | null;
+  shakes: ShakeMath | null;
+  /** Protein per meal across `meals` meals (adults, outside pregnancy). */
+  perMeal: { meals: number; grams: number } | null;
   cardio: string;
-  /** Protein planned today from the meal plan (+ shakes) vs target. */
-  plannedProtein: number;
+  /** Protein planned today from the meal plan (+ shakes) vs target (null when there is no target). */
+  plannedProtein: number | null;
+  /** Leanness goals paused by a stop rule — why, in plain words. */
+  cutPaused: string | null;
+  /** "I need a break" / diet break running until this date. */
+  dietBreakUntil: DateStr | null;
+  /** This ISO week is a (flexible) deload week. */
+  deloadThisWeek: boolean;
+  /** Why a deload might help now (stalled lifts, aches, poor sleep), or null. */
+  deloadSuggested: string | null;
+  checkin: ProgramCheckin;
+  weighIns: boolean;
+  lifeStage: LifeStage;
+  /** Honest-expectation and adult-extra notes for this person and phase. */
+  notes: string[];
 }
 
 export interface SetBuildRequest {
   build: BuildKey;
-  bodyweightLb: number;
+  /** Optional in teen mode. */
+  bodyweightLb?: number | null;
   level: TrainingLevel;
   foodProtein?: number;
+  sex?: Sex;
+  ageYears?: number;
+  heightIn?: number;
+  activity?: Activity;
+  goalWeightLb?: number | null;
+  lifeStage?: LifeStage;
+  /** "My clinician has cleared me" (pregnancy / postpartum, or resuming after a red flag). */
+  clinicianCleared?: boolean;
+  /** Higher body fat: start the year with the cut (default: BMI ≥ 30). */
+  startWithCut?: boolean;
+  /** Shredded only: read and accepted the costs. */
+  shreddedAck?: boolean;
+  /** Shredded only: answers to ED_SCREEN, in order. */
+  edScreen?: boolean[];
+}
+
+/** 7-day averages only — raw daily numbers are never shown. */
+export interface WeighInSummary {
+  enabled: boolean;
+  average7: number | null;
+  weeks: Array<{ weekOf: DateStr; average: number }>;
+}
+
+export interface RunCap {
+  /** Longest single run in the past 30 days. */
+  longestMinutes: number | null;
+  longestMiles: number | null;
+  /** No single run more than 10% longer than that. */
+  capMinutes: number | null;
+  capMiles: number | null;
 }
 /* ================= build 4: school, lectures, study library ================= */
 

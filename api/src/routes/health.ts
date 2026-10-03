@@ -20,6 +20,7 @@ import {
   type LastLift,
   type PlanPhase,
   type PlanWeek,
+  type RunCap,
   type SessionLog,
   type ToggleHabitResponse,
   type WorkoutExercise,
@@ -27,9 +28,11 @@ import {
   type XpTrack,
 } from '@myday/shared';
 import { pool, tx } from '../db.js';
-import { addDays, isoToWeekday, isoWeekday, today } from '../lib/dates.js';
+import { addDays, daysBetween, isoToWeekday, isoWeekday, today, weekStart } from '../lib/dates.js';
 import { bool, HttpError, int, str } from '../lib/http.js';
 import { targetMember } from '../lib/members.js';
+import { isTeen } from '../lib/planload.js';
+import { CHAPTERS, deloadSets, nextStep } from '../lib/program.js';
 import { awardXpOnce, withEarn, XP_ACTIONS } from '../lib/xp.js';
 import { phasesFor, programStatus, weekNum } from './program.js';
 import { readFileSync } from 'node:fs';
@@ -64,6 +67,7 @@ interface ProfileRow {
   cardio: string;
   workout_chore_name: string;
   build: string | null;
+  deload_week: DateStr | null;
   baseline_exercise: string;
   baseline_sleep: string;
   baseline_food: string;
@@ -108,11 +112,15 @@ async function hasPlan(memberId: number): Promise<boolean> {
 }
 
 /** The planned session for a calendar day (ignoring moves), from the plan rows. */
+const LIGHT = '4+ RIR (light week)';
+
 export async function plannedSession(
   memberId: number,
   prof: ProfileRow | null,
   date: DateStr,
+  scale = 1,
 ): Promise<{ session: WorkoutSession | null; phaseName: string; focus: string; week: number }> {
+  const deloadWeek = !!prof?.deload_week && prof.deload_week === weekStart(date);
   const week = weekNum(prof?.plan_start, date);
   const { rows } = await pool.query<WorkoutRow>(
     `SELECT phase_name, focus, day_num, day_name, exercise, sets, reps, rest, equipment, cues, subs
@@ -127,21 +135,92 @@ export async function plannedSession(
     phaseName = r.phase_name;
     focus = r.focus;
     const d = days.get(r.day_num) ?? { name: r.day_name, ex: [] };
-    d.ex.push({ exercise: r.exercise, sets: r.sets, reps: r.reps, rest: r.rest, equipment: r.equipment, cues: r.cues, subs: r.subs, image: exerciseImage(r.exercise) });
+    let { sets, reps } = r;
+    if (deloadWeek && !reps.includes('light week')) {
+      // A flexible deload: about half the sets, well short of failure.
+      sets = deloadSets(sets, d.ex.length);
+      reps = reps.includes('·') ? reps.replace(/·.*$/, `· ${LIGHT}`) : `${reps} · ${LIGHT}`;
+    } else if (scale < 1) {
+      sets = Math.max(1, Math.round(sets * scale));
+    }
+    d.ex.push({ exercise: r.exercise, sets, reps, rest: r.rest, equipment: r.equipment, cues: r.cues, subs: r.subs, image: exerciseImage(r.exercise) });
     days.set(r.day_num, d);
   }
   // Training weekdays map in order to plan days 1..n (e.g. Mon,Tue,Thu,Fri -> 1..4).
   const trainDays = prof?.train_weekdays ?? [1, 2, 4, 5];
   const di = trainDays.indexOf(isoWeekday(date));
   const day = di >= 0 ? days.get(di + 1) : undefined;
-  return { session: day ? { dayNum: di + 1, dayName: day.name, exercises: day.ex } : null, phaseName, focus, week };
+  return {
+    session: day ? { dayNum: di + 1, dayName: day.name, exercises: day.ex } : null,
+    phaseName: deloadWeek ? 'Deload week (your call)' : phaseName,
+    focus: deloadWeek ? 'A light week: about half the sets, 3–4 reps short of failure. Recover, then push again.' : focus,
+    week,
+  };
+}
+
+/** Days with any training logged (a program workout, a lift, or any session). */
+async function activeDays(memberId: number, since: DateStr): Promise<DateStr[]> {
+  const { rows } = await pool.query<{ d: DateStr }>(
+    'SELECT DISTINCT logged_on::text AS d FROM workout_logs WHERE member_id = $1 AND logged_on >= $2 ORDER BY d DESC',
+    [memberId, since],
+  );
+  return rows.map((r) => r.d);
+}
+
+/**
+ * Back after time off. Up to 2 weeks: resume, a little lighter. 3–8 weeks:
+ * 2 ramp weeks at ~60% of the sets. Longer: restart the current phase (not week 1).
+ */
+export async function comebackFor(memberId: number, t: DateStr): Promise<HealthToday['comeback']> {
+  const days = await activeDays(memberId, addDays(t, -400));
+  const before = days.filter((d) => d < t);
+  if (!before.length) return null;
+  const loggedToday = days[0] === t;
+  if (!loggedToday) {
+    const off = daysBetween(before[0] ?? t, t) - 1;
+    if (off >= 7 && off <= 14) return { daysOff: off, mode: 'resume', message: 'Life happened. Your muscle didn’t disappear — a week or two off costs very little. Pick up where you left off, about 10% lighter today.' };
+    if (off > 14 && off <= 56) return { daysOff: off, mode: 'ramp', message: `Welcome back after ${Math.round(off / 7)} weeks. Two easy ramp weeks at about 60% of your sets, then full speed. Muscle memory is real.` };
+    if (off > 56) return { daysOff: off, mode: 'restart', message: 'Welcome back! After a long break, restart this phase rather than pushing on — not week 1, just the start of this phase.' };
+    return null;
+  }
+  // Already back: keep the ramp going for 2 weeks after a 3–8+ week gap.
+  for (let i = 0; i < days.length - 1; i++) {
+    const back = days[i] as DateStr;
+    if (back < addDays(t, -13)) break;
+    const off = daysBetween(days[i + 1] as DateStr, back) - 1;
+    if (off > 14) return { daysOff: off, mode: 'ramp', message: 'Ramp weeks: about 60% of your sets until two weeks after you came back. Nice work showing up.' };
+  }
+  return null;
+}
+
+const isRun = (activity: string): boolean => /\b(run|running|jog|jogging)\b/i.test(activity);
+
+/** The single-run cap: no run more than 10% longer than the longest run in the past 30 days. */
+export async function runCapFor(memberId: number, build: string | null, t: DateStr): Promise<RunCap | null> {
+  const { rows } = await pool.query<{ activity: string; minutes: number | null; miles: string | null }>(
+    `SELECT activity, minutes, miles FROM workout_logs WHERE member_id = $1 AND kind = 'session' AND logged_on > $2 AND logged_on <= $3`,
+    [memberId, addDays(t, -30), t],
+  );
+  const runs = rows.filter((r) => isRun(r.activity));
+  if (!runs.length && build !== 'lean_runner') return null;
+  const longestMinutes = runs.length ? Math.max(...runs.map((r) => r.minutes ?? 0)) || null : null;
+  const miles = runs.map((r) => Number(r.miles ?? 0)).filter((m) => m > 0);
+  const longestMiles = miles.length ? Math.max(...miles) : null;
+  return {
+    longestMinutes,
+    longestMiles,
+    capMinutes: longestMinutes ? Math.floor(longestMinutes * 1.1) : null,
+    capMiles: longestMiles ? Math.round(longestMiles * 1.1 * 10) / 10 : null,
+  };
 }
 
 healthRouter.get('/api/workouts/today', async (req, res) => {
   const member: HouseholdMember = await targetMember(req);
   const t = today();
   const prof = await profileFor(member.id);
-  const planned = await plannedSession(member.id, prof, t);
+  const comeback = prof ? await comebackFor(member.id, t) : null;
+  const scale = comeback?.mode === 'ramp' ? 0.6 : 1;
+  const planned = await plannedSession(member.id, prof, t, scale);
   let session = planned.session;
   let moved: HealthToday['moved'] = null;
   const { rows: moves } = await pool.query<{ from_day: DateStr; to_day: DateStr }>(
@@ -151,7 +230,7 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
   const away = moves.find((m) => m.from_day === t);
   const here = moves.find((m) => m.to_day === t && m.from_day !== t);
   if (here) {
-    session = (await plannedSession(member.id, prof, here.from_day)).session;
+    session = (await plannedSession(member.id, prof, here.from_day, scale)).session;
     moved = { from: here.from_day };
   } else if (away) {
     session = null;
@@ -166,6 +245,13 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
   );
   const last: Record<string, LastLift> = {};
   for (const l of logs) last[l.exercise] = { weight: l.weight, reps: l.reps, date: l.logged_on };
+  if (session) session = { ...session, exercises: session.exercises.map((x) => ({ ...x, next: nextStep(x.reps, last[x.exercise]) })) };
+  const planDays = await hasPlan(member.id);
+  // The week: any 2 sessions is a "minimum week" — it counts as a win.
+  const wk = await activeDays(member.id, weekStart(t));
+  const teen = await isTeen(member.id);
+  const sinceStart = prof && planDays ? daysBetween(prof.plan_start, t) : -1;
+  const onboarding = sinceStart >= 0 && sinceStart < 28 ? { day: sinceStart + 1, attended: (await activeDays(member.id, prof?.plan_start ?? t)).length } : null;
 
   const { rows: done } = await pool.query(
     "SELECT 1 FROM workout_logs WHERE member_id = $1 AND kind = 'day_complete' AND logged_on = $2",
@@ -184,9 +270,14 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
     profile: prof ? toProfile(prof) : null,
     last,
     dayCompleted: done.length > 0,
-    hasPlan: await hasPlan(member.id),
+    hasPlan: planDays,
     moved,
     program: await programStatus(member.id),
+    week: { planned: planDays ? (prof?.train_weekdays.length ?? 0) : 0, done: wk.length, minimumMet: wk.length >= 2 },
+    onboarding,
+    comeback,
+    runCap: await runCapFor(member.id, prof?.build ?? null, t),
+    habitKeys: teen ? ['water'] : HABITS.map((h) => h.key),
   };
   res.json(out);
 });
@@ -225,7 +316,15 @@ healthRouter.get('/api/workouts/plan', async (req, res) => {
       days: [...new Set(rows.filter((r) => week >= r.week_start && week <= r.week_end).map((r) => r.day_name))],
     };
   });
-  const out: HealthPlan = { member, currentWeek: current, phases, weeks, hasPlan: rows.length > 0, build: (prof?.build as HealthPlan['build']) ?? null };
+  const out: HealthPlan = {
+    member,
+    currentWeek: current,
+    phases,
+    weeks,
+    hasPlan: rows.length > 0,
+    build: (prof?.build as HealthPlan['build']) ?? null,
+    chapters: CHAPTERS,
+  };
   res.json(out);
 });
 
@@ -254,20 +353,29 @@ healthRouter.post('/api/workouts/session', async (req, res) => {
   const b = req.body as Record<string, unknown>;
   const t = today();
   const { rows: tr } = await pool.query<{ xp_track: XpTrack }>('SELECT xp_track FROM household_members WHERE id = $1', [member.id]);
+  const activity = str(b.activity, 'activity', 40) || 'Workout';
+  const minutes = int(b.minutes ?? 20, 'minutes', 1, 600);
+  const miles = b.miles === undefined || b.miles === null || b.miles === '' ? null : Math.max(0, Math.min(200, Number(b.miles) || 0)) || null;
+  // Checked against the runs BEFORE this one.
+  const cap = isRun(activity) ? await runCapFor(member.id, 'lean_runner', t) : null;
+  const over = !!cap && ((cap.capMinutes !== null && minutes > cap.capMinutes) || (cap.capMiles !== null && miles !== null && miles > cap.capMiles));
   const { earn } = await withEarn(member.id, async () => {
     await pool.query(
-      `INSERT INTO workout_logs (member_id, logged_on, kind, activity, minutes) VALUES ($1, $2, 'session', $3, $4)`,
-      [member.id, t, str(b.activity, 'activity', 40) || 'Workout', int(b.minutes ?? 20, 'minutes', 1, 600)],
+      `INSERT INTO workout_logs (member_id, logged_on, kind, activity, minutes, miles) VALUES ($1, $2, 'session', $3, $4, $5)`,
+      [member.id, t, activity, minutes, miles],
     );
     await awardXpOnce(member.id, t, XP_ACTIONS.workoutCompleted(tr[0]?.xp_track ?? 'leader'), 'Workout completed', `workout:${t}`);
   });
-  res.status(201).json({ ...earn, history: await historyFor(member.id) });
+  const runWarning = over
+    ? `That run was more than 10% longer than your longest in the past 30 days (${cap?.longestMinutes ?? '?'} min${cap?.longestMiles ? ` / ${cap.longestMiles} mi` : ''}). Injury risk rises with single-run spikes — build up a little at a time.`
+    : null;
+  res.status(201).json({ ...earn, history: await historyFor(member.id), runWarning });
 });
 
 async function historyFor(memberId: number): Promise<HealthHistory> {
   const t = today();
-  const { rows: s } = await pool.query<{ d: DateStr; activity: string; minutes: number }>(
-    `SELECT logged_on::text AS d, activity, minutes FROM workout_logs WHERE member_id = $1 AND kind = 'session'
+  const { rows: s } = await pool.query<{ d: DateStr; activity: string; minutes: number; miles: string | null }>(
+    `SELECT logged_on::text AS d, activity, minutes, miles FROM workout_logs WHERE member_id = $1 AND kind = 'session'
       ORDER BY logged_on DESC, id DESC LIMIT 30`,
     [memberId],
   );
@@ -286,7 +394,7 @@ async function historyFor(memberId: number): Promise<HealthHistory> {
   );
   const prof = await profileFor(memberId);
   return {
-    sessions: s.map((r): SessionLog => ({ date: r.d, activity: r.activity, minutes: r.minutes })),
+    sessions: s.map((r): SessionLog => ({ date: r.d, activity: r.activity, minutes: r.minutes, miles: r.miles === null ? null : Number(r.miles) })),
     exercises: e.map((r): ExerciseLog => ({ date: r.d, exercise: r.exercise, sets: r.sets, reps: r.reps, weight: r.weight })),
     completedDays: c.map((r) => r.d),
     weekMinutes: m[0]?.n ?? 0,
@@ -397,6 +505,7 @@ healthRouter.post('/api/habits/:habit', async (req, res) => {
   if (!habit) throw new HttpError(404, 'No such habit');
   const done = bool((req.body as { done?: unknown }).done, 'done');
   const member = await targetMember(req);
+  if (habit.key !== 'water' && (await isTeen(member.id))) throw new HttpError(403, 'Shakes and supplements aren’t part of teen mode', 'teen');
   const t = today();
   const { earn } = await withEarn(member.id, () =>
     tx(async (c) => {

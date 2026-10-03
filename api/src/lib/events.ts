@@ -34,7 +34,9 @@ export type EventName =
   | 'circle_post'
   | 'circle_moderation'
   | 'household_joined'
-  | 'household_merged';
+  | 'household_merged'
+  | 'build_screen_referred'
+  | 'cut_paused';
 
 export async function logEvent(
   name: EventName,

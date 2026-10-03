@@ -43,14 +43,20 @@ function Records({ memberKey }: { memberKey: string }) {
   const { data, setData } = useLoad<HealthHistory>(withMember('/api/workouts/history', memberKey));
   const [activity, setActivity] = useState('');
   const [minutes, setMinutes] = useState('30');
+  const [miles, setMiles] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   if (!data) return null;
   const logSession = async (): Promise<void> => {
     try {
-      await api(withMember('/api/workouts/session', memberKey), 'POST', { activity: activity || 'Workout', minutes: Number(minutes) || 20 });
+      const r = await api<{ runWarning: string | null }>(withMember('/api/workouts/session', memberKey), 'POST', {
+        activity: activity || 'Workout',
+        minutes: Number(minutes) || 20,
+        ...(miles ? { miles: Number(miles) } : {}),
+      });
       setData(await api<HealthHistory>(withMember('/api/workouts/history', memberKey)));
       setActivity('');
-      setMsg('Logged ✓');
+      setMiles('');
+      setMsg(r.runWarning ?? 'Logged ✓');
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Could not save');
     }
@@ -71,6 +77,7 @@ function Records({ memberKey }: { memberKey: string }) {
         <div className="inline">
           <input placeholder="What did you do? (walk, soccer…)" value={activity} onChange={(e) => setActivity(e.target.value)} maxLength={40} />
           <input className="qty" inputMode="numeric" value={minutes} onChange={(e) => setMinutes(e.target.value.replace(/\D/g, '').slice(0, 3))} aria-label="Minutes" />
+          <input className="qty" inputMode="decimal" value={miles} onChange={(e) => setMiles(e.target.value.replace(/[^\d.]/g, '').slice(0, 5))} placeholder="mi" aria-label="Miles (optional)" />
           <button className="btn small" onClick={() => void logSession()}>
             Log
           </button>
@@ -79,7 +86,7 @@ function Records({ memberKey }: { memberKey: string }) {
           <ul className="plain small">
             {data.sessions.slice(0, 6).map((s, i) => (
               <li key={i}>
-                {s.date} · {s.activity} · {s.minutes} min
+                {s.date} · {s.activity} · {s.minutes} min{s.miles ? ` · ${s.miles} mi` : ''}
               </li>
             ))}
           </ul>
@@ -172,12 +179,18 @@ export default function HealthToday() {
     setPicking(false);
     reload();
   };
+  const teen = data.member.kind === 'kid' || (data.member.age !== null && data.member.age < 18);
+  const restartPhase = async (): Promise<void> => {
+    await api(withMember('/api/program/restart', viewing.key), 'POST', {});
+    setMsg('Restarted this phase — welcome back.');
+    reload();
+  };
 
   const habits = (
     <div className="card" data-testid="habits">
       <h2>Daily habits</h2>
       <div className="habits">
-        {HABITS.map((h) => (
+        {HABITS.filter((h) => data.habitKeys.includes(h.key)).map((h) => (
           <label key={h.key} className={data.habits[h.key] ? 'habit on' : 'habit'}>
             <input type="checkbox" checked={data.habits[h.key]} onChange={(e) => void toggleHabit(h.key, e.target.checked)} />
             {h.label}
@@ -193,8 +206,12 @@ export default function HealthToday() {
     return (
       <section>
         <h1>{picking ? 'Change your build' : 'Plan your year'}</h1>
-        <p className="muted">Pick the look you're going for. MyDay plans all 52 weeks — phases, sets, food and shakes.</p>
-        <BuildPicker memberKey={viewing.key} current={data.program} onDone={picked} />
+        <p className="muted">
+          {teen
+            ? 'Pick a training style. MyDay plans all 52 weeks of training — what your body can do is the goal.'
+            : 'Pick the look you’re going for. MyDay plans all 52 weeks — phases, sets and food — and keeps it safe.'}
+        </p>
+        <BuildPicker memberKey={viewing.key} current={data.program} onDone={picked} teen={teen} age={data.member.age} />
         {picking && (
           <button className="link" onClick={() => setPicking(false)}>
             Cancel
@@ -216,7 +233,35 @@ export default function HealthToday() {
         {data.focus && ` · ${data.focus}`} · <Link to="/health/plan">Year plan</Link>
       </p>
 
-      {data.program && <ProgramCard program={data.program} onChange={() => setPicking(true)} />}
+      {data.program && (
+        <ProgramCard program={data.program} onChange={() => setPicking(true)} memberKey={viewing.key} onUpdate={(program) => setData({ ...data, program })} />
+      )}
+      {data.onboarding && (
+        <div className="card" data-testid="onboarding">
+          <b>Day {data.onboarding.day} of your first 28 days.</b> {data.onboarding.attended} session{data.onboarding.attended === 1 ? '' : 's'} so far — showing up is the whole goal this month.
+        </div>
+      )}
+      {data.comeback && (
+        <div className="card" data-testid="comeback">
+          {data.comeback.message}{' '}
+          {data.comeback.mode === 'restart' && (
+            <button className="btn small" onClick={() => void restartPhase()}>
+              Restart this phase
+            </button>
+          )}
+        </div>
+      )}
+      <p className="small" data-testid="week-progress">
+        This week: {data.week.done} of {data.week.planned} sessions
+        {data.week.minimumMet ? ' · minimum week done ✓ — two sessions counts as a win' : ' · two sessions counts as a win'}
+      </p>
+      {data.runCap && (
+        <p className="small muted" data-testid="run-cap">
+          {data.runCap.capMinutes
+            ? `Longest run in the last 30 days: ${data.runCap.longestMinutes} min${data.runCap.longestMiles ? ` / ${data.runCap.longestMiles} mi` : ''}. Keep any single run under ${data.runCap.capMinutes} min${data.runCap.capMiles ? ` / ${data.runCap.capMiles} mi` : ''}.`
+            : 'Log your runs (minutes, and miles if you know them): no single run should be more than 10% longer than your longest in the last 30 days.'}
+        </p>
+      )}
       {habits}
 
       {data.moved?.to && (
@@ -253,6 +298,11 @@ export default function HealthToday() {
                 {last && (
                   <small className="muted">
                     Last: {last.weight} × {last.reps} ({last.date})
+                  </small>
+                )}
+                {ex.next && (
+                  <small className="next" data-testid="next-step">
+                    Next: {ex.next}
                   </small>
                 )}
                 <LogRow ex={ex} onLog={log} />

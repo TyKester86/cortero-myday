@@ -131,6 +131,7 @@ Keys come from `PLAID_CLIENT_ID`, `PLAID_SECRET` and `PLAID_ENV` (`sandbox` or `
 - **Rewards:** a kid's request reserves the points as *pending*. A grown-up approves it (paid out) or denies it (refunded). Bank = points earned − pending − approved, matching how the script counted *Redemptions*.
 - **XP:** every point earned is also XP (1:1). The script's adult XP actions (+15 workout, +25 first weekly-plan save; 10 and 20 on the student track) add XP only. Spending never lowers XP. Level tables: `api/src/lib/xp.ts`.
 - **Habits:** water, shake and creatine pay 5 points each per day; un-ticking takes them back.
+- **Body builds:** the 9 year plans, the food math and the safety rules (teen mode, deficit caps, check-ins, Shredded gate) are in [docs/BODY-BUILDS.md](docs/BODY-BUILDS.md). Teens only get the water habit.
 
 - **Adult engine:** morning check-in, energy-tagged tasks, evening review and the weekly habit grid pay the script's XP. Check-in is +5 and review +10 (first save of the day only), a task +5 (student: +10, or +25 for an MIT), and a habit day +3 (un-ticking takes it back).
 - **Daily score:** the 5 × 20 parts of `scoreToday_`. 100/100 pays +50 XP once a day.

@@ -4,8 +4,8 @@
  * "MH Workouts" sheet layout. Both replace the member's plan rows and phases;
  * workout logs are never touched.
  */
-import type { BuildKey, DateStr, ProgramPhase, TrainingLevel } from '@myday/shared';
-import { tx } from '../db.js';
+import type { Activity, BuildKey, DateStr, LifeStage, ProgramPhase, Sex, TrainingLevel } from '@myday/shared';
+import { pool, tx } from '../db.js';
 import { today, weekStart } from './dates.js';
 import { buildPhases, cardioFor, defaultFoodProtein, programRows, trainWeekdays } from './program.js';
 
@@ -16,20 +16,47 @@ export interface BuildPlanOptions {
   foodProtein: number | null;
   /** Week 1 starts on this Monday (default: this week — "re-plan from the current week"). */
   start?: DateStr;
+  sex?: Sex | null;
+  heightIn?: number | null;
+  activity?: Activity | null;
+  goalWeightLb?: number | null;
+  lifeStage?: LifeStage;
+  clinicianCleared?: boolean;
+  startWithCut?: boolean;
+  shreddedAck?: boolean;
+}
+
+/** Under 18 (or a kid on the roster): teen mode. */
+export async function isTeen(memberId: number): Promise<boolean> {
+  const { rows } = await pool.query<{ kind: string; age: number | null }>('SELECT kind, age FROM household_members WHERE id = $1', [memberId]);
+  const m = rows[0];
+  return !!m && (m.kind === 'kid' || (m.age !== null && m.age < 18));
 }
 
 export async function loadBuildPlan(memberId: number, o: BuildPlanOptions): Promise<{ phases: number; rows: number }> {
-  const phases = buildPhases(o.build, o.level);
+  const teen = await isTeen(memberId);
+  const lifeStage = o.lifeStage ?? 'none';
+  const phases = buildPhases(o.build, o.level, { teen, startWithCut: o.startWithCut, noCut: lifeStage !== 'none' });
   const rows = programRows(o.build, phases);
   const start = weekStart(o.start ?? today());
   await tx(async (c) => {
     await c.query(
-      `INSERT INTO health_profiles (member_id, plan_start, train_weekdays, build, level, bodyweight_lb, food_protein, cardio)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO health_profiles (member_id, plan_start, train_weekdays, build, level, bodyweight_lb, food_protein, cardio,
+         sex, height_in, activity, goal_weight_lb, life_stage, clinician_cleared, start_with_cut, shredded_ack,
+         cut_paused, diet_break_until, deload_week)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 'moderate'), $12, $13, $14, $15, $16, NULL, NULL, NULL)
        ON CONFLICT (member_id) DO UPDATE SET plan_start = EXCLUDED.plan_start, train_weekdays = EXCLUDED.train_weekdays,
          build = EXCLUDED.build, level = EXCLUDED.level,
          bodyweight_lb = COALESCE(EXCLUDED.bodyweight_lb, health_profiles.bodyweight_lb),
-         food_protein = COALESCE(EXCLUDED.food_protein, health_profiles.food_protein), cardio = EXCLUDED.cardio`,
+         food_protein = COALESCE(EXCLUDED.food_protein, health_profiles.food_protein), cardio = EXCLUDED.cardio,
+         sex = COALESCE(EXCLUDED.sex, health_profiles.sex),
+         height_in = COALESCE(EXCLUDED.height_in, health_profiles.height_in),
+         activity = COALESCE($11, health_profiles.activity),
+         goal_weight_lb = EXCLUDED.goal_weight_lb, life_stage = EXCLUDED.life_stage,
+         clinician_cleared = EXCLUDED.clinician_cleared, start_with_cut = EXCLUDED.start_with_cut,
+         shredded_ack = COALESCE(EXCLUDED.shredded_ack, health_profiles.shredded_ack),
+         -- A paused cut stays paused through a re-plan (only a clinician's OK clears a red flag).
+         diet_break_until = NULL, deload_week = NULL`,
       [
         memberId,
         start,
@@ -39,6 +66,14 @@ export async function loadBuildPlan(memberId: number, o: BuildPlanOptions): Prom
         o.bodyweightLb,
         o.foodProtein ?? defaultFoodProtein(o.build),
         phases[0] ? cardioFor(o.build, phases[0]) : '',
+        o.sex ?? null,
+        o.heightIn ?? null,
+        o.activity ?? null,
+        o.goalWeightLb ?? null,
+        lifeStage,
+        !!o.clinicianCleared,
+        !!o.startWithCut,
+        o.shreddedAck ? new Date() : null,
       ],
     );
     await replacePhases(c, memberId, phases, (p) => cardioFor(o.build, p));

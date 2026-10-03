@@ -1,12 +1,14 @@
 import { Link } from 'react-router';
 import type { HealthPlan as HealthPlanData } from '@myday/shared';
-import { useLoad, withMember } from '../../api';
+import { api, useLoad, withMember } from '../../api';
+import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 
 /** All 52 phased weeks, the current one highlighted, then each phase in detail. */
 export default function HealthPlan() {
   const { viewing } = useSession();
-  const { data, error } = useLoad<HealthPlanData>(viewing ? withMember('/api/workouts/plan', viewing.key) : null);
+  const { data, error, reload } = useLoad<HealthPlanData>(viewing ? withMember('/api/workouts/plan', viewing.key) : null);
+  const confirm = useConfirm();
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   if (!data.hasPlan) {
@@ -26,6 +28,30 @@ export default function HealthPlan() {
       <p className="muted">
         You're in week {data.currentWeek} of 52 · <Link to="/health">Today</Link>
       </p>
+      <div className="row small" data-testid="chapters">
+        {data.chapters.map((c) => {
+          const now = data.currentWeek >= c.weekStart && data.currentWeek <= c.weekEnd;
+          return (
+            <span key={c.n} className={now ? 'pill sun' : 'pill'}>
+              {c.title}
+              {!now && viewing && (
+                <button
+                  className="link"
+                  onClick={() =>
+                    void (async () => {
+                      if (!(await confirm({ title: `Start ${c.title.split(' · ')[0]} this week?`, body: `Week ${c.weekStart} becomes this week. Nothing you’ve logged is lost.`, confirmLabel: 'Start here' }))) return;
+                      await api(withMember('/api/program/restart', viewing.key), 'POST', { chapter: c.n });
+                      reload();
+                    })()
+                  }
+                >
+                  {' '}start here
+                </button>
+              )}
+            </span>
+          );
+        })}
+      </div>
       <div className="weeks" data-testid="plan-weeks">
         {data.weeks.map((w) => (
           <div

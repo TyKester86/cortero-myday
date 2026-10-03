@@ -816,11 +816,36 @@ async function bigBuild() {
   const shared = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
   const prog = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'program.js')).href);
   const modes = ['gaining', 'cutting', 'recomp', 'maintenance'];
-  eq('180 lb man, 100 g food: shakes per day gaining/cutting/recomp/maintenance', modes.map((m) => shared.shakesPerDay(180, m, 100).shakes), [2, 4, 2, 1]);
-  eq('140 lb woman, 80 g food: shakes per day', modes.map((m) => shared.shakesPerDay(140, m, 80).shakes), [1, 3, 2, 1]);
-  eq('protein targets for 180 lb (g/day)', modes.map((m) => shared.shakesPerDay(180, m, 100).proteinTarget), [144, 189, 162, 126]);
+  eq('180 lb, 100 g food: shakes/day gaining/cutting/recomp/maintenance (rounded up, never more than 3)', modes.map((m) => shared.shakesPerDay(180, m, 100).shakes), [2, 3, 3, 2]);
+  eq('protein targets for 180 lb (g/day; maintenance rounds up to 0.73 g/lb)', modes.map((m) => shared.shakesPerDay(180, m, 100).proteinTarget), [144, 189, 162, 131]);
   eq('never negative shakes', shared.shakesPerDay(120, 'maintenance', 200).shakes, 0);
+  eq('Safety 4: a 300 lb cut never says 9 shakes (cap 3)', shared.shakesPerDay(300, 'cutting', 100).shakes, 3);
+  eq('Safety 4: reference weight = lower of weight / goal / BMI-25 weight (BMI ≥ 30 only)', [
+    shared.referenceWeightLb(300, 66), shared.referenceWeightLb(180, 70), shared.referenceWeightLb(180, 70, 165), shared.referenceWeightLb(200, null),
+  ], [155, 180, 165, 200]);
+  eq('Results 3: protein per meal adds up to the day (189 g ÷ 4 meals), floored at 0.18 g/lb', [shared.perMealProtein(189, 4, 180), shared.perMealProtein(60, 5, 180)], [47, 32]);
+  eq('Results 1: Mifflin-St Jeor × activity — 180 lb man (active) / 140 lb woman (sedentary)', [
+    Math.round(shared.maintenanceCalories({ sex: 'male', ageYears: 30, heightIn: 70, weightLb: 180, activity: 'moderate' })),
+    Math.round(shared.maintenanceCalories({ sex: 'female', ageYears: 30, heightIn: 64, weightLb: 140, activity: 'sedentary' })),
+  ], [2763, 1608]);
+  const man = { sex: 'male', ageYears: 30, heightIn: 70, weightLb: 180, activity: 'moderate' };
+  const e1 = prog.energyFor(man, { nutrition: 'cutting', weeklyChangePct: -0.7 });
+  eq('Safety 2: 180 lb man, 0.7%/wk cut → deficit capped at 500 kcal/day', [e1.macros, e1.energy.capped], [{ calories: 2260, protein: 189, carbs: 234, fat: 63 }, true]);
+  const e2 = prog.energyFor({ sex: 'female', ageYears: 30, heightIn: 64, weightLb: 300, activity: 'sedentary' }, { nutrition: 'cutting', weeklyChangePct: -0.6 });
+  eq('300 lb woman: the “cut” is a real deficit now (was a 4,500 kcal surplus), 750 cap with BMI ≥ 30, protein on reference weight', [e2.energy.maintenance, e2.macros.calories, e2.energy.capped, e2.energy.referenceLb, e2.macros.protein], [2479, 1730, true, 146, 153]);
+  const e3 = prog.energyFor({ sex: 'female', ageYears: 60, heightIn: 60, weightLb: 110, activity: 'sedentary' }, { nutrition: 'cutting', weeklyChangePct: -0.6 });
+  eq('calorie floor: never under 1,200 (women) / 1,500 (men)', [e3.macros.calories, e3.energy.floored, prog.energyFor({ ...man, weightLb: 120, heightIn: 62, ageYears: 70, activity: 'sedentary' }, { nutrition: 'cutting', weeklyChangePct: -1 }).macros.calories], [1200, true, 1500]);
+  eq('lean gain: +0.25%/wk for a 180 lb man', prog.macrosFor(man, { nutrition: 'gaining', weeklyChangePct: 0.25 }).calories, 2990);
+  eq('Results 6: double progression hints', [
+    prog.nextStep('6–12 · 1–3 RIR', { weight: '135', reps: '12' }),
+    prog.nextStep('10–20 · 0–2 RIR', { weight: '20', reps: '15' }),
+    prog.nextStep('6–12 · 1–3 RIR', undefined),
+  ], ['You hit 12 last time — go up to about 140 lb', 'Same weight (20) — aim for 16 reps', null]);
+
   const problems = [];
+  const PAIRS = [['Lat pulldown', 'Pull-up'], ['Dumbbell curl', 'Hammer curl'], ['Hip thrust', 'Glute bridge'], ['Bench press', 'Push-up'], ['Overhead press', 'Seated dumbbell press'], ['Back squat', 'Goblet squat']];
+  const weeksOf = (ph, f) => ph.filter(f).reduce((s, x) => s + x.weekEnd - x.weekStart + 1, 0);
+  const allNames = new Set();
   for (const b of shared.BUILDS) {
     for (const lvl of ['beginner', 'experienced']) {
       const ph = prog.buildPhases(b, lvl);
@@ -831,30 +856,77 @@ async function bigBuild() {
       }
       if (w !== 53) problems.push(`${b}/${lvl} ends at ${w - 1}`);
       const rows = prog.programRows(b, ph);
-      const hyp = ph.find((x) => x.kind === 'hypertrophy');
-      const hr = rows.filter((r) => r.weekStart === hyp.weekStart);
-      const sets = prog.weeklySets(hr);
-      const freq = prog.weeklyFrequency(hr);
-      for (const [m, n] of Object.entries(sets)) if (n > 26) problems.push(`${b} ${m} ${n} sets`);
+      rows.forEach((r) => allNames.add(r.exercise));
+      ph.forEach((p, i) => {
+        const pr = rows.filter((r) => r.weekStart === p.weekStart);
+        const sets = prog.weeklySets(pr);
+        for (const [m, n] of Object.entries(sets)) {
+          if (n > 25) problems.push(`${b}/${lvl} ${p.name} ${m} ${n} fractional sets`);
+          if (b === 'lean_runner' && n > 8) problems.push(`runner ${p.name} ${m} ${n} sets`);
+        }
+        const ses = prog.maxSessionSets(pr);
+        if (ses.sets > 11) problems.push(`${b}/${lvl} ${ses.day} ${ses.muscle} ${ses.sets} sets in one session`);
+        for (const d of new Set(pr.map((r) => r.dayNum))) {
+          const ex = pr.filter((r) => r.dayNum === d).map((r) => r.exercise);
+          for (const [x, y] of PAIRS) if (ex.includes(x) && ex.includes(y)) problems.push(`${b} ${p.name} day ${d}: ${x} + ${y}`);
+        }
+        if (p.kind === 'deload') {
+          const prev = ph[i - 1];
+          const before = rows.filter((r) => r.weekStart === prev.weekStart).reduce((s, r) => s + r.sets, 0);
+          const ratio = pr.reduce((s, r) => s + r.sets, 0) / before;
+          if (ratio < 0.38 || ratio > 0.67) problems.push(`${b}/${lvl} deload at ${p.weekStart} ${ratio.toFixed(2)}`);
+        }
+        if (p.kind === 'strength' && b !== 'lean_runner' && !pr.some((r) => r.reps.startsWith('3–5'))) problems.push(`${b} strength lacks 3–5`);
+      });
+      // Full dose (after the beginner ramp): priority muscles 10–25 fractional sets, 2+ days a week.
+      const full = ph.find((x) => ['hypertrophy', 'strength'].includes(x.kind) && x.setScale === 1);
+      const fr = rows.filter((r) => r.weekStart === full.weekStart);
+      const fs = prog.weeklySets(fr);
+      const freq = prog.weeklyFrequency(fr);
       for (const m of prog.priorityMuscles(b)) {
-        if (!(sets[m] >= 10 && sets[m] <= 20)) problems.push(`${b} priority ${m} ${sets[m]} sets`);
-        if ((freq[m] ?? 0) < 2) problems.push(`${b} priority ${m} ${freq[m]}x/wk`);
+        if (!(fs[m] >= 10 && fs[m] <= 25)) problems.push(`${b}/${lvl} priority ${m} ${fs[m]} sets`);
+        if ((freq[m] ?? 0) < 2) problems.push(`${b}/${lvl} priority ${m} ${freq[m]}x/wk`);
       }
-      const de = ph.find((x) => x.kind === 'deload');
-      if (de) {
-        const ratio = rows.filter((r) => r.weekStart === de.weekStart).reduce((s, r) => s + r.sets, 0) / hr.reduce((s, r) => s + r.sets, 0);
-        if (ratio < 0.4 || ratio > 0.62) problems.push(`${b} deload ${ratio.toFixed(2)}`);
+      if (lvl === 'beginner' && b !== 'shredded') {
+        const wk1 = rows.filter((r) => r.weekStart === 1);
+        for (const [m, n] of Object.entries(prog.weeklySets(wk1))) if (n > 10) problems.push(`${b} beginner week 1 ${m} ${n} sets`);
+        if (Math.max(...[...new Set(wk1.map((r) => r.dayNum))].map((d) => wk1.filter((r) => r.dayNum === d).length)) > 4) problems.push(`${b} first-28-days session too long`);
       }
-      const st = ph.find((x) => x.kind === 'strength');
-      if (st && !rows.some((r) => r.weekStart === st.weekStart && r.reps.startsWith('3–5'))) problems.push(`${b} strength lacks 3–5`);
+      if (weeksOf(ph, (x) => x.nutrition === 'cutting') > 16) problems.push(`${b}/${lvl} cuts ${weeksOf(ph, (x) => x.nutrition === 'cutting')} weeks`);
+      // Cuts hold volume: the first cut block has the same sets as the build block it follows (same variation).
+      const cut = ph.find((x) => x.kind === 'cut');
+      if (cut) {
+        const hyp = [...ph].reverse().find((x) => x.kind === 'hypertrophy' && x.weekStart < cut.weekStart && x.variant === cut.variant && x.setScale === 1);
+        const tot = (p) => rows.filter((r) => r.weekStart === p.weekStart).reduce((s, r) => s + r.sets, 0);
+        if (hyp && tot(hyp) !== tot(cut)) problems.push(`${b}/${lvl} cut trims volume ${tot(cut)} vs ${tot(hyp)}`);
+      }
+      if (rows.some((r) => /late — trimmed/.test(r.phaseName))) problems.push(`${b} still trims late-cut volume`);
     }
   }
-  eq('all 9 builds × 2 levels: 52 contiguous weeks, priority 10–20 sets 2×/wk, ≤26 sets, deload ≈½, strength 3–5 reps', problems, []);
-  const vt = prog.buildPhases('v_taper', 'experienced');
-  eq('macros, 180 lb V-taper: hypertrophy / cut', [prog.macrosFor(180, vt.find((x) => x.kind === 'hypertrophy')), prog.macrosFor(180, vt.find((x) => x.kind === 'cut'))], [
-    { calories: 3020, protein: 144, carbs: 469, fat: 63 },
-    { calories: 2160, protein: 189, carbs: 209, fat: 63 },
-  ]);
+  eq('all 9 builds × 2 levels: 52 weeks; ≤25 fractional sets/muscle/wk and ≤11/session; priority 10–25 at 2×/wk; beginners start ≤10 sets and ≤4 exercises; deloads ≈½; no redundant pairs in a session; cuts ≤16 wk and hold volume', problems, []);
+
+  const maps = Object.fromEntries(shared.BUILDS.map((b) => [b, prog.buildPhases(b, 'beginner')]));
+  eq('Results 2: build-specific years — Thick & Powerful, Strong & Dense and Strong & Curvy have no cut; Lean Runner never gains', [
+    ['thick_powerful', 'strong_dense', 'strong_curvy'].map((b) => weeksOf(maps[b], (x) => x.nutrition === 'cutting')),
+    weeksOf(maps.lean_runner, (x) => x.nutrition === 'gaining'),
+  ], [[0, 0, 0], 0]);
+  eq('…Thick & Powerful spends 36 weeks in a lean gain', weeksOf(maps.thick_powerful, (x) => x.nutrition === 'gaining'), 36);
+  const sh = prog.buildPhases('shredded', 'experienced');
+  eq('Safety 5: Shredded cut is 16 weeks, then 8 weeks of required maintenance', [weeksOf(sh, (x) => x.nutrition === 'cutting'), sh.at(-1).name, sh.at(-1).weekEnd - sh.at(-1).weekStart + 1], [16, 'Maintenance + recovery', 8]);
+  eq('Results 5: every year opens with “First 28 days”: short sessions', shared.BUILDS.filter((b) => b !== 'shredded').every((b) => maps[b][0].name.startsWith('First 28 days') && maps[b][0].weekEnd === 4), true);
+  const cutFirst = prog.buildPhases('lean_athletic', 'beginner', { startWithCut: true });
+  eq('higher body fat: the cut comes first (after the first 28 days)', [cutFirst[1].kind, cutFirst[1].nutrition], ['cut', 'cutting']);
+  const teenMap = prog.buildPhases('lean_runner', 'beginner', { teen: true });
+  eq('Safety 1: teen years have no deficit, no surplus, no cut, no “Lean”', [teenMap.every((x) => x.nutrition === 'maintenance' && x.weeklyChangePct === 0), teenMap.some((x) => x.kind === 'cut' || /lean|cut/i.test(x.name))], [true, false]);
+  eq('Safety 8: pregnancy / postpartum plans have no cut', prog.buildPhases('hourglass', 'beginner', { noCut: true }).some((x) => x.nutrition === 'cutting'), false);
+  eq('Nice 1: deloads every 6 weeks (8 for beginners), not every 5th — 5 and 4 a year instead of ~10', [prog.buildPhases('v_taper', 'experienced').filter((x) => x.kind === 'deload').length, maps.v_taper.filter((x) => x.kind === 'deload').length], [5, 4]);
+  eq('Results 7: library adds leg extension, seated leg curl, shrug, carry, cable crunch, plyometrics, seated calf raise', ['Leg extension', 'Seated leg curl', 'Dumbbell shrug', "Farmer's carry", 'Cable crunch', 'Box jump', 'Pogo hops', 'Seated calf raise'].filter((n) => !allNames.has(n)), []);
+  eq('…“leg curl” is the seated one now', allNames.has('Leg curl'), false);
+  const runnerRows = prog.programRows('lean_runner', maps.lean_runner);
+  eq('…plyometrics don’t count as hard sets; runners lift heavy (3–6) without hypertrophy blocks', [prog.weeklySets(runnerRows.filter((r) => r.exercise === 'Pogo hops')), runnerRows.filter((r) => r.exercise === 'Back squat' && !/light/.test(r.reps)).every((r) => r.reps.startsWith('3–6'))], [{}, true]);
+  const la = prog.programRows('lean_athletic', prog.buildPhases('lean_athletic', 'experienced'));
+  eq('Nice 2: variations rotate every 3–4 weeks; main lifts never rotate', [la.some((r) => r.exercise === 'Incline dumbbell curl'), la.some((r) => r.exercise === 'Dumbbell curl'), prog.programRows('strong_dense', prog.buildPhases('strong_dense', 'experienced')).some((r) => r.exercise === 'Machine chest press')], [true, true, false]);
+  eq('Results 6: reps carry RIR (reps in reserve)', la.filter((r) => !/RIR|full rest/.test(r.reps)).length, 0);
 
   section('D + A2. pick a build → a planned year (API)');
   await kayla.get(`/dev-login?token=${DEV_TOKEN}&member=kayla`);
@@ -1513,9 +1585,135 @@ async function exercisePictures() {
     if (r.status !== 200 || r.headers.get('content-type') !== 'image/webp') broken.push(n);
   }
   const progMap = Object.entries(real).filter(([n]) => names.has(n));
-  eq('real demo renders: all 29 program exercises wired, every picture loads as webp', [progMap.length, broken], [29, []]);
-  eq('…each program exercise shows its own render (named for it)', progMap.filter(([n, u]) => u !== `/exercises/${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.webp`), []);
-  eq('…plus 18 renders for movements not yet in the programs (leg extension, cable crunch, face pull…)', [Object.keys(real).length - progMap.length, ['Leg extension', 'Cable crunch', 'Face pull', 'Seated calf raise'].every((n) => real[n])], [18, true]);
+  const noRender = [...names].filter((n) => !real[n]).sort();
+  eq('real demo renders: every program exercise wired except the 5 new ones still waiting for a render; every picture loads as webp', [noRender, broken], [['Box jump', 'Dumbbell shrug', "Farmer's carry", 'Pogo hops', 'Seated leg curl'], []]);
+  eq('…each wired exercise shows its own render (its words are in the file name)', progMap.filter(([n, u]) => !n.toLowerCase().replace(/dumbbell/g, 'db').split(/[^a-z0-9]+/).filter(Boolean).every((w) => u.includes(w) || u.includes(w.replace('db', 'dumbbell')))), []);
+  eq('…the new program moves use the round-2 renders (leg extension, cable crunch, face pull, seated calf raise)', ['Leg extension', 'Cable crunch', 'Face pull', 'Seated calf raise'].filter((n) => !names.has(n) || !real[n]), []);
+  eq('…the lying leg curl render is no longer shown for the (seated) leg curl', [real['Lying leg curl'], real['Seated leg curl']], ['/exercises/lying-leg-curl.webp', undefined]);
+}
+
+/** "Evidence for the nine body builds": the safety rules, the new food math and the training changes, through the API. */
+async function bodyScience() {
+  const signup = async (email, name) => {
+    const c = new Client(email);
+    await c.get(`/dev-login?token=${DEV_TOKEN}&email=${email}`);
+    await c.post('/api/households', { householdName: `${name}’s place`, type: 'solo', yourName: name });
+    return c;
+  };
+  const shift = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+
+  section('Safety 1. teen mode (Avery, 15): training styles, no calorie / weight / shake targets');
+  const at = (await avery.put('/api/program', { build: 'lean_athletic', level: 'beginner' })).data.program;
+  eq('no weight needed; the build shows as a training style; no food targets', [at.teen, at.label, at.bodyweightLb, at.macros, at.shakes, at.plannedProtein], [true, 'Athletic', null, null, null, null]);
+  eq('…every phase at maintenance; no cut, no “Lean”', [at.phases.every((p) => p.nutrition === 'maintenance' && p.weeklyChangePct === 0), at.phases.some((p) => p.kind === 'cut' || /cut|lean/i.test(p.name))], [true, false]);
+  eq('…Shredded is adults-only', (await avery.put('/api/program', { build: 'shredded', level: 'experienced' })).data.code, 'adults_only');
+  eq('…no weigh-ins', (await avery.put('/api/weigh-ins', { enabled: true })).status, 403);
+  eq('…no shake or creatine habits', [(await avery.post('/api/habits/shake', { done: true })).status, (await avery.get('/api/workouts/today')).data.habitKeys], [403, ['water']]);
+  check('…teen copy about what the body can do, never a creatine note', at.notes.some((n) => /don’t do calorie targets/.test(n)) && !at.notes.some((n) => /creatine/i.test(n)));
+
+  section('Safety 2 + 4, Results 1. Mifflin-St Jeor, capped deficits, calorie floors, reference weight');
+  const bea = await signup('bea@example.com', 'Bea');
+  const bp = (await bea.put('/api/program', { build: 'toned_athletic', level: 'beginner', bodyweightLb: 300, heightIn: 64, sex: 'female', ageYears: 30, activity: 'sedentary', foodProtein: 80 })).data.program;
+  eq('300 lb at 5′4″ (BMI ≥ 30): the year starts with the cut, after the first 28 days', [bp.phases[0].name, bp.phases[1].kind], ['First 28 days', 'cut']);
+  const bc = (await bea.post('/api/program/restart', { week: 5 })).data.program;
+  eq('…in the cut: maintenance 2,479 (was 4,500), deficit capped at 750, protein + shakes on reference weight (146 lb)', [bc.phase.nutrition, bc.energy.maintenance, bc.macros.calories, bc.energy.capped, bc.energy.referenceLb, bc.macros.protein, bc.shakes.shakes], ['cutting', 2479, 1730, true, 146, 153, 3]);
+  eq('Results 3: protein per meal adds up to the day', [bc.perMeal.meals, bc.perMeal.grams * 4 >= bc.macros.protein - 3], [4, true]);
+  const flo = await signup('flo@example.com', 'Flo');
+  await flo.put('/api/program', { build: 'hourglass', level: 'beginner', bodyweightLb: 110, heightIn: 60, sex: 'female', ageYears: 60, activity: 'sedentary' });
+  const fc = (await flo.post('/api/program/restart', { week: 41 })).data.program;
+  eq('small, older, sedentary woman in her cut: held at the 1,200 floor', [fc.phase.nutrition, fc.macros.calories, fc.energy.floored], ['cutting', 1200, true]);
+  check('Nice 3: over-40 and menopause notes for her', fc.notes.some((n) => /Over 40/.test(n)) && fc.notes.some((n) => /menopause/.test(n)));
+
+  section('Safety 5. Shredded: adults, experienced, eating-disorder screen + disclosure, 16-week cut');
+  const shay = await signup('shay@example.com', 'Shay');
+  const sbase = { build: 'shredded', bodyweightLb: 180, ageYears: 28 };
+  const s1 = await shay.put('/api/program', { ...sbase, level: 'beginner' });
+  eq('beginner → routed to Lean Athletic', [s1.status, s1.data.code], [409, 'shredded_needs_base']);
+  eq('experienced → the screen first', (await shay.put('/api/program', { ...sbase, level: 'experienced' })).data.code, 'shredded_screen');
+  const s3 = await shay.put('/api/program', { ...sbase, level: 'experienced', edScreen: [false, true, false, false, true] });
+  eq('2+ “yes” → not now, with a referral; nothing planned', [s3.data.code, /doctor|dietitian/.test(s3.data.error), (await shay.get('/api/program')).data.program], ['shredded_screen_positive', true, null]);
+  const clean = [false, false, false, false, false];
+  eq('clean screen → read the costs first', (await shay.put('/api/program', { ...sbase, level: 'experienced', edScreen: clean })).data.code, 'shredded_ack');
+  const sp = (await shay.put('/api/program', { ...sbase, level: 'experienced', edScreen: clean, shreddedAck: true })).data.program;
+  const cutWeeks = sp.phases.filter((p) => p.nutrition === 'cutting').reduce((s, p) => s + p.weekEnd - p.weekStart + 1, 0);
+  eq('accepted: a 16-week cut, then required maintenance + recovery; check-in due now', [sp.build.key, cutWeeks, sp.phases.at(-1).name, sp.checkin.due], ['shredded', 16, 'Maintenance + recovery', true]);
+  eq('…the referral was logged (no answers stored)', (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name = 'build_screen_referred'"))[0].n, 1);
+
+  section('Safety 3. the 4-week check-in and stop rules');
+  const tia = await signup('tia@example.com', 'Tia');
+  let tp = (await tia.put('/api/program', { build: 'toned_athletic', level: 'beginner', bodyweightLb: 150, sex: 'female' })).data.program;
+  eq('a woman with a cut in her year: check-in needed, due, asks about periods', [tp.checkin.needed, tp.checkin.due, tp.checkin.askPeriods], [true, true, true]);
+  eq('…a man on Lean Athletic isn’t asked', (await (await signup('lou@example.com', 'Lou')).put('/api/program', { build: 'lean_athletic', level: 'beginner', bodyweightLb: 180 })).data.program.checkin.needed, false);
+  tp = (await tia.post('/api/program/checkin', { aches: true, sleepPoor: true })).data.program;
+  eq('soft flags (aches, poor sleep): done for 4 weeks, nothing paused, a deload suggested', [tp.checkin.due, tp.cutPaused, /aches/.test(tp.deloadSuggested ?? '')], [false, null, true]);
+  const red = (await tia.post('/api/program/checkin', { periodChange: true, monthsNoPeriod: 3 })).data;
+  eq('3 months without a period → leanness goals paused, see a doctor', [red.red, /doctor/.test(red.program.cutPaused ?? '')], [true, true]);
+  const inCut = (await tia.post('/api/program/restart', { week: 37 })).data.program;
+  eq('…so her cut weeks eat at maintenance', [inCut.phase.nutrition, Math.abs(inCut.macros.calories - inCut.energy.maintenance) <= 5], ['cutting', true]);
+  eq('resuming needs a clinician’s OK', (await tia.post('/api/program/resume', {})).status, 400);
+  const res = (await tia.post('/api/program/resume', { clinicianCleared: true })).data.program;
+  eq('…with it the deficit is back', [res.cutPaused, res.macros.calories < res.energy.maintenance - 300], [null, true]);
+  const brk = (await tia.post('/api/program/diet-break', { on: true })).data.program;
+  eq('Nice 3: a diet break is a week at maintenance', [!!brk.dietBreakUntil, Math.abs(brk.macros.calories - brk.energy.maintenance) <= 5], [true, true]);
+  eq('…and can end early', (await tia.post('/api/program/diet-break', { on: false })).data.program.dietBreakUntil, null);
+
+  section('Safety 6 + Results 1. weigh-ins: opt-in, 7-day averages only, recalibration every 2 weeks');
+  eq('off by default', (await tia.get('/api/weigh-ins')).data.enabled, false);
+  eq('…logging needs them on', (await tia.post('/api/weigh-ins', { weightLb: 150 })).status, 409);
+  await tia.put('/api/weigh-ins', { enabled: true });
+  const t = (await tia.get('/api/workouts/today')).data.date;
+  const wi = (await tia.post('/api/weigh-ins', { weightLb: 153 })).data;
+  eq('only the 7-day average comes back — never the raw day', [Object.keys(wi).sort(), wi.average7], [['average7', 'enabled', 'weeks'], 153]);
+  for (let i = 0; i < 14; i++) await tia.post('/api/weigh-ins', { weightLb: 150, day: shift(t, -i) });
+  const cal = (await tia.post('/api/program/restart', { week: 39 })).data.program;
+  eq('2 weeks into the cut with no loss: calories trimmed 250 (max step), weight synced to the average', [cal.energy.adjust, cal.bodyweightLb], [-250, 150]);
+  eq('…and not again for 2 weeks', (await tia.get('/api/program')).data.program.energy.adjust, -250);
+
+  section('Safety 7. Lean Runner: single-run cap; running held flat during the deficit');
+  const rae = await signup('rae@example.com', 'Rae');
+  const rp = (await rae.put('/api/program', { build: 'lean_runner', level: 'beginner', bodyweightLb: 130, sex: 'female' })).data.program;
+  eq('no “10% a week” rule; the single-run cap instead', [/10% per week/.test(rp.cardio), /10% longer than your longest run/.test(rp.cardio)], [false, true]);
+  const lean = (await rae.get('/api/workouts/plan')).data.phases.find((p) => p.name.startsWith('Lean block'));
+  check('the lean block holds running flat (never more running and fewer calories together)', /Hold your running flat/.test(lean?.cardio ?? ''), lean?.cardio);
+  eq('no runs yet: the cap is explained, not set', (await rae.get('/api/workouts/today')).data.runCap, { longestMinutes: null, longestMiles: null, capMinutes: null, capMiles: null });
+  eq('first run sets the baseline (no warning)', (await rae.post('/api/workouts/session', { activity: 'Easy run', minutes: 40, miles: 4 })).data.runWarning, null);
+  eq('cap = longest × 1.1', (await rae.get('/api/workouts/today')).data.runCap, { longestMinutes: 40, longestMiles: 4, capMinutes: 44, capMiles: 4.4 });
+  check('a run 25% longer → a warning', /more than 10% longer/.test((await rae.post('/api/workouts/session', { activity: 'Long run', minutes: 50 })).data.runWarning ?? ''));
+  const rt = (await rae.get('/api/workouts/today')).data;
+  eq('Results 5: day 7 of the first 28 days (week 1 began Monday); one day so far isn’t a minimum week yet', [rt.onboarding, rt.week.minimumMet], [{ day: 7, attended: 1 }, false]);
+  check('Lean Runner fuel copy is there', rt.program.notes.some((n) => /enough fuel/.test(n)));
+
+  section('Safety 8. pregnancy / postpartum: a clinician’s OK, no cut');
+  const pia = await signup('pia@example.com', 'Pia');
+  const p1 = await pia.put('/api/program', { build: 'hourglass', level: 'beginner', bodyweightLb: 150, sex: 'female', lifeStage: 'pregnant' });
+  eq('pregnant → clinician first; nothing planned', [p1.status, p1.data.code, (await pia.get('/api/program')).data.program], [409, 'clinician_needed', null]);
+  const p2 = (await pia.put('/api/program', { build: 'hourglass', level: 'beginner', bodyweightLb: 150, sex: 'female', lifeStage: 'pregnant', clinicianCleared: true })).data.program;
+  eq('cleared → a plan with no cut and no calorie targets', [p2.lifeStage, p2.phases.some((p) => p.nutrition === 'cutting'), p2.macros], ['pregnant', false, null]);
+  const p3 = (await pia.put('/api/program', { build: 'hourglass', level: 'beginner', bodyweightLb: 150, sex: 'female', lifeStage: 'postpartum', clinicianCleared: true })).data.program;
+  eq('postpartum: targets, but still no cut', [p3.phases.some((p) => p.nutrition === 'cutting'), p3.macros !== null], [false, true]);
+
+  section('Results 8 + Nice 1/2. missed weeks, deloads, chapters');
+  const cole = await signup('cole@example.com', 'Cole');
+  await cole.put('/api/program', { build: 'v_taper', level: 'experienced', bodyweightLb: 185 });
+  const cm = (await cole.get('/api/me')).data.member;
+  const [{ household_id: chh }] = await sql('SELECT household_id FROM household_members WHERE id = $1', [cm.id]);
+  const logOn = (d) => sql("INSERT INTO workout_logs (household_id, member_id, logged_on, kind) VALUES ($1, $2, $3, 'day_complete')", [chh, cm.id, d]);
+  const back = async () => (await cole.get('/api/workouts/today')).data.comeback;
+  await logOn(shift(t, -70));
+  eq('70 days off → restart this phase (not week 1)', (await back()).mode, 'restart');
+  await logOn(shift(t, -30));
+  eq('29 days off → two ramp weeks at ~60%', (await back()).mode, 'ramp');
+  await logOn(shift(t, -10));
+  eq('9 days off → resume, a little lighter', (await back()).mode, 'resume');
+  await logOn(t);
+  eq('back today: still inside the 2 ramp weeks after the 19-day gap that ended 10 days ago', [(await back())?.mode, (await back())?.daysOff], ['ramp', 19]);
+  const dl = (await cole.post('/api/program/deload', { on: true })).data.program;
+  eq('a deload week on demand', [dl.deloadThisWeek, dl.deloadSuggested], [true, null]);
+  eq('…and undo', (await cole.post('/api/program/deload', { on: false })).data.program.deloadThisWeek, false);
+  const plan = (await cole.get('/api/workouts/plan')).data;
+  eq('the year is four chapters', plan.chapters.map((c) => [c.weekStart, c.weekEnd]), [[1, 13], [14, 26], [27, 39], [40, 52]]);
+  const ch2 = (await cole.post('/api/program/restart', { chapter: 2 })).data.program;
+  eq('…any chapter is a fresh start', [ch2.week, ch2.chapter], [14, 2]);
 }
 
 async function householdJoin() {
@@ -1772,6 +1970,31 @@ async function uiGate() {
     const cards = await kpg.locator('.card.exercise').count();
     eq('one demo picture per exercise card', [shown > 0, shown === cards], [true, true]);
 
+    section('body builds in the browser: food math shown, deload on demand (in-page), weigh-ins opt-in, teen view');
+    await kayla.patch('/api/me/prefs', { firstRunDone: true }); // her welcome card would cover the page
+    await kpg.reload();
+    await kpg.getByTestId('program').waitFor({ timeout: 10000 });
+    check('macros come with how they were worked out', await kpg.getByText(/Maintenance ≈ \d+ cal/).waitFor({ timeout: 10000 }).then(() => true, () => false));
+    eq('weigh-ins are offered, off by default', await kpg.getByTestId('weighins-on').count(), 1);
+    await kpg.getByTestId('deload-toggle').click();
+    check('“Take a deload week” turns this week light', await kpg.getByRole('button', { name: 'Undo the deload week' }).waitFor({ timeout: 10000 }).then(() => true, () => false));
+    await kpg.getByRole('button', { name: 'Undo the deload week' }).click();
+    await kpg.getByRole('button', { name: 'Take a deload week' }).waitFor({ timeout: 10000 });
+    eq('this-week progress + the minimum week are shown', await kpg.getByTestId('week-progress').getByText(/two sessions counts as a win/).count(), 1);
+    await kpg.getByRole('button', { name: 'Change build' }).click();
+    await kpg.getByRole('button', { name: /^Shredded/ }).click();
+    await kpg.getByRole('button', { name: 'Build my year' }).click();
+    check('picking Shredded as a beginner opens the in-page gate (no native dialog)', await kpg.getByTestId('build-gate').getByText(/muscular base first/).waitFor({ timeout: 10000 }).then(() => true, () => false));
+    await kpg.getByTestId('build-gate').getByRole('button', { name: 'Back', exact: true }).click();
+    eq('…and Back closes it without changing anything', [await kpg.getByTestId('build-gate').count(), (await kayla.get('/api/program')).data.program.build.key], [0, 'strong_curvy']);
+    const tc = await browser.newContext(phone);
+    const tpg = await tc.newPage();
+    await tpg.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`);
+    await tpg.goto(`${BASE}/health`);
+    check('teen view: no calorie numbers, a training style, water only', await tpg.getByTestId('no-targets').waitFor({ timeout: 10000 }).then(() => true, () => false));
+    eq('…', [await tpg.getByTestId('macros').count(), await tpg.getByTestId('weighins-on').count(), await tpg.getByTestId('habits').getByText('Protein shake').count(), await tpg.getByTestId('program').getByText(/^Athletic ·/).count()], [0, 0, 0, 1]);
+    await tc.close();
+
     section('every page renders for a grown-up (no crashes, no “not found”)');
     const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus'];
     const notFound = [];
@@ -1925,6 +2148,7 @@ try {
   await circles();
   await careTeam();
   await exercisePictures();
+  await bodyScience();
   await householdJoin();
   if (process.env.E2E_UI !== '0') await uiGate();
 } catch (e) {
