@@ -11,7 +11,7 @@ The nine builds follow the research report "Evidence for the nine body builds". 
 | 3 | **Check-ins every 4 weeks** apply to women whose year includes a cut, Lean Runner and Shredded. They ask about periods, bone-stress injury, fatigue, food worries, sleep and aches. Red flags pause any cut until a clinician clears it: 3+ months without a period, a bone-stress injury, or food running your life. Soft flags (aches, sleep, fatigue) suggest a deload. | `POST /api/program/checkin`, `/resume` |
 | 4 | **Reference weight** drives protein, fat and shakes. It is the lowest of current weight, goal weight and, when BMI ≥ 30, the weight at BMI 25. Shakes are rounded up and capped at 3 a day. | `referenceWeightLb`, `shakesPerDay` |
 | 5 | **Shredded** is for adults with a year or more of lifting. It requires a 5-question eating-disorder screen (2+ "yes" refers the person to a doctor or dietitian) and a disclosure of the costs. The cut is 16 weeks, followed by 8 required weeks of maintenance. Beginners are routed to Lean Athletic. "I need a break" pauses the cut for a week. | `PUT /api/program` |
-| 6 | **Weigh-ins** are off by default and only ever shown as a 7-day average. The API never returns a single day's weight. There are no progress photos and no streak shaming. | `/api/weigh-ins` |
+| 6 | **Weigh-ins** are off by default and only ever shown as a 7-day average. The API never returns a single day's weight. **Progress photos** are opt-in (see below). There is no streak shaming. | `/api/weigh-ins`, `/api/progress-photos` |
 | 7 | **Run cap:** no single run may be more than 10% longer than the longest run in the past 30 days. A run over the cap triggers a warning. The "10% a week" rule is gone. | `runCapFor` |
 | 8 | **Pregnancy or postpartum** requires the clinician's OK first, and the plan never includes a cut. In pregnancy there are no calorie targets. | `clinician_needed` |
 
@@ -41,14 +41,17 @@ The nine builds follow the research report "Evidence for the nine body builds". 
 - **Exercise rotation:** variants rotate every 3–4 weeks. Main lifts never rotate.
 - **Adult notes:** creatine, diet breaks, sleep, and notes for people over 40 and around menopause.
 
-## Still needed
+## Progress photos
 
-Five new exercises have no demo render yet. Add the files to `web/public/exercises/` and run `node scripts/exercise-pictures.mjs`:
+Each set has four poses: front, back, left side and right side. The app suggests a new set about every 4 weeks, as a gentle nudge with no streak.
 
-- Seated leg curl
-- Dumbbell shrug
-- Farmer's carry
-- Box jump
-- Pogo hops
+- **Opt-in and adults only.** Photos are never available in teen mode.
+- **Private to their owner.** No other grown-up in the household can see them, including when "viewing" someone's Health page. Coaches, care-team pages and staff pages can't see them either.
+- **No location data.** The phone re-encodes each photo before upload (max 1600 px, JPEG), which drops location and camera data.
+- **Encrypted in the database** with AES-256-GCM. Because they live in the database, they're in the nightly backup and move with a household merge.
+- **Encryption key:** set `PHOTO_KEY` (64 hex characters) in `/opt/myday/.env` to use a dedicated key. Without it, the key is derived from `SESSION_SECRET`, so changing `SESSION_SECRET` would make those photos unreadable. Each row records which key encrypted it.
+- **Deleting:** one photo, or all of them through an in-page confirm. Turning photos off keeps the saved ones.
 
-The old `leg-curl.webp` render shows a lying curl. It is now `lying-leg-curl.webp`, so it no longer appears under the seated curl.
+## Exercise pictures
+
+All 44 program exercises have a render (`api/content/exercise-images.json`, rebuilt with `node scripts/exercise-pictures.mjs`). The old lying-curl render is kept as "Lying leg curl".

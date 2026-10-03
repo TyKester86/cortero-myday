@@ -1586,10 +1586,11 @@ async function exercisePictures() {
   }
   const progMap = Object.entries(real).filter(([n]) => names.has(n));
   const noRender = [...names].filter((n) => !real[n]).sort();
-  eq('real demo renders: every program exercise wired except the 5 new ones still waiting for a render; every picture loads as webp', [noRender, broken], [['Box jump', 'Dumbbell shrug', "Farmer's carry", 'Pogo hops', 'Seated leg curl'], []]);
+  eq('real demo renders: every program exercise has its picture (incl. round 3: box jump, shrug, farmer’s carry, pogo hops, seated leg curl); every picture loads as webp', [noRender, broken], [[], []]);
+  eq('…round 3 files wired by name (apostrophes ignored)', ["Farmer's carry", 'Seated leg curl', 'Box jump'].map((n) => real[n]), ['/exercises/farmers-carry.webp', '/exercises/seated-leg-curl.webp', '/exercises/box-jump.webp']);
   eq('…each wired exercise shows its own render (its words are in the file name)', progMap.filter(([n, u]) => !n.toLowerCase().replace(/dumbbell/g, 'db').split(/[^a-z0-9]+/).filter(Boolean).every((w) => u.includes(w) || u.includes(w.replace('db', 'dumbbell')))), []);
   eq('…the new program moves use the round-2 renders (leg extension, cable crunch, face pull, seated calf raise)', ['Leg extension', 'Cable crunch', 'Face pull', 'Seated calf raise'].filter((n) => !names.has(n) || !real[n]), []);
-  eq('…the lying leg curl render is no longer shown for the (seated) leg curl', [real['Lying leg curl'], real['Seated leg curl']], ['/exercises/lying-leg-curl.webp', undefined]);
+  eq('…the lying leg curl render is no longer shown for the (seated) leg curl', [real['Lying leg curl'], real['Seated leg curl']], ['/exercises/lying-leg-curl.webp', '/exercises/seated-leg-curl.webp']);
 }
 
 /** "Evidence for the nine body builds": the safety rules, the new food math and the training changes, through the API. */
@@ -1714,6 +1715,36 @@ async function bodyScience() {
   eq('the year is four chapters', plan.chapters.map((c) => [c.weekStart, c.weekEnd]), [[1, 13], [14, 26], [27, 39], [40, 52]]);
   const ch2 = (await cole.post('/api/program/restart', { chapter: 2 })).data.program;
   eq('…any chapter is a fresh start', [ch2.week, ch2.chapter], [14, 2]);
+
+  section('progress photos: opt-in, private to their owner, encrypted, adults only');
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(400, 7), Buffer.from([0xff, 0xd9])]);
+  const up = (c, pose, body = jpeg, headers = { 'Content-Type': 'image/jpeg', 'X-MyDay-Upload': '1' }) => c.req('POST', `/api/progress-photos/${pose}`, body, { json: false, headers });
+  eq('off by default', (await kayla.get('/api/progress-photos')).data, { enabled: false, sets: [], lastOn: null, due: true });
+  eq('…uploading needs them on', [(await up(kayla, 'front')).status, (await up(kayla, 'front')).data.code], [409, 'photos_off']);
+  await kayla.put('/api/progress-photos', { enabled: true });
+  eq('uploads need the upload header (no cross-site form posts)', (await up(kayla, 'front', jpeg, { 'Content-Type': 'image/jpeg' })).status, 400);
+  eq('…only front / back / left / right', (await up(kayla, 'top')).status, 400);
+  eq('…only real images (bytes are checked, not the header)', (await up(kayla, 'front', Buffer.from('x'.repeat(300)))).status, 415);
+  for (const pose of ['front', 'back', 'left', 'right']) await up(kayla, pose);
+  const ph = (await kayla.get('/api/progress-photos')).data;
+  eq('a full set for today: front, back and both sides; not due again for ~4 weeks', [ph.sets.length, Object.values(ph.sets[0].photos).every((id) => typeof id === 'number'), ph.due], [1, true, false]);
+  const firstFront = ph.sets[0].photos.front;
+  await up(kayla, 'front');
+  const retaken = (await kayla.get('/api/progress-photos')).data;
+  eq('retaking a pose replaces it under a new id (still one set, one front; no stale picture)', [retaken.sets.length, (await sql("SELECT COUNT(*)::int AS n FROM progress_photos WHERE pose = 'front'"))[0].n, retaken.sets[0].photos.front !== firstFront], [1, 1, true]);
+  const frontId = (await kayla.get('/api/progress-photos')).data.sets[0].photos.front;
+  const img = await kayla.req('GET', `/api/progress-photos/${frontId}/image`, undefined, { json: false });
+  eq('the owner gets her photo back, never cached', [img.headers.get('content-type'), img.headers.get('cache-control')], ['image/jpeg', 'private, no-store']);
+  const stored = (await sql('SELECT data, key_id, bytes FROM progress_photos WHERE id = $1', [frontId]))[0];
+  eq('stored encrypted (no JPEG bytes in the database)', [stored.data.subarray(0, 3).equals(jpeg.subarray(0, 3)), stored.data.includes(jpeg.subarray(4, 40)), stored.bytes], [false, false, jpeg.length]);
+  eq('another grown-up in the household can’t see it — not even “acting for” her', [(await ty.get(`/api/progress-photos/${frontId}/image`)).status, (await ty.get('/api/progress-photos?member=kayla')).status, (await ty.get('/api/progress-photos')).data.sets.length], [404, 403, 0]);
+  eq('teens: no progress photos', [(await avery.get('/api/progress-photos')).status, (await up(avery, 'front')).status], [403, 403]);
+  await sql(`INSERT INTO progress_photos (household_id, member_id, taken_on, pose, mime, data, key_id, bytes)
+             SELECT household_id, member_id, taken_on - 35, pose, mime, data, key_id, bytes FROM progress_photos WHERE member_id = (SELECT member_id FROM progress_photos WHERE id = $1)`, [frontId]);
+  eq('two monthly sets to compare (newest first)', (await kayla.get('/api/progress-photos')).data.sets.length, 2);
+  const one = (await kayla.get('/api/progress-photos')).data.sets[1].photos.left;
+  eq('delete one photo', (await kayla.del(`/api/progress-photos/${one}`)).data.sets[1].photos.left, null);
+  eq('“delete all” needs the confirm word', (await kayla.del('/api/progress-photos')).status, 409);
 }
 
 async function householdJoin() {
@@ -1994,6 +2025,41 @@ async function uiGate() {
     check('teen view: no calorie numbers, a training style, water only', await tpg.getByTestId('no-targets').waitFor({ timeout: 10000 }).then(() => true, () => false));
     eq('…', [await tpg.getByTestId('macros').count(), await tpg.getByTestId('weighins-on').count(), await tpg.getByTestId('habits').getByText('Protein shake').count(), await tpg.getByTestId('program').getByText(/^Athletic ·/).count()], [0, 0, 0, 1]);
     await tc.close();
+
+    section('progress photos in the browser: add a pose (re-encoded on the phone), compare months, delete all (in-page)');
+    await kpg.goto(`${BASE}/health`);
+    await kpg.getByTestId('photos').waitFor({ timeout: 10000 });
+    await kpg.getByTestId('pose-back').locator('input[type=file]').setInputFiles(path.join(root, 'web', 'public', 'exercises', 'plank.webp'));
+    await kpg.getByText('Saved ✓ Only you can see it.').waitFor({ timeout: 15000 });
+    const shownBack = await kpg
+      .waitForFunction(() => {
+        const el = document.querySelector('[data-testid="pose-back"] img');
+        return !!el && el.complete && el.naturalWidth > 0;
+      }, null, { timeout: 15000 })
+      .then(() => true, () => false);
+    const why = shownBack ? '' : JSON.stringify(await kpg.evaluate(async () => {
+      const el = document.querySelector('[data-testid="pose-back"] img');
+      if (!el) return { img: 'missing', html: document.querySelector('[data-testid="pose-back"]')?.outerHTML.slice(0, 300) };
+      const r = await fetch(el.src);
+      return { src: el.src, status: r.status, type: r.headers.get('content-type'), bytes: (await r.arrayBuffer()).byteLength, complete: el.complete, w: el.naturalWidth };
+    }));
+    check('the new back photo shows (served decrypted, only to her)', shownBack, why);
+    eq('…and is never kept in the offline cache', await kpg.evaluate(async () => (await Promise.all((await caches.keys()).map(async (k) => (await (await caches.open(k)).keys()).filter((r) => r.url.includes('/api/progress-photos')).length))).reduce((a, b) => a + b, 0)), 0);
+    const backId = (await kayla.get('/api/progress-photos')).data.sets[0].photos.back;
+    eq('…uploaded as a re-encoded JPEG (location/camera data dropped)', (await sql('SELECT mime FROM progress_photos WHERE id = $1', [backId]))[0].mime, 'image/jpeg');
+    eq('compare shows before/after side by side for each pose', await kpg.getByTestId('photo-compare').locator('.photocompare').count(), 4);
+    await kpg.getByTestId('photos-delete-all').click();
+    await kpg.getByTestId('confirm-ok').click();
+    await kpg.getByTestId('photos').getByText('Take your first set').waitFor({ timeout: 10000 });
+    eq('delete all (through the in-page confirm) removes every photo', (await sql('SELECT COUNT(*)::int AS n FROM progress_photos'))[0].n, 0);
+    const tyHealth = await browser.newContext(phone);
+    const typ = await tyHealth.newPage();
+    await typ.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
+    await typ.evaluate(() => localStorage.setItem('myday.viewing', 'kayla'));
+    await typ.goto(`${BASE}/health`);
+    await typ.getByTestId('program').waitFor({ timeout: 10000 });
+    eq('a grown-up viewing someone else’s Health page sees no photo section', [await typ.getByTestId('photos').count(), await typ.getByTestId('photos-off').count()], [0, 0]);
+    await tyHealth.close();
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
     const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus'];

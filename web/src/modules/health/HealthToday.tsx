@@ -15,6 +15,7 @@ import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
 import { BuildPicker, ProgramCard } from './Program';
+import { ProgressPhotos } from './ProgressPhotos';
 
 function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequest) => Promise<void> }) {
   const [weight, setWeight] = useState('');
@@ -139,7 +140,7 @@ function BaselineForm({ initial, onSave }: { initial: HealthHistory['baseline'];
 }
 
 export default function HealthToday() {
-  const { viewing } = useSession();
+  const { viewing, me } = useSession();
   const path = viewing ? withMember('/api/workouts/today', viewing.key) : null;
   const { data, error, reload, setData } = useLoad<HealthTodayData>(path);
   const [msg, setMsg] = useState<string | null>(null);
@@ -180,6 +181,8 @@ export default function HealthToday() {
     reload();
   };
   const teen = data.member.kind === 'kid' || (data.member.age !== null && data.member.age < 18);
+  // Progress photos are private: only on your own page, and never in teen mode.
+  const photos = !teen && me.member?.key === viewing.key ? <ProgressPhotos today={data.date} /> : null;
   const restartPhase = async (): Promise<void> => {
     await api(withMember('/api/program/restart', viewing.key), 'POST', {});
     setMsg('Restarted this phase — welcome back.');
@@ -218,6 +221,7 @@ export default function HealthToday() {
           </button>
         )}
         {habits}
+        {photos}
         <Records memberKey={viewing.key} />
         {toast}
       </section>
@@ -334,6 +338,7 @@ export default function HealthToday() {
           {data.profile.shake && <p>Shake: {data.profile.shake}</p>}
         </div>
       )}
+      {photos}
       <Records memberKey={viewing.key} />
       {toast}
     </section>

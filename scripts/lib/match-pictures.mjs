@@ -15,6 +15,7 @@ export function words(s) {
     .toLowerCase()
     .replace(/\.[a-z0-9]+$/, '')
     .normalize('NFKD')
+    .replace(/['’]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .split(' ')
     .filter((w) => w && !/^\d+$/.test(w) && !STOP.has(w))

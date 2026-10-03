@@ -1455,6 +1455,24 @@ export interface SetBuildRequest {
   edScreen?: boolean[];
 }
 
+/** Progress photos: four poses, about once a month, private to their owner. */
+export const PROGRESS_POSES = [
+  { key: 'front', label: 'Front', tip: 'Face the camera, arms relaxed a little away from your sides.' },
+  { key: 'back', label: 'Back', tip: 'Back to the camera, same stance.' },
+  { key: 'left', label: 'Left side', tip: 'Left shoulder to the camera, arms relaxed.' },
+  { key: 'right', label: 'Right side', tip: 'Right shoulder to the camera, arms relaxed.' },
+] as const;
+export type ProgressPose = (typeof PROGRESS_POSES)[number]['key'];
+
+export interface ProgressPhotos {
+  enabled: boolean;
+  /** Newest first; each pose is a photo id or null. */
+  sets: Array<{ takenOn: DateStr; photos: Record<ProgressPose, number | null> }>;
+  lastOn: DateStr | null;
+  /** About 4 weeks since the last set (a gentle nudge, never a streak). */
+  due: boolean;
+}
+
 /** 7-day averages only — raw daily numbers are never shown. */
 export interface WeighInSummary {
   enabled: boolean;

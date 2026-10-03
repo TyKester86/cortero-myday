@@ -14,15 +14,16 @@ import { investRouter } from './invest.js';
 import { kidMoneyRouter } from './kidmoney.js';
 import { lecturesRouter, lectureUploadRouter } from './lectures.js';
 import { notificationsRouter } from './notifications.js';
+import { photosRouter, photoUploadRouter } from './photos.js';
 import { programRouter } from './program.js';
 import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
 export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, proRouter, joinRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
-export const uploadRoutes: Router[] = [lectureUploadRouter];
+export const uploadRoutes: Router[] = [lectureUploadRouter, photoUploadRouter];
