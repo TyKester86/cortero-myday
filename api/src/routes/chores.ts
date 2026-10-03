@@ -17,7 +17,7 @@ import {
 import { pool, tx, type Db } from '../db.js';
 import { isoToWeekday, isoWeekday, today, weekdayName, weekdayToIso } from '../lib/dates.js';
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
-import { memberById, requireAdult, targetMember } from '../lib/members.js';
+import { canActFor, memberById, requireAdult, targetMember } from '../lib/members.js';
 import { totalPoints, withEarn, xpStatus } from '../lib/xp.js';
 import { tryPerfectWeek } from './score.js';
 import { tonightCurfew } from './family.js';
@@ -95,7 +95,7 @@ choresRouter.post('/api/chores/:id/toggle', async (req, res) => {
   if (!chore || !chore.active) throw new HttpError(404, 'Chore not found');
   const owner = await memberById(chore.member_id);
   if (!owner) throw new HttpError(404, 'Chore not found');
-  if (req.member?.kind !== 'adult' && req.member?.id !== owner.id) {
+  if (!req.member || !canActFor(req.member, owner)) {
     throw new HttpError(403, 'That is not your chore');
   }
   if (!chore.days.includes(isoWeekday(date))) throw new HttpError(400, 'That chore is not scheduled today');

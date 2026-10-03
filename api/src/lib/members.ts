@@ -50,9 +50,15 @@ export function requireAdult(req: Request): HouseholdMember {
 }
 
 /**
- * Which member a request is about: `?member=<key>` or yourself. Adults can
- * view and act for anyone in the household; kids only for themselves.
+ * Who may act for whom: yourself, and a grown-up for the household's kids.
+ * Never one grown-up for another — partners' days, health and scores are
+ * their own.
  */
+export function canActFor(me: HouseholdMember, target: HouseholdMember): boolean {
+  return target.id === me.id || (me.kind === 'adult' && target.kind === 'kid');
+}
+
+/** Which member a request is about: `?member=<key>` or yourself (see canActFor). */
 export async function targetMember(req: Request): Promise<HouseholdMember> {
   const me = self(req);
   const key = typeof req.query.member === 'string' ? req.query.member : '';
@@ -60,5 +66,6 @@ export async function targetMember(req: Request): Promise<HouseholdMember> {
   if (me.kind !== 'adult') throw new HttpError(403, 'Kids can only see their own day');
   const m = await memberByKey(key);
   if (!m) throw new HttpError(404, 'No such household member');
+  if (!canActFor(me, m)) throw new HttpError(403, 'You can open your own day and your kids’ — not another grown-up’s');
   return m;
 }

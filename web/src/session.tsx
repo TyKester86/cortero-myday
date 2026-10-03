@@ -5,7 +5,9 @@ import { api, ApiFail } from './api';
 interface SessionState {
   me: Me;
   members: HouseholdMember[];
-  /** Whose day is on screen. Adults can switch; kids always see their own. */
+  /** Whose day a grown-up may open: themselves and the kids (never another grown-up). */
+  viewable: HouseholdMember[];
+  /** Whose day is on screen. Adults can switch to a kid; kids always see their own. */
   viewing: HouseholdMember | null;
   setViewing: (key: string) => void;
   isAdult: boolean;
@@ -56,7 +58,9 @@ export function SessionProvider({ signedOut, children }: { signedOut: ReactNode;
   if (status === 'error' || !me) return <div className="center muted">Could not reach MyDay. Try again in a moment.</div>;
 
   const isAdult = me.member?.kind === 'adult';
-  const viewing = (isAdult && members.find((m) => m.key === viewKey)) || me.member;
+  // A grown-up can open their own day and the kids' — never another grown-up's.
+  const viewable = isAdult ? members.filter((m) => m.key === me.member?.key || m.kind === 'kid') : me.member ? [me.member] : [];
+  const viewing = (isAdult && viewable.find((m) => m.key === viewKey)) || me.member;
   const setViewing = (key: string): void => {
     setViewKey(key);
     try {
@@ -67,6 +71,6 @@ export function SessionProvider({ signedOut, children }: { signedOut: ReactNode;
   };
 
   return (
-    <SessionContext.Provider value={{ me, members, viewing, setViewing, isAdult }}>{children}</SessionContext.Provider>
+    <SessionContext.Provider value={{ me, members, viewable, viewing, setViewing, isAdult }}>{children}</SessionContext.Provider>
   );
 }

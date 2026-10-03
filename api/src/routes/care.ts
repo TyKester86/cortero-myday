@@ -35,7 +35,7 @@ import { config } from '../config.js';
 import { asSystem, inHousehold, pool } from '../db.js';
 import { addDays, today } from '../lib/dates.js';
 import { HttpError, idParam, str } from '../lib/http.js';
-import { memberByKey, requireAdult } from '../lib/members.js';
+import { canActFor, memberByKey, requireAdult } from '../lib/members.js';
 
 export const careRouter = Router();
 export const proRouter = Router();
@@ -133,6 +133,7 @@ careRouter.post('/api/care/grants', async (req, res) => {
   if (!kind) throw new HttpError(400, 'Pick tutor, coach or mental-health provider');
   const subject = typeof b.subject === 'string' ? await memberByKey(b.subject) : null;
   if (!subject) throw new HttpError(404, 'Pick who this is for');
+  if (!canActFor(me, subject)) throw new HttpError(403, 'You can add a tutor or coach for yourself or your kids — not another grown-up');
   const scopes = Array.isArray(b.scopes) ? [...new Set(b.scopes.filter((s): s is CareScope => CARE_SCOPES.includes(s as CareScope)))] : [];
   if (!scopes.length) throw new HttpError(400, 'Pick at least one thing they may see');
   if (kind === 'mental_health') {

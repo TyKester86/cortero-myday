@@ -29,7 +29,7 @@ function OfflineBar() {
 }
 
 function Shell() {
-  const { me, members, viewing, setViewing, isAdult } = useSession();
+  const { me, viewable, viewing, setViewing, isAdult } = useSession();
   const [menu, setMenu] = useState(false);
   const wide = useWide();
   // Lecture recordings saved on this device upload on their own (load, reconnect, back to the app).
@@ -65,11 +65,11 @@ function Shell() {
       <header className="top">
         <img src="/icons/myday-mark.svg" alt="" className="mark" />
         <b>MyDay</b>
-        {isAdult && members.length > 1 ? (
+        {isAdult && viewable.length > 1 ? (
           <select aria-label="Whose day" value={viewing?.key ?? ''} onChange={(e) => setViewing(e.target.value)}>
-            {members.map((m) => (
+            {viewable.map((m) => (
               <option key={m.key} value={m.key}>
-                {m.name}
+                {m.key === me.member?.key ? `${m.name} (me)` : m.name}
               </option>
             ))}
           </select>
