@@ -96,6 +96,8 @@ const serverEnv = (fakeNow) => ({
   BILLING_PROVIDER: 'stub',
   // Email sign-in links go to an in-memory outbox; Apple tokens are checked against our test key.
   MAIL_PROVIDER: 'stub',
+  INBOUND_SECRET: 'e2e-inbound-secret-0123456789',
+  INBOUND_DOMAIN: 'in.example.test',
   ERROR_WEBHOOK_URL: ALERT_URL,
   // The walk creates dozens of households from one machine; the real default is 5 an hour.
   SIGNUPS_PER_HOUR: '500',
@@ -1603,6 +1605,42 @@ async function careTeam() {
   check('“how are the kids” → a status per kid', /Avery: chores/.test(hr.reply.text) && /Evan: chores/.test(hr.reply.text), hr.reply.text.slice(0, 200));
   hr = await say('how’s my money looking');
   check('“how’s my money” → a read-only money picture', /Accounts:|No bank linked/.test(hr.reply.text), hr.reply.text.slice(0, 200));
+
+  section('Forward to Hana: a private address; Hana suggests bills, events and tasks; a grown-up adds them');
+  eq('kids can’t see the inbox', (await avery.get('/api/inbox')).status, 403);
+  let ib = (await ty.post('/api/inbox/address')).data;
+  check('a private forwarding address', /^h-[0-9a-f]{20}@in\.example\.test$/.test(ib.address), ib.address);
+  eq('…shown again later (to set up forwarding)', (await kayla.get('/api/inbox')).data.address, ib.address);
+  const inbound = (body, key = 'e2e-inbound-secret-0123456789') => fetch(`${BASE}/inbound/email?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  eq('the webhook needs its secret key', [(await inbound({ To: ib.address }, 'wrong-key-wrong-key-xx')).status, (await fetch(`${BASE}/inbound/email`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status], [401, 401]);
+  // Postmark's shape: a bill.
+  let r = await (await inbound({ From: '"City Power & Light" <billing@citypower.example>', ToFull: [{ Email: ib.address.toUpperCase() }], Subject: 'Your October statement', TextBody: 'Your bill is ready. Amount due: $142.37. Payment due on October 21, 2026. Thank you.' })).json();
+  eq('a forwarded bill arrives with one suggestion', [r.delivered, r.suggestions], [true, 1]);
+  // A generic / Cloudflare-worker shape: an appointment.
+  await inbound({ from: 'Smile Dental <frontdesk@smile.example>', to: ib.address, subject: 'Appointment confirmed for Avery', text: 'Avery is scheduled for a cleaning on 10/22/2026 at 3:30 PM. Reply C to confirm.' });
+  // Resend's shape: a to-do.
+  await inbound({ type: 'email.received', data: { from: 'teacher@school.example', to: [ib.address], subject: 'Field trip form', text: 'Please sign and return the attached permission slip.' } });
+  ib = (await ty.get('/api/inbox')).data;
+  const bySubject = (t) => ib.emails.find((e) => e.subject === t);
+  eq('Hana read all three', [bySubject('Your October statement')?.items[0]?.kind, bySubject('Appointment confirmed for Avery')?.items[0]?.kind, bySubject('Field trip form')?.items[0]?.kind], ['bill', 'event', 'task']);
+  check('the bill suggestion has the amount and due day', /City Power & Light: \$142\.37/.test(bySubject('Your October statement').items[0].summary), bySubject('Your October statement').items[0].summary);
+  check('the appointment has its date and time', /2026-10-22 at 15:30/.test(bySubject('Appointment confirmed for Avery').items[0].summary), bySubject('Appointment confirmed for Avery').items[0].summary);
+  eq('nothing is added on its own', (await sql("SELECT COUNT(*)::int AS n FROM bills WHERE name = 'City Power & Light'"))[0].n, 0);
+  ib = (await ty.post(`/api/inbox/items/${bySubject('Your October statement').items[0].id}/add`)).data;
+  check('Add → a real tracked bill (due on the 21st)', (await sql("SELECT amount::float AS amount, due_day FROM bills WHERE name = 'City Power & Light'")).some((b) => b.amount === 142.37 && b.due_day === 21));
+  ib = (await ty.post(`/api/inbox/items/${bySubject('Appointment confirmed for Avery').items[0].id}/add`)).data;
+  check('Add → it’s on the household calendar', (await ty.get('/api/calendar?from=2026-10-22&to=2026-10-22')).data.occurrences.some((o) => o.title === 'Appointment confirmed for Avery' && o.startTime === '15:30'));
+  ib = (await ty.post(`/api/inbox/items/${bySubject('Field trip form').items[0].id}/dismiss`)).data;
+  eq('Dismiss → left alone', ib.emails.find((e) => e.subject === 'Field trip form').items[0].status, 'dismissed');
+  eq('…and can’t be added twice', (await ty.post(`/api/inbox/items/${bySubject('Field trip form').items[0].id}/add`)).status, 409);
+  r = await (await inbound({ from: 'x@spam.example', to: 'h-0123456789abcdef0123@in.example.test', subject: 'hi', text: 'hello' })).json();
+  eq('mail to an unknown address is dropped', r.delivered, false);
+  const oldAddr = ib.address;
+  await ty.post('/api/inbox/address');
+  r = await (await inbound({ from: 'x@spam.example', to: oldAddr, subject: 'still there?', text: 'hello' })).json();
+  eq('a replaced address stops working', r.delivered, false);
+  eq('another household never sees our inbox', (await sam.get('/api/inbox')).data.emails.length, 0);
+  eq('emails are encrypted at rest', (await sql("SELECT COUNT(*)::int AS n FROM inbox_emails WHERE position(convert_to('statement', 'UTF8') in subject_enc) > 0"))[0].n, 0);
 
   section('solo grown-ups (“Just me”): no kid or partner tools until someone joins full time');
   const { liveFeatures } = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);

@@ -30,6 +30,13 @@ Staging (`staging.conquermyday.app`) shares a server and a database with Opsentr
 9b. **The pre-screen** uses `ANTHROPIC_KEY`. Without it, production holds every post for a moderator, so the screen never silently lets things through.
 9c. **Legal**: the community sections of `/privacy` and `/terms` (adults-only, no medical advice, the license for what people post, moderation rights) need a lawyer's review before launch.
 
+**Hana: push and "Forward to Hana" email**
+10. **Push notifications**: set `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` (generate once with `npx web-push generate-vapid-keys`; keep the private key in the password manager — changing it means everyone re-enables notifications). iPhone users must add MyDay to the Home Screen first; Settings shows a hint.
+11. **Forward to Hana**: pick an inbound-email service (Postmark Inbound is the simplest; Cloudflare Email Routing + a small Worker is free).
+    - DNS: an MX record for `in.conquermyday.app` pointing at the service.
+    - Webhook: `https://conquermyday.app/inbound/email?key=<INBOUND_SECRET>` (JSON). Postmark, Resend inbound and a plain `{from,to,subject,text,html}` body are all understood.
+    - Set `INBOUND_DOMAIN` and a long random `INBOUND_SECRET` (`openssl rand -hex 24`). Without `INBOUND_SECRET` the webhook is off.
+
 **Backups**
 9. **Set them up** as in `docs/BACKUP-RESTORE.md`: a nightly cron for `deploy/backup.sh` with off-server storage, plus a monthly restore drill.
 

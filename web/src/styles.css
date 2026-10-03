@@ -550,3 +550,5 @@ h2 { font-size: 19px; line-height: 1.25; }
 .cal-time { flex: 0 0 92px; font-weight: 700; font-size: 14px; }
 .cal-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cal-body b { overflow-wrap: anywhere; }
+/* Hana's inbox suggestions. */
+.inbox-item { gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
