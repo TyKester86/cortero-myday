@@ -126,7 +126,7 @@ export default function Meals() {
           )}
         </div>
       )}
-      <label className="inline-label">
+      <label className="inline-label add-to">
         Add to{' '}
         <select aria-label="Add to which day" value={day} onChange={(e) => setDay(WEEKDAYS.find((d) => d === e.target.value) ?? '')}>
           <option value="">the week (no day yet)</option>

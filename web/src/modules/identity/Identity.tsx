@@ -167,7 +167,7 @@ export default function Identity() {
         <summary>
           <b>🧠 Mental load</b> <span className="muted small">who carries what at home</span>
         </summary>
-        <ul className="plain rows">
+        <ul className="plain rows load-rows">
           {data.mentalLoad.map((r) => (
             <LoadRow key={r.id} r={r} onSave={(row) => run(api(`/api/identity/load/${r.id}`, 'PATCH', row), `${r.category} saved ✓`)} />
           ))}

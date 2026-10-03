@@ -2409,6 +2409,14 @@ async function uiGate() {
     await page.goto(`${BASE}/score`);
     await page.getByTestId('progress-adult').waitFor({ timeout: 10000 });
     eq('a grown-up’s Score is “Your progress” — no kid points to spend', [await page.getByText('to spend').count(), await page.getByText('Perfect Week').count()], [0, 0]);
+    await page.goto(`${BASE}/chores/manage`);
+    await page.getByTestId('chore-who').waitFor({ timeout: 10000 });
+    const kidNames = (await (await page.request.get(`${BASE}/api/household`)).json()).members.filter((m) => m.kind === 'kid').map((m) => m.name);
+    const choreKids = await page.locator('[data-testid^="chores-of-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid').slice('chores-of-'.length)));
+    eq('Family → Chores lists every kid by name (even before they have chores)', kidNames.every((n) => choreKids.includes(n)) && kidNames.length > 0, true);
+    eq('…and “Who” starts on a kid', await page.getByTestId('chore-who').locator('option:checked').innerText(), kidNames[0]);
+    await page.getByRole('button', { name: `+ Add a chore for ${kidNames[1]}` }).click();
+    eq('“+ Add a chore for …” picks that kid', await page.getByTestId('chore-who').locator('option:checked').innerText(), kidNames[1]);
     await page.goto(`${BASE}/meals`);
     await page.locator('nav.subtabs a').first().waitFor({ timeout: 10000 });
     eq('Plan section tabs on Meals: Week · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Meals', 'This week’s menu', 'Grocery list']);
@@ -2731,13 +2739,29 @@ async function uiGate() {
     section('every page renders for a grown-up (no crashes, no “not found”)');
     const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed'];
     const notFound = [];
+    const tooWide = [];
+    // Wider than the phone = the page slides (shakes) sideways under your thumb and boxes run off the edge.
+    const wider = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     for (const p of pages) {
       await page.goto(BASE + p);
       // A page that never goes quiet is a failure for that page, named — not a crash of the whole run.
       if (!(await page.waitForLoadState('networkidle', { timeout: 20000 }).then(() => true, () => false))) notFound.push(`${p} (never settled)`);
       else if (await page.getByText('Page not found.').count()) notFound.push(p);
+      const over = await wider();
+      if (over > 0) tooWide.push(`${p} +${over}px`);
     }
     eq(`${pages.length} pages render`, notFound, []);
+    eq('no page is wider than a 390px phone (nothing shakes sideways or runs off the edge)', tooWide, []);
+    await page.setViewportSize({ width: 360, height: 780 });
+    const tooWide360 = [];
+    for (const p of ['/family', '/meals', '/identity', '/billing', '/household', '/money', '/health/plan', '/feed', '/village']) {
+      await page.goto(BASE + p);
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => undefined);
+      const over = await wider();
+      if (over > 0) tooWide360.push(`${p} +${over}px`);
+    }
+    eq('…or a small 360px phone', tooWide360, []);
+    await page.setViewportSize({ width: 390, height: 844 });
 
     section('kids: tutor renders (untouched), recorder, first run');
     const kid = await browser.newContext(phone);
@@ -2752,8 +2776,10 @@ async function uiGate() {
       await kp.goto(BASE + p);
       await kp.waitForLoadState('networkidle');
       if (await kp.getByText('Page not found.').count()) notFound.push(`kid ${p}`);
+      const over = await kp.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      if (over > 0) notFound.push(`kid ${p} is ${over}px wider than the phone`);
     }
-    eq('kid pages render', notFound, []);
+    eq('kid pages render (and fit the phone)', notFound, []);
     await kp.goto(`${BASE}/`);
     await kp.getByRole('button', { name: 'Menu' }).click();
     const kmenu = await kp.getByTestId('menu').innerText();

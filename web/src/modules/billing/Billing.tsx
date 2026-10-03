@@ -48,7 +48,7 @@ export default function Billing() {
       {paid && <p className="good" role="status">Thank you! Your subscription is set up — it can take a moment to show here.</p>}
       {msg && <p className="muted" role="status">{msg}</p>}
       <div className="bigscore" data-testid="billing-status">
-        <b>{STATUS[data.status]}</b>
+        <b className="word">{STATUS[data.status]}</b>
         <span className="muted">
           {data.status === 'trialing' && data.trialDaysLeft !== null
             ? `${data.trialDaysLeft} day${data.trialDaysLeft === 1 ? '' : 's'} left · ends ${data.trialEndsAt?.slice(0, 10)}`
