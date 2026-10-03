@@ -3396,6 +3396,11 @@ try {
 } finally {
   await stopServer();
   alertHook.close();
+  // The errand fake store + look-alike site; their open keep-alive sockets would keep a passing run from exiting.
+  for (const s of [storeServer, phishServer]) {
+    s.closeAllConnections();
+    s.close();
+  }
 }
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {
