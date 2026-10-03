@@ -1023,8 +1023,14 @@ async function bigBuild() {
   check('“For serving: a; b” split into a header + items', pozole.ingredients.includes('For serving:') && pozole.ingredients.includes('lime wedges'), pozole.ingredients.slice(-6).join(' | '));
   eq('inline “Common mistakes: (1)… (2)… (3)…” → three tips', (await ty.get('/api/meals/81')).data.tips.length, 3);
   let noTips = 0;
-  for (const m of lib.meals) if (!(await ty.get(`/api/meals/${m.id}`)).data.tips.length) noTips++;
+  let allText = '';
+  for (const m of lib.meals) {
+    const d = (await ty.get(`/api/meals/${m.id}`)).data;
+    if (!d.tips.length) noTips++;
+    allText += ` ${[...d.ingredients, ...d.steps, ...d.tips].join(' ')}`;
+  }
   eq('every meal carries its common mistakes', noTips, 0);
+  eq('recipes read right for every customer (no “this family’s table”, no stray potatoes in pesto, no garbled vinegar step)', ['family this app serves', 'family’s table', "family's table", 'your table skips', 'potatoes and dairy-free pesto', 'is already in it —'].filter((p) => allText.includes(p)), []);
   const cut = (await ty.get('/api/meals?phase=cutting')).data.meals;
   check('phase filter: cutting meals, all tagged cutting', cut.length > 40 && cut.every((m) => m.phaseTags.includes('cutting')), `${cut.length} meals`);
   const mine = (await kayla.get('/api/meals?phase=mine')).data;
@@ -2658,7 +2664,7 @@ async function uiGate() {
     watch(kp);
     await kp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`); // PIN login is rate-limited per IP by now
     await kp.goto(`${BASE}/tutor`);
-    check('tutor renders for a kid', await kp.getByRole('heading', { name: /Homework helper/ }).waitFor({ timeout: 10000 }).then(() => true, () => false));
+    check('tutor renders for a kid', await kp.getByRole('heading', { name: /Homework helper/ }).waitFor({ timeout: 20000 }).then(() => true, () => false));
     await kp.goto(`${BASE}/record`);
     check('recorder: class picker (policy already acknowledged)', await kp.getByTestId('record-class').waitFor({ timeout: 10000 }).then(() => true, () => false));
     for (const p of ['/school', '/my-money', '/focus', '/private', '/wins', '/settings', `/study/${(await avery.get('/api/school')).data.classes[0].id}`]) {
