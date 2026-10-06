@@ -20,6 +20,8 @@ export type EventName =
   | 'homework_done'
   | 'reward_redeemed'
   | 'lecture_recorded'
+  | 'meeting_recorded'
+  | 'community_blocked'
   | 'build_chosen'
   | 'bank_linked'
   | 'push_subscribed'

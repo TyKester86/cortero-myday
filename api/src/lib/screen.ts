@@ -2,7 +2,15 @@
  * The community pre-screen: every Village post/reply and every Feed post (and
  * photo) goes through it before anyone else can see it.
  *
- * Two layers, either one can hold a post for human review:
+ * Three outcomes (Trusted Answers, layer 1 + 3):
+ *   - allow: most posts. Personal experience ("this worked for me") is fine.
+ *   - block: telling OTHER people to start, stop or change medication or
+ *     treatment ("you should stop Adderall"), or dangerous advice. Never saved;
+ *     the writer gets a plain-language explanation and a way to rephrase.
+ *   - hold for a person: everything else that needs a look (gray areas, and
+ *     anything the AI isn't confident about). AI flags, people decide.
+ *
+ * Two layers, either one can hold (or block) a post:
  *   1. Rules (always on, deterministic): phone numbers, emails, street
  *      addresses, a kid's name or school, dosages, cure claims, diagnosing
  *      someone else's child, insults, spam — and crisis words.
@@ -20,6 +28,9 @@ export const SCREEN_REASONS = {
   crisis: 'Someone may be in danger',
   personal_info: 'Personal details (phone, address, a child’s name or school)',
   dosage: 'Dosage or medication instructions',
+  prescribing: 'Telling others to start, stop or change medication or treatment',
+  dangerous_advice: 'Advice that could hurt someone',
+  low_confidence: 'Our checker wasn’t sure — a person will look',
   medical_diagnosis: 'Diagnosing someone (or their child)',
   supplement_cure: 'Cure or supplement claims',
   personal_attack: 'A personal attack',
@@ -33,7 +44,26 @@ export interface ScreenResult {
   hold: boolean;
   crisis: boolean;
   reasons: ScreenReason[];
+  /** Not posted at all: the writer sees why and how to say it instead. */
+  block?: boolean;
+  explain?: string | null;
+  rephrase?: string | null;
 }
+
+/** Why a post was blocked, in plain words, and how to say it instead (rules' wording; the AI may give its own). */
+export const BLOCK_HELP: Partial<Record<ScreenReason, { explain: string; rephrase: string }>> = {
+  prescribing: {
+    explain: 'This tells someone else to start, stop or change a medication or treatment. Only their prescriber can safely make that call, so we don’t post it.',
+    rephrase: 'Share what happened for you instead — for example: “When our doctor changed my son’s dose, mornings got easier. Worth asking yours about.”',
+  },
+  dangerous_advice: {
+    explain: 'This advice could hurt someone if they followed it, so we don’t post it.',
+    rephrase: 'Tell your own story and what you learned — and point people to their doctor for the medical part.',
+  },
+};
+
+/** Words for medicines and treatments (for spotting advice about them). */
+const MEDS = '(meds?|medications?|medicines?|adderall|ritalin|vyvanse|concerta|focalin|strattera|qelbree|intuniv|guanfacine|clonidine|stimulants?|dose|dosage|pills?|prescription|therapy|melatonin)';
 
 const RULES: Array<[ScreenReason, RegExp]> = [
   [
@@ -46,6 +76,9 @@ const RULES: Array<[ScreenReason, RegExp]> = [
   ['personal_info', /\b\d{1,5}\s+([A-Z][a-z]+\s){1,3}(St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Ln|Lane|Dr|Drive|Ct|Court|Way|Pl|Place|Cir|Circle)\b/],
   ['personal_info', /\b[A-Z][a-z]+(\s[A-Z][a-z]+)?\s(Elementary|Middle|High|Primary|Academy|Montessori)(\sSchool)?\b/],
   ['personal_info', /\bmy (son|daughter|kid|child|boy|girl|stepson|stepdaughter)(,| named| called)?\s+[A-Z][a-z]{2,}\b/],
+  // Prescribing to others: "you should stop his meds", "just double the dose", "parents need to quit stimulants".
+  ['prescribing', new RegExp(`\\b(you|y'?all|everyone|everybody|parents|people|moms|dads|you guys)\\s+(should|must|need to|have to|ought to|gotta|better)\\s+(just\\s+)?(stop|quit|start|skip|double|triple|increase|up|raise|lower|cut|ditch|drop|try|take|give|switch)\\b[^.!?]{0,60}\\b${MEDS}\\b`, 'i')],
+  ['prescribing', new RegExp(`(^|[.!?]\\s+)(just\\s+|simply\\s+|definitely\\s+)?(stop|quit|skip|double|triple|increase|up|raise|lower|cut|ditch|drop|try upping|try lowering|try stopping|don'?t (give|take)|never (give|take)|throw out|flush)\\s+(the |your |his |her |their |all )?[^.!?]{0,40}\\b${MEDS}\\b`, 'i')],
   ['dosage', /\b\d+(\.\d+)?\s?(mg|mcg|milligrams?|micrograms?)\b/i],
   ['dosage', /\b(up|double|increase|lower|cut|skip|stop)\s+(his|her|their|your|the)\s+(dose|dosage|meds|medication)\b/i],
   ['medical_diagnosis', /\b(your|her|his|their) (kid|son|daughter|child|boy|girl) (definitely |probably |clearly |obviously )?(has|is) (adhd|autism|autistic|odd|bipolar|add|odd)\b/i],
@@ -63,7 +96,11 @@ export function ruleScreen(text: string): ScreenReason[] {
 }
 
 const POLICY = `You screen posts for MyDay's adults-only community for parents with ADHD who are raising kids with ADHD.
-Hold a post for human review if it contains any of:
+BLOCK a post (decision "block") only if it tells OTHER people to start, stop, skip or change a medication, dose or treatment
+("you should stop Adderall", "just double his dose", "don't give your kid meds"), or gives advice that could clearly hurt someone.
+Personal experience is NOT prescribing: "this worked for me", "my doctor adjusted my meds and it helped" are fine.
+For a block, also give "explain" (one or two plain, kind sentences on why) and "rephrase" (how to say it as personal experience).
+HOLD a post for human review (decision "hold") if it contains any of:
 - crisis: anyone at risk of self-harm or suicide, or a child or adult being abused or in danger
 - personal_info: phone numbers, emails, addresses, a child's name, a school's name, or other identifying household details
 - dosage: medication doses or advice to change, start or stop someone's medication
@@ -72,7 +109,8 @@ Hold a post for human review if it contains any of:
 - personal_attack: insults or attacks on another member
 - spam: selling, affiliate links, promotion
 Sharing your own experience ("my doctor adjusted my meds and it helped") is fine. Venting about a hard day is fine. Be generous: most posts are fine.
-Reply with JSON only: {"hold": true|false, "reasons": [...], "crisis": true|false}`;
+Use reasons "prescribing" or "dangerous_advice" for blocks. Say how confident you are (0 to 1); if you are unsure about a medical gray area, hold it.
+Reply with JSON only: {"decision": "allow"|"hold"|"block", "reasons": [...], "crisis": true|false, "confidence": 0.0-1.0, "explain": "...", "rephrase": "..."}`;
 
 let client: Anthropic | null | undefined;
 function claude(): Anthropic | null {
@@ -100,10 +138,23 @@ async function askClaude(content: Block[]): Promise<ScreenResult | 'unavailable'
     if (res.stop_reason === 'refusal') return { hold: true, crisis: false, reasons: ['screen_unavailable'] };
     const text = res.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
     const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-    const v = JSON.parse(json) as { hold?: unknown; reasons?: unknown; crisis?: unknown };
+    const v = JSON.parse(json) as { hold?: unknown; decision?: unknown; reasons?: unknown; crisis?: unknown; confidence?: unknown; explain?: unknown; rephrase?: unknown };
     const reasons = (Array.isArray(v.reasons) ? v.reasons : []).filter((r): r is ScreenReason => typeof r === 'string' && r in SCREEN_REASONS);
     const crisis = v.crisis === true || reasons.includes('crisis');
-    return { hold: v.hold === true || crisis, crisis, reasons };
+    const decision = v.decision === 'block' || v.decision === 'hold' || v.decision === 'allow' ? v.decision : v.hold === true ? 'hold' : 'allow';
+    // Layer 3: a call the model isn't sure about goes to a person.
+    const unsure = typeof v.confidence === 'number' && v.confidence < 0.6 && decision !== 'allow';
+    if (unsure) reasons.push('low_confidence');
+    const block = decision === 'block' && !crisis && !unsure;
+    if (block && !reasons.some((r) => r === 'prescribing' || r === 'dangerous_advice')) reasons.push('prescribing');
+    return {
+      hold: decision !== 'allow' || crisis,
+      crisis,
+      reasons,
+      block,
+      explain: block && typeof v.explain === 'string' && v.explain.trim() ? v.explain.trim().slice(0, 400) : null,
+      rephrase: block && typeof v.rephrase === 'string' && v.rephrase.trim() ? v.rephrase.trim().slice(0, 400) : null,
+    };
   } catch (e) {
     console.error('screen: model unavailable', e instanceof Error ? e.message : e);
     return 'unavailable';
@@ -114,6 +165,9 @@ function merge(rules: ScreenReason[], ai: ScreenResult | 'unavailable' | 'skip')
   const reasons = new Set(rules);
   let crisis = rules.includes('crisis');
   let hold = rules.length > 0;
+  let block = rules.includes('prescribing');
+  let explain: string | null = null;
+  let rephrase: string | null = null;
   if (ai === 'unavailable') {
     reasons.add('screen_unavailable');
     hold = true;
@@ -121,8 +175,20 @@ function merge(rules: ScreenReason[], ai: ScreenResult | 'unavailable' | 'skip')
     for (const r of ai.reasons) reasons.add(r);
     crisis ||= ai.crisis;
     hold ||= ai.hold;
+    if (ai.block) {
+      block = true;
+      explain = ai.explain ?? null;
+      rephrase = ai.rephrase ?? null;
+    }
   }
-  return { hold, crisis, reasons: [...reasons] };
+  // Someone may be in danger: never just refuse — hold it, show resources, escalate.
+  if (crisis) block = false;
+  if (block) {
+    const why = [...reasons].find((r) => BLOCK_HELP[r]) ?? 'prescribing';
+    explain ??= BLOCK_HELP[why]?.explain ?? null;
+    rephrase ??= BLOCK_HELP[why]?.rephrase ?? null;
+  }
+  return { hold: hold || block, crisis, reasons: [...reasons], block, explain, rephrase };
 }
 
 export async function screenText(text: string): Promise<ScreenResult> {

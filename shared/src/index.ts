@@ -241,6 +241,8 @@ export interface ApiError {
   error: string;
   /** Machine-readable reason, when the page should react (e.g. 'clinician_needed'). */
   code?: string;
+  /** Extra help for the page (e.g. a blocked post's rephrase suggestion). */
+  details?: Record<string, unknown>;
 }
 
 export interface HealthCheck {
@@ -753,6 +755,34 @@ export interface GroceryFavorite {
   store: string;
   fulfillment: Fulfillment;
   signedIn: boolean;
+}
+
+/* ---------- Meetings (grown-ups only): record → transcript → AI notes ---------- */
+
+export type MeetingStatus = 'uploaded' | 'transcribing' | 'structuring' | 'ready' | 'failed';
+
+export interface MeetingNotes {
+  title: string;
+  summary: string;
+  decisions: string[];
+  actionItems: Array<{ task: string; owner: string | null; due: DateStr | null; /** Set once it's been added to tasks. */ taskId: number | null }>;
+  followUps: string[];
+}
+
+export interface MeetingSummary {
+  id: number;
+  title: string;
+  recordedAt: string;
+  durationS: number;
+  status: MeetingStatus;
+}
+
+export interface Meeting extends MeetingSummary {
+  error: string;
+  notes: MeetingNotes | null;
+  transcript: string | null;
+  /** The audio is still on the server (kept until notes are made, so a failure can be retried). */
+  audioKept: boolean;
 }
 
 /** A saved website login (Hana step 5). The password never comes back. */
@@ -2304,6 +2334,11 @@ export interface CommunityProfile {
   followers: number;
   following: number;
   posts: number;
+  /** The creator's MonetizeMe storefront slug, and where it lives (null = no shop). */
+  shopSlug: string | null;
+  shopUrl: string | null;
+  /** When they joined the community (YYYY-MM-DD). */
+  joinedOn: string;
   /** For the viewer: */
   me: boolean;
   followedByMe: boolean;
@@ -2344,6 +2379,39 @@ export interface VillageThreadSummary {
   lastActivity: string;
   status: CommunityStatus;
   mine: boolean;
+  /** A trusted answer is pinned on it. */
+  answered: boolean;
+}
+
+/* ---------- Trusted Answers ---------- */
+
+/** A source Hana (or a moderator) points to: a publisher article, the book, or a named body of research (no link). */
+export interface SourceRef {
+  label: string;
+  url: string | null;
+}
+
+export type CheckVerdict = 'supported' | 'mixed' | 'unsupported' | 'personal' | 'no_claim';
+
+/** "Verify with Hana": one shared fact-check of a post, shown inline to everyone. */
+export interface PostCheck {
+  verdict: CheckVerdict;
+  headline: string;
+  explanation: string;
+  sources: SourceRef[];
+  checkedAt: string;
+}
+
+/** A question's trusted answer, pinned above the replies. */
+export interface TrustedAnswer {
+  source: 'hana' | 'publisher' | 'moderator';
+  body: string;
+  sources: SourceRef[];
+  /** A moderator's pick: the reply that answers it. */
+  replyPostId: number | null;
+  /** Who: 'Hana', the publisher, or 'A moderator'. */
+  by: string | null;
+  at: string;
 }
 
 export interface VillagePost {
@@ -2357,6 +2425,7 @@ export interface VillagePost {
   reactions: { heart: number; beenThere: number; mine: Array<'heart' | 'been-there'> };
   helpful: number;
   markedHelpfulByMe: boolean;
+  check: PostCheck | null;
 }
 
 export interface VillageThread {
@@ -2365,6 +2434,9 @@ export interface VillageThread {
   title: string;
   status: CommunityStatus;
   posts: VillagePost[];
+  isQuestion: boolean;
+  /** Pinned above every reply. */
+  trusted: TrustedAnswer | null;
 }
 
 export interface FeedPost {
@@ -2377,12 +2449,31 @@ export interface FeedPost {
   mine: boolean;
   likes: number;
   likedByMe: boolean;
+  check: PostCheck | null;
+  isQuestion: boolean;
+  trusted: TrustedAnswer | null;
 }
 
+/**
+ * The Feed is finite on purpose: the last WINDOW days, newest first, then a
+ * "you're caught up" end. No infinite scroll.
+ */
 export interface FeedPage {
   posts: FeedPost[];
-  /** Pass as ?before= for the next page; null at the end. */
+  /** Always null now (kept for older app versions): there is no next page. */
   next: number | null;
+  /** How far back this page goes (days); 0 = a person's profile (their latest posts). */
+  windowDays: number;
+}
+
+/** "Around the Web": a trusted publisher's article, as a link-out card. */
+export interface WebItem {
+  id: number;
+  publisher: string;
+  title: string;
+  summary: string;
+  url: string;
+  publishedAt: string;
 }
 
 export interface CommunityQueueItem {

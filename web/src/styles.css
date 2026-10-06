@@ -612,3 +612,29 @@ h2 { font-size: 19px; line-height: 1.25; }
 /* Create household: say why the button is off, and a way back */
 .create-missing { margin: 4px 0 0; }
 .create-back { margin: 0 0 8px; }
+
+/* Meetings: a big record button, and a calm full-screen recording view */
+.meeting-start { display: flex; align-items: center; gap: 16px; }
+.record-big {
+  flex: none; width: 76px; height: 76px; border-radius: 50%; border: 4px solid var(--text); background: var(--card); cursor: pointer;
+  display: grid; place-items: center; transition: transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.record-big span { width: 40px; height: 40px; border-radius: 50%; background: var(--danger); }
+.record-big:active { transform: scale(0.94); }
+.record-big:disabled { opacity: 0.5; }
+.meeting-live {
+  position: fixed; inset: 0; z-index: 60; background: var(--ink); color: var(--paper);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center;
+}
+.live-dot { width: 16px; height: 16px; border-radius: 50%; background: #ff5a3c; animation: live-pulse 1.6s ease-in-out infinite; }
+@keyframes live-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.live-label { margin: 0; letter-spacing: 0.2em; text-transform: uppercase; font-family: var(--display); color: #c9c6ba; }
+.live-clock { margin: 0; font-family: var(--display); font-size: clamp(64px, 22vw, 120px); line-height: 1; font-variant-numeric: tabular-nums; }
+.live-hint { color: #a9ab9f; max-width: 30ch; }
+.btn.live-stop { background: var(--paper); color: var(--ink); font-size: 20px; padding: 16px 40px; margin-top: 18px; }
+.meeting-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; padding: 0; }
+.meeting-row { display: flex; flex-direction: column; gap: 2px; text-decoration: none; color: var(--text); margin: 0; }
+.meeting-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.title-input { font-family: var(--display); font-size: 26px; text-transform: uppercase; border: 0; border-bottom: 2px dashed var(--line); background: transparent; padding: 4px 0; width: 100%; min-width: 0; flex: 1 1 220px; }
+.transcript { white-space: pre-wrap; line-height: 1.6; overflow-wrap: anywhere; }

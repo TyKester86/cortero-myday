@@ -9,6 +9,8 @@ export class ApiFail extends Error {
     readonly queued = false,
     /** The server's machine-readable reason, when it sent one. */
     readonly code?: string,
+    /** Extra help from the server (e.g. a blocked post's rephrase suggestion). */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -136,7 +138,7 @@ export async function api<T>(path: string, method: Method = 'GET', body?: unknow
     throw new ApiFail(0, 'You’re offline right now.');
   }
   const data: unknown = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiFail(res.status, isApiError(data) ? data.error : `Request failed (${res.status})`, false, isApiError(data) ? data.code : undefined);
+  if (!res.ok) throw new ApiFail(res.status, isApiError(data) ? data.error : `Request failed (${res.status})`, false, isApiError(data) ? data.code : undefined, isApiError(data) ? data.details : undefined);
   return data as T;
 }
 

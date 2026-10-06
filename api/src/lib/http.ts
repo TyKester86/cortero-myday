@@ -7,6 +7,8 @@ export class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly code?: string,
+    /** Extra help sent with the error (e.g. a blocked post's rephrase suggestion). */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -14,7 +16,7 @@ export class HttpError extends Error {
 
 export function errorHandler(err: unknown, req: Request, res: Response<ApiError>, _next: NextFunction): void {
   if (err instanceof HttpError) {
-    res.status(err.status).json(err.code ? { error: err.message, code: err.code } : { error: err.message });
+    res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.details ? { details: err.details } : {}) });
     return;
   }
   // Body too large / bad JSON from the parsers: the caller's mistake, not ours.

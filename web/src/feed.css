@@ -1,0 +1,277 @@
+/* ================= The Feed + profiles: paper slips on a desk =================
+   Same paper/ink tokens as the rest of MyDay, with depth: a slightly darker
+   desk, paper slips with soft shadows and a tiny hand-laid tilt, a rubber-stamp
+   Like, clippings for publishers, an index card for people. The desk's faint
+   grain sits behind the slips only — reading surfaces stay plain paper. */
+
+.feed-page {
+  --desk: #e7e1d2;
+  --desk-grain: rgba(17, 19, 15, 0.035);
+  --slip: var(--card);
+  --slip-edge: rgba(17, 19, 15, 0.1);
+  --slip-shadow: 0 1px 0 rgba(17, 19, 15, 0.06), 0 10px 22px -14px rgba(17, 19, 15, 0.45);
+  --slip-lift: 0 2px 0 rgba(17, 19, 15, 0.05), 0 18px 30px -16px rgba(17, 19, 15, 0.5);
+  --stamp-ink: #c1311b;
+  --tape: rgba(200, 240, 74, 0.55);
+  --rule: rgba(64, 120, 192, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .feed-page {
+    --desk: #070806;
+    --desk-grain: rgba(244, 240, 230, 0.03);
+    --slip: #22261f;
+    --slip-edge: rgba(244, 240, 230, 0.09);
+    --slip-shadow: inset 0 1px 0 rgba(244, 240, 230, 0.06), 0 1px 0 rgba(0, 0, 0, 0.6), 0 14px 26px -12px rgba(0, 0, 0, 0.95);
+    --slip-lift: inset 0 1px 0 rgba(244, 240, 230, 0.08), 0 2px 0 rgba(0, 0, 0, 0.6), 0 22px 34px -14px rgba(0, 0, 0, 1);
+    --stamp-ink: #ff7a5c;
+    --tape: rgba(200, 240, 74, 0.28);
+    --rule: rgba(120, 160, 220, 0.12);
+  }
+}
+:root[data-theme='dark'] .feed-page {
+  --desk: #070806;
+  --desk-grain: rgba(244, 240, 230, 0.03);
+  --slip: #22261f;
+  --slip-edge: rgba(244, 240, 230, 0.09);
+  --slip-shadow: inset 0 1px 0 rgba(244, 240, 230, 0.06), 0 1px 0 rgba(0, 0, 0, 0.6), 0 14px 26px -12px rgba(0, 0, 0, 0.95);
+  --slip-lift: inset 0 1px 0 rgba(244, 240, 230, 0.08), 0 2px 0 rgba(0, 0, 0, 0.6), 0 22px 34px -14px rgba(0, 0, 0, 1);
+  --stamp-ink: #ff7a5c;
+  --tape: rgba(200, 240, 74, 0.28);
+  --rule: rgba(120, 160, 220, 0.12);
+}
+
+.feed-links { margin: 0 0 10px; }
+
+/* The desk: darker paper with a faint grain, behind the slips (never under the words). */
+.fdesk {
+  position: relative;
+  margin: 0 -16px;
+  padding: 0 16px 28px;
+  background-color: var(--desk);
+  background-image:
+    radial-gradient(var(--desk-grain) 1px, transparent 1.2px),
+    radial-gradient(var(--desk-grain) 1px, transparent 1.2px);
+  background-size: 7px 7px, 11px 11px;
+  background-position: 0 0, 3px 5px;
+  border-top: 1px solid var(--slip-edge);
+}
+@media (min-width: 700px) {
+  .fdesk { margin: 0; border-radius: 4px; padding: 0 22px 32px; }
+}
+.desk-note { margin: 10px 2px; color: var(--muted); }
+.desk-heading { margin: 0; padding: 18px 2px 4px; }
+
+/* Folder tabs along the top edge of the desk. */
+.desk-tabs { display: flex; gap: 4px; padding-top: 0; transform: translateY(-1px); overflow-x: auto; scrollbar-width: none; }
+.desk-tabs::-webkit-scrollbar { display: none; }
+.desk-tab {
+  flex: none; font: inherit; font-family: var(--display); font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); background: var(--card-alt); border: 1px solid var(--slip-edge); border-top: 0;
+  border-radius: 0 0 8px 8px; padding: 9px 14px 8px; cursor: pointer;
+  transition: transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1), color 120ms;
+}
+.desk-tab.on { color: var(--text); background: var(--slip); transform: translateY(0); box-shadow: inset 0 3px 0 var(--accent); }
+.desk-tab:not(.on):hover { transform: translateY(2px); color: var(--text); }
+
+/* A slip of paper. */
+.slips { display: flex; flex-direction: column; gap: 16px; padding-top: 16px; }
+.slip, .sheet-compose, .clipping, .caught-up, .fresh-sheet {
+  background: var(--slip); color: var(--text); border: 1px solid var(--slip-edge); border-radius: 3px; box-shadow: var(--slip-shadow);
+}
+.slip {
+  padding: 14px 16px 10px; transform: rotate(var(--tilt, 0deg));
+  transition: transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 260ms ease;
+}
+.slip:hover { transform: rotate(0deg) translateY(-2px); box-shadow: var(--slip-lift); }
+.slip:active { transform: rotate(0deg) translateY(0) scale(0.995); transition-duration: 90ms; }
+.slip-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.slip-head .who-chip { margin-right: auto; }
+.slip-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 17px; line-height: 1.55; margin: 10px 0 8px; max-width: 62ch; }
+.slip-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+
+/* Slips settle in as they scroll into view (where the browser supports it). */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .slips > .slip, .slips > .clipping {
+      animation: slip-settle linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 25%;
+    }
+  }
+}
+@keyframes slip-settle {
+  from { opacity: 0.85; translate: 0 10px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+/* Photos are taped onto the slip. */
+.feed-photo.taped { display: block; position: relative; max-width: 100%; border: 6px solid #fff; box-shadow: 0 6px 14px -8px rgba(0, 0, 0, 0.5); margin: 8px 0 6px; transform: rotate(-0.6deg); }
+
+/* Composer: a fresh ruled sheet. */
+.sheet-compose { margin-top: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.sheet-compose textarea {
+  border: 0; background: transparent; resize: vertical; min-height: 84px; padding: 4px 2px;
+  line-height: 28px; background-image: repeating-linear-gradient(transparent 0 27px, var(--rule) 27px 28px);
+  background-attachment: local; font-size: 17px; color: var(--text);
+}
+.sheet-compose textarea:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sheet-compose .row { align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Like = a rubber stamp. */
+.ink-stamp {
+  display: inline-flex; align-items: center; gap: 6px; font: inherit; cursor: pointer; background: none; border: 0; padding: 4px 6px; color: var(--muted);
+}
+.stamp-face {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+  border: 2px dashed currentColor; font-size: 16px; line-height: 1; transition: transform 140ms ease;
+}
+.ink-stamp:hover .stamp-face { transform: rotate(-6deg); }
+.ink-stamp.on { color: var(--stamp-ink); }
+.ink-stamp.on .stamp-face {
+  border: 2.5px double currentColor; background: color-mix(in srgb, var(--stamp-ink) 12%, transparent); transform: rotate(-9deg);
+  /* worn rubber: a few specks of missing ink */
+  -webkit-mask: radial-gradient(circle at 30% 70%, transparent 1.2px, #000 1.6px), radial-gradient(circle at 72% 28%, transparent 1px, #000 1.4px);
+  -webkit-mask-composite: source-in;
+  mask: radial-gradient(circle at 30% 70%, transparent 1.2px, #000 1.6px), radial-gradient(circle at 72% 28%, transparent 1px, #000 1.4px);
+  mask-composite: intersect;
+}
+.stamp-count { font-family: var(--display); font-size: 16px; }
+@media (prefers-reduced-motion: no-preference) {
+  .ink-stamp.slam .stamp-face { animation: stamp-slam 380ms cubic-bezier(0.2, 0.9, 0.3, 1.25); }
+}
+@keyframes stamp-slam {
+  0% { transform: scale(1.9) rotate(-22deg); opacity: 0; }
+  55% { transform: scale(0.86) rotate(-7deg); opacity: 1; }
+  75% { transform: scale(1.06) rotate(-10deg); }
+  100% { transform: scale(1) rotate(-9deg); }
+}
+
+/* The quiet "…" menu. */
+.slip-menu { position: relative; }
+.slip-menu > summary { list-style: none; cursor: pointer; padding: 4px 10px; border-radius: 3px; color: var(--muted); font-size: 18px; line-height: 1; }
+.slip-menu > summary::-webkit-details-marker { display: none; }
+.slip-menu[open] > summary { background: var(--card-alt); color: var(--text); }
+.slip-menu-pop {
+  position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 5; min-width: 180px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--slip); border: 1px solid var(--slip-edge); box-shadow: var(--slip-lift); border-radius: 3px; padding: 6px;
+}
+.slip-menu-pop [data-testid='report-form'] { flex-wrap: wrap; }
+
+/* Around the Web: clippings with a publisher label. */
+.clipping {
+  display: flex; flex-direction: column; gap: 6px; text-decoration: none; padding: 16px 16px 14px; transform: rotate(var(--tilt, 0deg));
+  transition: transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 260ms ease;
+  /* a deckled bottom edge, like a clipped page */
+  -webkit-mask: linear-gradient(#000 0 0) top / 100% calc(100% - 6px) no-repeat, radial-gradient(4px 5px at 50% 0, #000 98%, transparent) bottom / 10px 6px repeat-x;
+  mask: linear-gradient(#000 0 0) top / 100% calc(100% - 6px) no-repeat, radial-gradient(4px 5px at 50% 0, #000 98%, transparent) bottom / 10px 6px repeat-x;
+}
+.clipping:hover { transform: rotate(0deg) translateY(-2px); box-shadow: var(--slip-lift); }
+.publisher-label {
+  align-self: flex-start; font-family: var(--display); font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em;
+  background: var(--ink); color: var(--paper); padding: 3px 8px; border-radius: 2px;
+}
+:root[data-theme='dark'] .publisher-label { background: var(--paper); color: var(--ink); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .publisher-label { background: var(--paper); color: var(--ink); } }
+.clip-title { font-size: 19px; line-height: 1.25; color: var(--text); }
+.clip-sum { color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.clip-foot { font-size: 13px; color: var(--navy-2); font-weight: 600; }
+
+/* The end of the Feed: a stopping cue. */
+.caught-up { text-align: center; padding: 20px 18px; display: flex; flex-direction: column; align-items: center; gap: 4px; transform: rotate(-0.4deg); border-top: 4px solid var(--sun); }
+.caught-up p { margin: 4px 0 0; max-width: 34ch; color: var(--muted); }
+.caught-check { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: var(--sun); color: #11130f; font-weight: 800; font-size: 20px; }
+
+/* Empty states: a crumpled page, smoothed out. */
+.fresh-sheet { margin-top: 16px; text-align: center; padding: 22px 18px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.fresh-sheet p { margin: 2px 0 0; max-width: 36ch; }
+.crumple { width: 96px; height: 80px; margin-bottom: 4px; }
+.crumple path:first-child { fill: var(--card-alt); stroke: var(--muted); stroke-width: 1.4; stroke-linejoin: round; }
+.crumple path + path { fill: none; stroke: var(--muted); stroke-width: 1; stroke-linecap: round; opacity: 0.55; }
+
+/* ---------- a person: an index card ---------- */
+.index-card {
+  position: relative; display: grid; grid-template-columns: 96px 1fr; grid-template-areas: 'photo who' 'bio bio' 'ledger ledger' 'since since' 'actions actions' 'shop shop';
+  gap: 6px 16px; padding: 18px 18px 16px 30px; margin: 22px 0 18px;
+  background: var(--slip); color: var(--text); border: 1px solid var(--slip-edge); border-radius: 3px; box-shadow: var(--slip-shadow);
+  /* an index card: a red margin rule and faint blue lines below the header */
+  background-image: linear-gradient(90deg, transparent 18px, color-mix(in srgb, var(--danger) 45%, transparent) 18px 19.5px, transparent 19.5px),
+    repeating-linear-gradient(transparent 0 31px, color-mix(in srgb, var(--rule) 55%, transparent) 31px 32px);
+  background-position: 0 0, 0 118px;
+  background-repeat: no-repeat, repeat-y;
+  background-size: 100% 100%, 100% calc(100% - 118px);
+}
+.polaroid {
+  grid-area: photo; width: 96px; background: #fff; padding: 6px 6px 18px; transform: rotate(-3deg); margin-top: -26px;
+  box-shadow: 0 8px 16px -8px rgba(0, 0, 0, 0.55); position: relative;
+}
+.polaroid::before { content: ''; position: absolute; top: -9px; left: 50%; width: 46px; height: 16px; translate: -50% 0; rotate: 4deg; background: var(--tape); }
+.polaroid img, .polaroid-blank { display: grid; place-items: center; width: 84px; height: 84px; object-fit: cover; background: #ece8de; color: #11130f; font-family: var(--display); font-size: 40px; }
+.card-who { grid-area: who; align-self: end; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.card-name { margin: 0; font-size: clamp(32px, 9vw, 44px); overflow-wrap: anywhere; }
+.badge-stamp {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: 0.14em; font-size: 12px; color: var(--stamp-ink);
+  border: 2px solid currentColor; border-radius: 3px; padding: 1px 7px; transform: rotate(-4deg);
+}
+.card-bio { grid-area: bio; font-size: 17px; line-height: 1.5; margin: 6px 0 0; overflow-wrap: anywhere; }
+.ledger { grid-area: ledger; list-style: none; margin: 4px 0 0; padding: 0; max-width: 360px; }
+.ledger-row { display: flex; align-items: baseline; gap: 8px; width: 100%; font: inherit; color: var(--text); background: none; border: 0; padding: 5px 0; text-align: left; }
+button.ledger-row { cursor: pointer; }
+button.ledger-row:hover span { text-decoration: underline; }
+.ledger-row i { flex: 1; border-bottom: 2px dotted var(--line); translate: 0 -4px; }
+.ledger-row b { font-family: var(--display); font-size: 20px; }
+.card-since { grid-area: since; margin: 0; }
+.card-actions { grid-area: actions; display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.price-tag {
+  grid-area: shop; justify-self: start; display: inline-flex; align-items: center; gap: 10px; margin-top: 8px; text-decoration: none;
+  color: #11130f; background: var(--sun); padding: 8px 16px 8px 12px; clip-path: polygon(16px 0, 100% 0, 100% 100%, 16px 100%, 0 50%);
+  padding-left: 26px; transform: rotate(-1.5deg); transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.price-tag:hover { transform: rotate(0deg) translateX(3px); }
+.price-tag span:last-child { display: flex; flex-direction: column; line-height: 1.15; }
+.price-tag b { font-family: var(--display); text-transform: uppercase; letter-spacing: 0.08em; }
+.tag-hole { width: 8px; height: 8px; border-radius: 50%; background: var(--slip); box-shadow: inset 0 0 0 1.5px rgba(17, 19, 15, 0.5); }
+.people-list { margin-bottom: 16px; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .slip, .clipping, .desk-tab, .price-tag, .stamp-face { transition: none !important; }
+  .slip, .clipping { transform: none; }
+}
+
+/* ================= Trusted Answers ================= */
+/* "Verify with Hana": a quiet ink button, then Hana's margin note. */
+.verify-btn {
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; color: var(--navy-2);
+  background: none; border: 1px dashed currentColor; border-radius: 3px; padding: 6px 10px;
+}
+.verify-btn:hover { background: color-mix(in srgb, var(--navy-2) 8%, transparent); }
+.verify-btn:disabled { opacity: 0.6; cursor: progress; }
+.check-note {
+  display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; padding: 10px 12px;
+  background: var(--card-alt); border-left: 4px solid var(--muted); border-radius: 2px; font-size: 15px;
+}
+.check-note p { margin: 0; line-height: 1.5; }
+.check-head { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.check-head b { color: var(--text); }
+.check-headline { font-size: 16px; }
+.check-note.v-supported { border-left-color: var(--good); }
+.check-note.v-mixed { border-left-color: var(--warn); }
+.check-note.v-unsupported { border-left-color: var(--danger); }
+.src-list { margin: 4px 0 0; padding-left: 18px; font-size: 14px; }
+.src-list li { margin: 2px 0; overflow-wrap: anywhere; }
+
+/* The pinned trusted answer: above every reply. */
+.trusted {
+  margin: 10px 0; padding: 12px 14px 10px; background: var(--card); color: var(--text);
+  border: 2px solid var(--text); border-top: 6px solid var(--sun); border-radius: 3px;
+  box-shadow: 0 10px 20px -14px rgba(0, 0, 0, 0.5);
+}
+.trusted p { margin: 6px 0; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.trusted-label { display: flex; align-items: center; gap: 6px; font-family: var(--display); text-transform: uppercase; letter-spacing: 0.06em; font-size: 14px; }
+.trusted-pin { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: inset -2px -2px 0 rgba(0, 0, 0, 0.25); }
+.card.is-trusted { outline: 2px solid var(--sun); outline-offset: -2px; }
+.pill.answered { background: var(--sun); color: #11130f; }
+.replies-head { margin: 18px 0 6px; }
+
+/* A post that wasn't posted: calm, specific, fixable. */
+.blocked-note { margin: 6px 0; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 12%, var(--card)); border-left: 4px solid var(--warn); border-radius: 2px; }
+.blocked-note p { margin: 4px 0; line-height: 1.45; }

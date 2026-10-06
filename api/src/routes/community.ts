@@ -24,6 +24,8 @@ import {
   type CommunityQueue,
   type CommunityQueueItem,
   type CommunityStatus,
+  type PostCheck,
+  type TrustedAnswer,
   type FeedPage,
   type FeedPost,
   type ReviewNote,
@@ -31,15 +33,18 @@ import {
   type VillagePost,
   type VillageThread,
   type VillageThreadSummary,
+  type WebItem,
 } from '@myday/shared';
 import { config } from '../config.js';
-import { pool, tx } from '../db.js';
+import { asSystem, detached, pool, tx } from '../db.js';
 import { logEvent } from '../lib/events.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { sendMail } from '../lib/mail.js';
 import { isTeen } from '../lib/planload.js';
 import { SCREEN_REASONS, screenImage, screenText, type ScreenReason, type ScreenResult } from '../lib/screen.js';
 import { currentKeyId, openBytes, openText, sealBytes, sealText } from '../lib/seal.js';
+import { refreshWebFeeds } from '../lib/webfeed.js';
+import { answerQuestion, isQuestion, verifyClaim } from '../lib/verify.js';
 
 export const communityRouter = Router();
 /** Moderation is for MyDay admins, with or without a household of their own. */
@@ -77,7 +82,18 @@ interface ProfileRow {
   parent_badge: boolean;
   muted_until: Date | null;
   banned_at: Date | null;
+  shop_slug: string | null;
+  created_at: Date;
 }
+
+/** Where MonetizeMe storefronts live (a creator's shop is <base>/creator/?slug=<slug>). */
+const shopUrl = (slug: string | null): string | null =>
+  slug ? `${(process.env.MONETIZEME_URL || 'https://opsentra.app').replace(/\/$/, '')}/creator/?slug=${encodeURIComponent(slug)}` : null;
+const SHOP_SLUG = /^[a-z0-9][a-z0-9-]{1,59}$/;
+
+/** The Feed's window: the last week, then "you're caught up". */
+const FEED_WINDOW_DAYS = 7;
+const FEED_MAX = 60;
 
 async function profileRow(userId: number): Promise<ProfileRow | null> {
   const { rows } = await pool.query<ProfileRow>('SELECT * FROM social_profiles WHERE user_id = $1', [userId]);
@@ -138,6 +154,11 @@ interface Decision {
 }
 
 async function decide(r: ScreenResult, where: string): Promise<Decision> {
+  // Blocked (telling others to change medication, dangerous advice): never saved; say why and how to rephrase.
+  if (r.block) {
+    await logEvent('community_blocked', { where, reasons: r.reasons.join(',') }, null, null);
+    throw new HttpError(422, r.explain ?? 'This can’t be posted as written.', 'blocked', { rephrase: r.rephrase ?? null, reasons: r.reasons.map((x) => SCREEN_REASONS[x]) });
+  }
   const note: ReviewNote = { underReview: r.hold, crisis: r.crisis, reasons: r.reasons.map((x) => SCREEN_REASONS[x]) };
   if (r.crisis) {
     await logEvent('community_crisis', { where }, null, null);
@@ -186,6 +207,9 @@ async function profileView(viewer: number, userId: number): Promise<CommunityPro
     followers: c?.followers ?? 0,
     following: c?.following ?? 0,
     posts: c?.posts ?? 0,
+    shopSlug: p.shop_slug,
+    shopUrl: shopUrl(p.shop_slug),
+    joinedOn: p.created_at.toISOString().slice(0, 10),
     me: viewer === userId,
     followedByMe: c?.followed ?? false,
     blockedByMe: c?.blocked ?? false,
@@ -232,13 +256,21 @@ communityRouter.put('/api/community/profile', async (req, res) => {
     if (!rowCount) throw new HttpError(400, 'Upload the photo first');
     avatarId = id;
   }
+  // Shop slot: a MonetizeMe storefront slug (letters, numbers, dashes). Omitted = unchanged; '' or null = remove.
+  let shopSlug: string | null = existing?.shop_slug ?? null;
+  if (b.shopSlug === null || b.shopSlug === '') shopSlug = null;
+  else if (b.shopSlug !== undefined) {
+    const v = String(b.shopSlug).trim().toLowerCase();
+    if (!SHOP_SLUG.test(v)) throw new HttpError(400, 'Your shop name is the part after ?slug= in your MonetizeMe link — letters, numbers and dashes.', 'shop_slug');
+    shopSlug = v;
+  }
   const keyId = currentKeyId();
   await pool.query(
-    `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at)
-     VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+    `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at, shop_slug)
+     VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7)
      ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, bio_enc = EXCLUDED.bio_enc, key_id = EXCLUDED.key_id,
-       avatar_id = EXCLUDED.avatar_id, parent_badge = EXCLUDED.parent_badge`,
-    [a.userId, displayName, bio ? sealText(bio, keyId) : null, keyId, avatarId, b.parentBadge === true],
+       avatar_id = EXCLUDED.avatar_id, parent_badge = EXCLUDED.parent_badge, shop_slug = EXCLUDED.shop_slug`,
+    [a.userId, displayName, bio ? sealText(bio, keyId) : null, keyId, avatarId, b.parentBadge === true, shopSlug],
   );
   res.json(await profileView(a.userId, a.userId));
 });
@@ -297,9 +329,10 @@ const categoryOf = (v: unknown): VillageCategory => {
 communityRouter.get('/api/village', async (req, res) => {
   const m = await member(req);
   const cat = typeof req.query.category === 'string' && req.query.category ? categoryOf(req.query.category) : null;
-  const { rows } = await pool.query<AuthorCols & { id: number; category: VillageCategory; title_enc: Buffer; key_id: string; status: CommunityStatus; last_activity_at: Date; replies: number; author_user_id: number }>(
+  const { rows } = await pool.query<AuthorCols & { id: number; category: VillageCategory; title_enc: Buffer; key_id: string; status: CommunityStatus; last_activity_at: Date; replies: number; author_user_id: number; answered: boolean }>(
     `SELECT t.id, t.category, t.title_enc, t.key_id, t.status, t.last_activity_at, t.author_user_id, ${AUTHOR_COLS},
-            (SELECT COUNT(*)::int FROM forum_posts x WHERE x.thread_id = t.id AND NOT x.opening AND x.status = 'visible') AS replies
+            (SELECT COUNT(*)::int FROM forum_posts x WHERE x.thread_id = t.id AND NOT x.opening AND x.status = 'visible') AS replies,
+            EXISTS (SELECT 1 FROM trusted_answers a WHERE a.kind = 'village' AND a.target_id = t.id) AS answered
        FROM forum_threads t ${AUTHOR_JOIN('t.author_user_id')}
       WHERE ${SEEN('t')} AND ${NOT_BLOCKED('t.author_user_id')} AND ($2::text IS NULL OR t.category = $2)
       ORDER BY t.last_activity_at DESC LIMIT 100`,
@@ -312,6 +345,7 @@ communityRouter.get('/api/village', async (req, res) => {
     author: author(r),
     replies: r.replies,
     lastActivity: r.last_activity_at.toISOString(),
+    answered: r.answered,
     status: r.status,
     mine: r.author_user_id === m.userId,
   }));
@@ -349,8 +383,16 @@ async function threadView(viewer: number, id: number): Promise<VillageThread> {
     reactions: { heart: r.hearts, beenThere: r.been, mine: (r.mine_r ?? []) as Array<'heart' | 'been-there'> },
     helpful: r.helpful_count,
     markedHelpfulByMe: r.helped,
+    check: null,
   }));
-  return { id: th.id, category: th.category, title: openText(th.title_enc, th.key_id), status: th.status, posts };
+  const checks = await checksFor('village', posts.map((p) => p.id));
+  for (const p of posts) p.check = checks.get(p.id) ?? null;
+  const title = openText(th.title_enc, th.key_id);
+  const opening = posts.find((p) => p.opening);
+  const trusted = (await trustedFor('village', [th.id])).get(th.id) ?? null;
+  // A moderator's pick must still be a visible reply.
+  const pinned = trusted?.replyPostId && !posts.some((p) => p.id === trusted.replyPostId && p.status === 'visible') ? null : trusted;
+  return { id: th.id, category: th.category, title, status: th.status, posts, isQuestion: isQuestion(`${title}\n${opening?.body ?? ''}`), trusted: pinned };
 }
 
 communityRouter.get('/api/village/threads/:id', async (req, res) => {
@@ -377,6 +419,7 @@ communityRouter.post('/api/village/threads', async (req, res) => {
     ]);
     return tid;
   });
+  if (d.status === 'visible') ensureTrusted('village', id, `${title}\n\n${body}`);
   res.status(201).json({ thread: await threadView(m.userId, id), review: d.note });
 });
 
@@ -473,7 +516,67 @@ const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
   mine: r.author_user_id === viewer,
   likes: r.like_count,
   likedByMe: r.liked,
+  check: null,
+  isQuestion: isQuestion(openText(r.body_enc, r.key_id)),
+  trusted: null,
 });
+
+/* ---------- Trusted Answers: shared checks + pinned answers ---------- */
+
+async function checksFor(kind: 'feed' | 'village', ids: number[]): Promise<Map<number, PostCheck>> {
+  if (!ids.length) return new Map();
+  const { rows } = await pool.query<{ post_id: number; result_enc: Buffer; key_id: string }>('SELECT post_id, result_enc, key_id FROM community_checks WHERE kind = $1 AND post_id = ANY($2::int[])', [kind, ids]);
+  return new Map(rows.map((r) => [r.post_id, JSON.parse(openText(r.result_enc, r.key_id)) as PostCheck]));
+}
+
+async function trustedFor(kind: 'feed' | 'village', ids: number[]): Promise<Map<number, TrustedAnswer>> {
+  if (!ids.length) return new Map();
+  const { rows } = await pool.query<{ target_id: number; source: TrustedAnswer['source']; body_enc: Buffer; key_id: string; sources: TrustedAnswer['sources']; reply_post_id: number | null; created_at: Date }>(
+    'SELECT target_id, source, body_enc, key_id, sources, reply_post_id, created_at FROM trusted_answers WHERE kind = $1 AND target_id = ANY($2::int[])',
+    [kind, ids],
+  );
+  return new Map(
+    rows.map((r) => [
+      r.target_id,
+      {
+        source: r.source,
+        body: openText(r.body_enc, r.key_id),
+        sources: r.sources,
+        replyPostId: r.reply_post_id,
+        by: r.source === 'moderator' ? 'A moderator' : r.source === 'publisher' ? (r.sources[0]?.label.split(':')[0] ?? 'A trusted publisher') : 'Hana',
+        at: r.created_at.toISOString(),
+      },
+    ]),
+  );
+}
+
+/** Background: a question that's live gets Hana's (or a publisher's) trusted answer, unless one is already pinned. */
+function ensureTrusted(kind: 'feed' | 'village', targetId: number, text: string): void {
+  if (!isQuestion(text)) return;
+  detached(async () => {
+    const has = await asSystem(() => pool.query('SELECT 1 FROM trusted_answers WHERE kind = $1 AND target_id = $2', [kind, targetId]));
+    if (has.rowCount) return;
+    const a = await answerQuestion(text);
+    if (!a) return;
+    const keyId = currentKeyId();
+    await asSystem(() =>
+      pool.query('INSERT INTO trusted_answers (kind, target_id, source, body_enc, key_id, sources) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, target_id) DO NOTHING', [
+        kind, targetId, a.source, sealText(a.body, keyId), keyId, JSON.stringify(a.sources),
+      ]),
+    );
+  });
+}
+
+const verifyCount = new Map<number, number[]>();
+/** Fair use for "Verify with Hana": 30 checks an hour per person (a cached check costs nothing). */
+function verifyAllowed(userId: number): boolean {
+  const now = Date.now();
+  const recent = (verifyCount.get(userId) ?? []).filter((t) => now - t < 3_600_000);
+  if (recent.length >= 30) return false;
+  recent.push(now);
+  verifyCount.set(userId, recent);
+  return true;
+}
 
 async function feedPage(viewer: number, o: { tab: 'following' | 'everyone'; author: number | null; before: number | null; id?: number }): Promise<FeedPage> {
   const { rows } = await pool.query<FeedRow>(
@@ -485,10 +588,18 @@ async function feedPage(viewer: number, o: { tab: 'following' | 'everyone'; auth
         AND ($3::int IS NULL OR s.author_user_id = $3)
         AND ($4::int IS NULL OR s.id < $4)
         AND ($5::int IS NULL OR s.id = $5)
-      ORDER BY s.id DESC LIMIT 20`,
-    [viewer, o.tab, o.author, o.before, o.id ?? null],
+        AND ($3::int IS NOT NULL OR $5::int IS NOT NULL OR s.created_at > now() - make_interval(days => $6))
+      ORDER BY s.id DESC LIMIT $7`,
+    [viewer, o.tab, o.author, o.before, o.id ?? null, FEED_WINDOW_DAYS, o.author !== null ? 30 : FEED_MAX],
   );
-  return { posts: rows.map((r) => toFeed(viewer, r)), next: rows.length === 20 ? (rows[rows.length - 1]?.id ?? null) : null };
+  const posts = rows.map((r) => toFeed(viewer, r));
+  const ids = posts.map((p) => p.id);
+  const [checks, trusted] = await Promise.all([checksFor('feed', ids), trustedFor('feed', ids)]);
+  for (const p of posts) {
+    p.check = checks.get(p.id) ?? null;
+    p.trusted = trusted.get(p.id) ?? null;
+  }
+  return { posts, next: null, windowDays: o.author !== null ? 0 : FEED_WINDOW_DAYS };
 }
 
 communityRouter.get('/api/feed', async (req, res) => {
@@ -497,6 +608,75 @@ communityRouter.get('/api/feed', async (req, res) => {
   const authorId = typeof req.query.author === 'string' && req.query.author ? idParam(req.query.author) : null;
   const before = typeof req.query.before === 'string' && req.query.before ? idParam(req.query.before) : null;
   res.json(await feedPage(m.userId, { tab, author: authorId, before }));
+});
+
+/** "Verify with Hana": a shared, inline fact-check of a visible post (made once, then everyone sees it). */
+communityRouter.post('/api/community/verify', async (req, res) => {
+  const m = await member(req);
+  const b = req.body as { kind?: unknown; id?: unknown };
+  const kind = b.kind === 'village' ? 'village' : b.kind === 'feed' ? 'feed' : null;
+  if (!kind) throw new HttpError(400, 'Which post?');
+  const id = idParam(b.id);
+  const table = kind === 'feed' ? 'social_posts' : 'forum_posts';
+  const { rows } = await pool.query<{ body_enc: Buffer; key_id: string }>(
+    `SELECT s.body_enc, s.key_id FROM ${table} s WHERE s.id = $2 AND s.status = 'visible' AND ${NOT_BLOCKED('s.author_user_id')}`,
+    [m.userId, id],
+  );
+  const post = rows[0];
+  if (!post) throw new HttpError(404, 'Not found');
+  const have = (await checksFor(kind, [id])).get(id);
+  if (have) {
+    res.json({ check: have });
+    return;
+  }
+  const text = openText(post.body_enc, post.key_id);
+  if (!text.trim()) throw new HttpError(400, 'There’s nothing written to check');
+  if (!verifyAllowed(m.userId)) throw new HttpError(429, 'That’s a lot of checks this hour — try again a bit later.');
+  const check = await verifyClaim(text);
+  const keyId = currentKeyId();
+  await pool.query('INSERT INTO community_checks (kind, post_id, verdict, result_enc, key_id, requested_by) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, post_id) DO NOTHING', [
+    kind, id, check.verdict, sealText(JSON.stringify(check), keyId), keyId, m.userId,
+  ]);
+  res.json({ check: (await checksFor(kind, [id])).get(id) ?? check });
+});
+
+/** Moderators: mark a reply as the question's trusted answer (it's pinned above every other reply). */
+communityStaffRouter.post('/api/village/posts/:id/trusted', async (req, res) => {
+  staff(req);
+  const by = req.user?.id ?? null;
+  const id = idParam(req.params.id);
+  const { rows } = await pool.query<{ thread_id: number; body_enc: Buffer; key_id: string }>(
+    "SELECT thread_id, body_enc, key_id FROM forum_posts WHERE id = $1 AND NOT opening AND status = 'visible'",
+    [id],
+  );
+  const reply = rows[0];
+  if (!reply) throw new HttpError(404, 'Pick a visible reply');
+  const keyId = currentKeyId();
+  await pool.query(
+    `INSERT INTO trusted_answers (kind, target_id, source, body_enc, key_id, sources, reply_post_id, marked_by) VALUES ('village', $1, 'moderator', $2, $3, '[]', $4, $5)
+     ON CONFLICT (kind, target_id) DO UPDATE SET source = 'moderator', body_enc = EXCLUDED.body_enc, key_id = EXCLUDED.key_id, sources = '[]',
+       reply_post_id = EXCLUDED.reply_post_id, marked_by = EXCLUDED.marked_by, created_at = now()`,
+    [reply.thread_id, sealText(openText(reply.body_enc, reply.key_id), keyId), keyId, id, by],
+  );
+  await logEvent('community_moderation', { kind: 'village', action: 'trusted' }, null, null);
+  res.json(await threadView(by ?? 0, reply.thread_id));
+});
+
+/** Around the Web: trusted publishers' articles (screened), newest first, the last two weeks. */
+communityRouter.get('/api/feed/web', async (req, res) => {
+  await member(req);
+  const { rows } = await pool.query<{ id: number; publisher: string; title: string; summary: string; url: string; published_at: Date }>(
+    `SELECT id, publisher, title, summary, url, published_at FROM web_items
+      WHERE status = 'visible' AND published_at > now() - interval '14 days' ORDER BY published_at DESC LIMIT 30`,
+  );
+  const items: WebItem[] = rows.map((r) => ({ id: r.id, publisher: r.publisher, title: r.title, summary: r.summary, url: r.url, publishedAt: r.published_at.toISOString() }));
+  res.json({ items });
+});
+
+/** Moderators: read the publishers' feeds now (it also runs every few hours). */
+communityStaffRouter.post('/api/feed/web/refresh', async (req, res) => {
+  if (!req.user || !config.adminEmails.includes(req.user.email.toLowerCase())) throw new HttpError(403, 'Moderators only');
+  res.json(await refreshWebFeeds());
 });
 
 async function onePost(viewer: number, id: number): Promise<FeedPost> {
@@ -527,6 +707,7 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
     'INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
     [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags],
   );
+  if (d.status === 'visible' && body) ensureTrusted('feed', rows[0]?.id ?? 0, body);
   res.status(201).json({ post: await onePost(m.userId, rows[0]?.id ?? 0), review: d.note });
 });
 
@@ -750,6 +931,18 @@ communityStaffRouter.post('/api/community/moderation/:kind/:id/:action', async (
     if (action === 'remove' || action === 'strike') await pool.query(`UPDATE ${table} SET status = 'removed', priority = 0 WHERE id = $1`, [id]);
     if (action === 'approve' && kind === 'feed') await pool.query("UPDATE community_images i SET status = 'visible' FROM social_posts s WHERE s.id = $1 AND i.id = s.image_id AND i.status = 'pending'", [id]);
     await pool.query(`UPDATE ${reports} SET status = 'resolved', resolution = $2 WHERE post_id = $1 AND status = 'open'`, [id, action]);
+    if (action === 'approve') {
+      if (kind === 'feed') {
+        const { rows: p } = await pool.query<{ body_enc: Buffer; key_id: string }>('SELECT body_enc, key_id FROM social_posts WHERE id = $1', [id]);
+        if (p[0]) ensureTrusted('feed', id, openText(p[0].body_enc, p[0].key_id));
+      } else {
+        const { rows: p } = await pool.query<{ thread_id: number; body_enc: Buffer; key_id: string; title_enc: Buffer; tkey: string }>(
+          'SELECT x.thread_id, x.body_enc, x.key_id, t.title_enc, t.key_id AS tkey FROM forum_posts x JOIN forum_threads t ON t.id = x.thread_id WHERE x.id = $1 AND x.opening',
+          [id],
+        );
+        if (p[0]) ensureTrusted('village', p[0].thread_id, `${openText(p[0].title_enc, p[0].tkey)}\n\n${openText(p[0].body_enc, p[0].key_id)}`);
+      }
+    }
     if (kind === 'village') {
       await syncThread(id);
       if (action === 'approve') await pool.query('UPDATE forum_threads t SET last_activity_at = now() FROM forum_posts x WHERE x.id = $1 AND t.id = x.thread_id', [id]);

@@ -108,6 +108,17 @@ const phishServer = createHttp(async (req, res) => {
 });
 await new Promise((r) => phishServer.listen(0, '127.0.0.1', r));
 const PHISH = `http://127.0.0.1:${phishServer.address().port}`;
+// "Around the Web": a fake publisher RSS feed — one good article, one with dosage advice (must be screened out), one non-https link (skipped).
+const rssServer = createHttp((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
+  res.end(`<?xml version="1.0"?><rss version="2.0"><channel><title>Test Publisher</title>
+<item><title>Five calm-morning routines that actually stick</title><link>https://publisher.example/calm-mornings</link><pubDate>${new Date(Date.now() - 86400000).toUTCString()}</pubDate><description><![CDATA[<p>Visual checklists, a launch pad by the door &amp; fewer decisions before 8am.</p><p>The post Five calm-morning routines appeared first on Test Publisher.</p>]]></description></item>
+<item><title>Just double the dose: 40mg is fine</title><link>https://publisher.example/dose</link><pubDate>${new Date().toUTCString()}</pubDate><description>Bad advice.</description></item>
+<item><title>Not secure</title><link>http://publisher.example/plain</link><pubDate>${new Date().toUTCString()}</pubDate><description>skip me</description></item>
+</channel></rss>`);
+});
+await new Promise((r) => rssServer.listen(0, '127.0.0.1', r));
+const RSS = `http://127.0.0.1:${rssServer.address().port}/rss`;
 let robotChromium = '';
 try {
   robotChromium = createRequire(path.join(root, 'package.json'))('playwright').chromium.executablePath();
@@ -150,6 +161,7 @@ const serverEnv = (fakeNow) => ({
   GROCERY_STUB: '1',
   FLIGHT_STUB: '1',
   ROBOT_STUB: '1',
+  WEB_FEEDS: `testpub|Test Publisher|${RSS}`,
   ROBOT_ALLOW_LOCAL: '1',
   ...(robotChromium ? { ROBOT_CHROMIUM: robotChromium } : {}),
   ERROR_WEBHOOK_URL: ALERT_URL,
@@ -1968,7 +1980,9 @@ async function careTeam() {
     const r = (await c.post(`/api/village/threads/${vth.id}/replies`, { body })).data;
     return [r.review.underReview, r.thread.posts.at(-1).status, r.thread.posts.at(-1).body === body];
   };
-  eq('dosage advice → under review (the writer still sees it)', await held(sam, 'Try upping his dose to 20mg, it worked for us.'), [true, 'pending', true]);
+  const blockedReply = await sam.post(`/api/village/threads/${vth.id}/replies`, { body: 'Try upping his dose to 20mg, it worked for us.' });
+  eq('telling someone to change a dose → blocked with a plain explanation and a way to rephrase (not saved)', [blockedReply.status, blockedReply.data.code, typeof blockedReply.data.details?.rephrase === 'string' && /for you|your/i.test(blockedReply.data.details.rephrase), /prescriber/i.test(blockedReply.data.error)], [422, 'blocked', true, true]);
+  eq('a personal dose mention is a gray area → a person looks (the writer still sees it)', await held(sam, 'My son takes 20mg and it helps.'), [true, 'pending', true]);
   eq('a kid’s name + school → under review', await held(kayla, 'My son Jake at Lincoln Elementary has the same thing.'), [true, 'pending', true]);
   eq('a phone number → under review', await held(ret, 'Call me at 405-555-0199 and we can talk.'), [true, 'pending', true]);
   eq('a cure claim → under review', await held(ret, 'This supplement cured my daughter’s ADHD in a month!'), [true, 'pending', true]);
@@ -1978,6 +1992,7 @@ async function careTeam() {
   eq('…but everyday numbers are fine (“2 kids and no way to nap”)', await held(kayla, 'With 2 kids and no way to nap, coffee is my co-parent.'), [false, 'visible', true]);
   eq('…none of the held posts is visible to anyone else', (await ty.get(`/api/village/threads/${vth.id}`)).data.posts.map((p) => p.author.displayName), ['Ty', 'Sam', 'Kayla']);
   eq('sharing your own experience is fine', await held(kayla, 'Our doctor adjusted my meds last spring and mornings got easier.'), [false, 'visible', true]);
+  eq('…and blocked posts never reach the queue or the thread', (await ty.get(`/api/village/threads/${vth.id}`)).data.posts.some((p) => /upping his dose/.test(p.body)), false);
 
   section('community: crisis words → 988 shown, escalated to the top of the queue');
   const mailBefore = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
@@ -1997,6 +2012,10 @@ async function careTeam() {
   await cmod.post(`/api/community/moderation/village/${dose.id}/remove`);
   eq('a removed post never shows, even to its writer', (await sam.get(`/api/village/threads/${vth.id}`)).data.posts.some((p) => /20mg/.test(p.body)), false);
 
+  const ret2Crisis = async () => {
+    const r = (await kayla.post('/api/feed/posts', { body: 'I want to die. Just stop your meds, all of them.' })).data;
+    return [r.review?.crisis === true, r.post?.status === 'pending'];
+  };
   section('community: The Feed — posts, follows, likes, tabs, 3 reports hide, blocks');
   let fp = (await sam.post('/api/feed/posts', { body: 'Morning win: everyone out the door by 7:40!' })).data;
   eq('feed post goes live', [fp.review.underReview, fp.post.status, fp.post.author.displayName], [false, 'visible', 'Sam']);
@@ -2030,6 +2049,63 @@ async function careTeam() {
   await kayla.del(`/api/community/people/${samId}/block`);
   eq('unblock', (await kayla.get('/api/feed')).data.posts.some((p) => p.author.userId === samId), true);
   eq('report a profile', (await ty.post(`/api/community/people/${await uid('retired@example.com')}/report`, { reason: 'Spam or selling' })).status, 201);
+
+  section('The Feed is finite: the last 7 days, then “you’re caught up”; Around the Web; a Shop slot on profiles');
+  let pg7 = (await ty.get('/api/feed?tab=everyone')).data;
+  eq('one finite page: the last 7 days, no next page', [pg7.windowDays, pg7.next], [7, null]);
+  await sql("UPDATE social_posts SET created_at = now() - interval '10 days' WHERE id = $1", [samPost.id]);
+  eq('a post older than a week drops off the Feed…', (await ty.get('/api/feed?tab=everyone')).data.posts.some((p) => p.id === samPost.id), false);
+  eq('…but stays on its writer’s profile', (await ty.get(`/api/feed?author=${samId}`)).data.posts.some((p) => p.id === samPost.id), true);
+  await sql('UPDATE social_posts SET created_at = now() WHERE id = $1', [samPost.id]);
+  eq('only moderators can pull the publisher feeds', (await ty.post('/api/feed/web/refresh')).status, 403);
+  let wr = (await cmod.post('/api/feed/web/refresh')).data;
+  eq('Around the Web: new articles stored; the one with dosage advice is screened out; a non-https link is skipped', [wr.added, wr.hidden], [2, 1]);
+  let web = (await ty.get('/api/feed/web')).data.items;
+  eq('…grown-ups see the screened article as a labeled link-out', web.map((w) => [w.publisher, w.title, w.url]), [['Test Publisher', 'Five calm-morning routines that actually stick', 'https://publisher.example/calm-mornings']]);
+  eq('…with a short clean summary (no HTML, no “appeared first on”)', web[0].summary, 'Visual checklists, a launch pad by the door & fewer decisions before 8am.');
+  eq('…read again: nothing duplicated', (await cmod.post('/api/feed/web/refresh')).data.added, 0);
+  eq('kids get no trace of it', (await avery.get('/api/feed/web')).status, 403);
+  const tyName = (await ty.get('/api/community/me')).data.profile.displayName;
+  eq('a shop name that isn’t a storefront slug is refused', (await ty.put('/api/community/profile', { displayName: tyName, bio: '', parentBadge: true, shopSlug: 'Buy My Stuff!' })).data.code, 'shop_slug');
+  let shopP = (await ty.put('/api/community/profile', { displayName: tyName, bio: '', parentBadge: true, shopSlug: 'tys-planners' })).data;
+  eq('Shop slot → the MonetizeMe storefront', shopP.shopUrl, 'https://opsentra.app/creator/?slug=tys-planners');
+  eq('…others see it on the profile', (await kayla.get(`/api/community/people/${tyId}`)).data.shopUrl, 'https://opsentra.app/creator/?slug=tys-planners');
+  eq('…saving the profile without it keeps it; clearing it removes it', [(await ty.put('/api/community/profile', { displayName: tyName, bio: '', parentBadge: true })).data.shopSlug, (await ty.put('/api/community/profile', { displayName: tyName, bio: '', parentBadge: true, shopSlug: '' })).data.shopUrl], ['tys-planners', null]);
+  await ty.put('/api/community/profile', { displayName: tyName, bio: 'Dad of three.', parentBadge: true, shopSlug: 'tys-planners' });
+
+  section('Trusted Answers: personal experience passes, prescribing is blocked, Verify with Hana, a question gets a pinned answer');
+  let ta = await ty.post('/api/feed/posts', { body: 'This worked for me: a visual timer for screen time ended the arguments.' });
+  eq('a benign experience share goes live', [ta.status, ta.data.post?.status], [201, 'visible']);
+  ta = await ty.post('/api/feed/posts', { body: 'You should stop Adderall, it is poison for kids.' });
+  eq('prescriptive medical advice → blocked, with why and how to rephrase', [ta.status, ta.data.code, !!ta.data.details?.rephrase], [422, 'blocked', true]);
+  eq('…and it never sees daylight (not saved, not in anyone’s feed)', (await kayla.get('/api/feed?tab=everyone')).data.posts.some((p) => /stop Adderall/.test(p.body)), false);
+  eq('crisis language is never just blocked — resources + escalation still win', (await ret2Crisis()).slice(0, 2), [true, true]);
+  const vfy = await kayla.post('/api/community/verify', { kind: 'feed', id: samPost.id });
+  check('Verify with Hana → an inline fact-check with a verdict', vfy.status === 200 && ['supported', 'mixed', 'unsupported', 'personal', 'no_claim'].includes(vfy.data.check.verdict) && !!vfy.data.check.headline, JSON.stringify(vfy.data).slice(0, 200));
+  eq('…made once and shared: everyone sees the same check on the post', (await ty.get('/api/feed?tab=everyone')).data.posts.find((p) => p.id === samPost.id)?.check?.headline, vfy.data.check.headline);
+  eq('…asking again doesn’t re-run it', (await ty.post('/api/community/verify', { kind: 'feed', id: samPost.id })).data.check.checkedAt, vfy.data.check.checkedAt);
+  eq('kids can’t use it', (await avery.post('/api/community/verify', { kind: 'feed', id: samPost.id })).status, 403);
+  const medCheck = await kayla.post('/api/community/verify', { kind: 'village', id: (await kayla.get(`/api/village/threads/${vth.id}`)).data.posts.find((p) => /adjusted my meds/.test(p.body)).id });
+  eq('a personal medication story is checked as personal experience', medCheck.data.check.verdict, 'personal');
+  const qPost = (await sam.post('/api/feed/posts', { body: 'Does anyone have calm morning routines that stick?' })).data.post;
+  const waitTrusted = async (get) => {
+    for (let i = 0; i < 40; i++) {
+      const t = await get();
+      if (t) return t;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return null;
+  };
+  const qTrusted = await waitTrusted(async () => (await kayla.get('/api/feed?tab=everyone')).data.posts.find((p) => p.id === qPost.id)?.trusted);
+  eq('a question in the Feed gets a trusted answer — here, the publisher article that covers it', [qPost.isQuestion, qTrusted?.source, qTrusted?.sources[0]?.url], [true, 'publisher', 'https://publisher.example/calm-mornings']);
+  const qThread = (await kayla.post('/api/village/threads', { category: 'wins', title: 'How do you handle homework meltdowns?', body: 'Every night is a battle. What works for you?' })).data.thread;
+  const vTrusted = await waitTrusted(async () => (await ty.get(`/api/village/threads/${qThread.id}`)).data.trusted);
+  eq('a question in the Village gets Hana’s trusted answer, pinned', [vTrusted?.source, vTrusted?.by], ['hana', 'Hana']);
+  eq('…the thread list shows it’s answered', (await ty.get('/api/village')).data.threads.find((t) => t.id === qThread.id)?.answered, true);
+  const goodReply = (await ty.post(`/api/village/threads/${qThread.id}/replies`, { body: 'We do homework right after a snack, 20 minutes on, 5 off, with a timer.' })).data.thread.posts.at(-1);
+  eq('only moderators pick a trusted answer', (await ty.post(`/api/village/posts/${goodReply.id}/trusted`)).status, 403);
+  const marked = (await cmod.post(`/api/village/posts/${goodReply.id}/trusted`)).data;
+  eq('a moderator marks a reply as the trusted answer — it replaces Hana’s and pins above every reply', [marked.trusted?.source, marked.trusted?.replyPostId, /20 minutes on/.test(marked.trusted?.body ?? '')], ['moderator', goodReply.id, true]);
 
   section('community: strikes — warn, then a 7-day mute, then a ban (logged)');
   const strikeRet = async () => {
@@ -2820,12 +2896,41 @@ async function uiGate() {
     await page.getByTestId('feed-post').filter({ hasText: 'packed lunches the night before' }).waitFor({ timeout: 10000 });
     await page.getByLabel('Share something').fill('Just double his dose, 40mg is fine.');
     await page.getByTestId('composer').getByRole('button', { name: 'Post' }).click();
+    await page.getByTestId('blocked-note').waitFor({ timeout: 10000 });
+    check('Feed: prescribing is blocked with a plain explanation and a “try saying it like this”', /Try saying it like this/.test(await page.getByTestId('blocked-note').innerText()));
+    eq('…and the words stay in the box to rephrase', await page.getByLabel('Share something').inputValue(), 'Just double his dose, 40mg is fine.');
+    await page.getByLabel('Share something').fill('My son is on 40mg now and mornings are calmer.');
+    await page.getByTestId('composer').getByRole('button', { name: 'Post' }).click();
     await page.getByTestId('under-review').waitFor({ timeout: 10000 });
     check('Feed: a held post shows “Under review” to its writer (not a silent delete)', /under review/i.test(await page.getByTestId('under-review').textContent()) && /under review/i.test(await page.getByTestId('feed-post').filter({ hasText: '40mg' }).locator('.pill.sun').textContent()));
     await page.getByLabel('Share something').fill('I want to die tonight.');
     await page.getByTestId('composer').getByRole('button', { name: 'Post' }).click();
     await page.getByTestId('crisis-resources').waitFor({ timeout: 10000 });
     check('Feed: crisis words surface 988', /988/.test(await page.getByTestId('crisis-resources').innerText()));
+    await page.goto(`${BASE}/feed`);
+    await page.getByTestId('feed-caught-up').waitFor({ timeout: 10000 });
+    eq('Feed ends with “You’re caught up” — no Show more, no endless scroll', [/caught up/i.test(await page.getByTestId('feed-caught-up').innerText()), await page.getByRole('button', { name: /show more|load more/i }).count()], [true, 0]);
+    const stamp = page.getByTestId('feed-post').filter({ hasNot: page.locator('.pill.sun') }).locator('.ink-stamp[aria-pressed="false"]').first();
+    await stamp.click();
+    await page.locator('.ink-stamp[aria-pressed="true"]').first().waitFor({ timeout: 10000 });
+    check('Like = the stamp comes down', (await page.locator('.ink-stamp[aria-pressed="true"]').count()) > 0);
+    const toVerify = page.getByTestId('feed-post').filter({ hasText: 'packed lunches the night before' });
+    await toVerify.getByTestId('verify-hana').click();
+    await toVerify.getByTestId('hana-check').waitFor({ timeout: 15000 });
+    check('Verify with Hana → the fact-check renders inline on the post', /Hana checked/.test(await toVerify.getByTestId('hana-check').innerText()));
+    const qSlip = page.getByTestId('feed-post').filter({ hasText: 'calm morning routines that stick' });
+    eq('a question shows its pinned trusted answer', /Trusted answer/i.test(await qSlip.getByTestId('trusted-answer').innerText()), true);
+    await page.getByTestId('feed-tab-web').click();
+    await page.getByTestId('web-item').first().waitFor({ timeout: 10000 });
+    const clip = page.getByTestId('web-item').first();
+    eq('Around the Web: a labeled publisher card that opens the publisher’s site in a new tab', [await clip.locator('.publisher-label').innerText(), await clip.getAttribute('href'), await clip.getAttribute('target'), await clip.getAttribute('rel')], ['TEST PUBLISHER', 'https://publisher.example/calm-mornings', '_blank', 'noopener noreferrer']);
+    eq('…no composer on the publishers tab', await page.getByTestId('composer').count(), 0);
+    await page.goto(`${BASE}/people/${(await ty.get('/api/community/me')).data.profile.userId}`);
+    await page.getByTestId('profile-card').waitFor({ timeout: 10000 });
+    const cardText = await page.getByTestId('profile-card').innerText();
+    check('profile: an index card — who, badge, bio, footprint, since', /PARENT/i.test(cardText) && /Dad of three/.test(cardText) && /Notes posted/.test(cardText) && /Followers/.test(cardText) && /In the community since/.test(cardText), cardText.slice(0, 200));
+    eq('…the Shop slot links to the storefront', await page.getByTestId('shop-slot').getAttribute('href'), 'https://opsentra.app/creator/?slug=tys-planners');
+    eq('…and there’s no Message button (there are no DMs — never a dead button)', await page.getByRole('button', { name: /message/i }).count(), 0);
     await page.goto(`${BASE}/village`);
     await page.getByTestId('thread-list').locator('a').first().waitFor({ timeout: 10000 });
     check('Village: categories + threads', (await page.getByRole('button', { name: 'School & IEPs' }).count()) === 1 && (await page.getByTestId('thread-list').innerText()).includes('Visual timers saved our mornings'));
@@ -3546,7 +3651,7 @@ try {
   await stopServer();
   alertHook.close();
   // The errand fake store + look-alike site; their open keep-alive sockets would keep a passing run from exiting.
-  for (const s of [storeServer, phishServer]) {
+  for (const s of [storeServer, phishServer, rssServer]) {
     s.closeAllConnections();
     s.close();
   }
