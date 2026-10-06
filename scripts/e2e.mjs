@@ -1897,6 +1897,46 @@ async function careTeam() {
   // Leave one saved login for the browser check.
   await ty.post('/api/errands/logins', { site: 'Corner Store', url: STORE, username: 'shopper@example.com', password: 'S3cret-Pass!' });
 
+  section('Meetings (grown-ups only): record → transcript → notes; one tap adds an action item to tasks; never lose a recording');
+  const meetUpload = (who, text, q = {}) =>
+    fetch(`${BASE}/api/meetings/upload?${new URLSearchParams({ durationS: '120', ...q })}`, { method: 'POST', headers: { Cookie: who.cookie, 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1' }, body: text }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => null) }));
+  const waitMeeting = async (who, id, done = (m) => m.status === 'ready' || m.status === 'failed') => {
+    for (let i = 0; i < 60; i++) {
+      const m = (await who.get(`/api/meetings/${id}`)).data;
+      if (done(m)) return m;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return (await who.get(`/api/meetings/${id}`)).data;
+  };
+  eq('kids never see Meetings', [(await avery.get('/api/meetings')).status, (await meetUpload(avery, 'STUB-TRANSCRIPT: hi')).status], [403, 403]);
+  const talk = 'STUB-TRANSCRIPT: Weekly planning meeting with Kayla about the fall schedule. We decided to move swim lessons to Thursdays. Kayla will book the dentist by Friday. I will email the school about the field trip. Who is picking up Avery on Monday?';
+  let mu = await meetUpload(ty, talk, { clientId: 'e2e-meet-0001', recordedAt: String(Date.now() - 60_000) });
+  eq('a 2-minute meeting uploads', [mu.status, mu.data.meeting.durationS], [201, 120]);
+  const meetId = mu.data.meeting.id;
+  let meet = await waitMeeting(ty, meetId);
+  eq('…transcribed and turned into notes', meet.status, 'ready');
+  eq('…a title suggested from what was said', meet.title, 'Weekly planning meeting with Kayla about the');
+  check('…summary, decisions, follow-ups', !!meet.notes.summary && meet.notes.decisions.some((d) => /swim lessons to Thursdays/.test(d)) && meet.notes.followUps.some((d) => /picking up Avery/.test(d)), JSON.stringify(meet.notes).slice(0, 300));
+  eq('…action items with the person’s name when one was said', meet.notes.actionItems.map((a) => [a.task, a.owner]), [['book the dentist by Friday', 'Kayla'], ['I will email the school about the field trip', null]]);
+  check('…and a due date when one was given (Friday)', /^\d{4}-\d{2}-\d{2}$/.test(meet.notes.actionItems[0].due ?? ''), meet.notes.actionItems[0].due);
+  eq('…the audio is deleted once notes exist; the transcript stays (sealed at rest)', [meet.audioKept, !!meet.transcript, (await sql("SELECT COUNT(*)::int AS n FROM meetings WHERE position(convert_to('swim', 'UTF8') in transcript_enc) > 0 OR position(convert_to('swim', 'UTF8') in notes_enc) > 0"))[0].n], [false, true, 0]);
+  eq('the same upload again (a retry from the phone) → the same meeting, not a copy', [(await meetUpload(ty, talk, { clientId: 'e2e-meet-0001' })).data.meeting.id, (await ty.get('/api/meetings')).data.meetings.filter((m) => m.id === meetId).length], [meetId, 1]);
+  const added = await ty.post(`/api/meetings/${meetId}/actions/0/task`);
+  eq('“Add to tasks” → it lands in your task list on its due day', [added.status, (await sql('SELECT task, day::text AS day FROM tasks WHERE id = $1', [added.data.taskId]))[0]], [200, { task: 'book the dentist by Friday (Kayla)', day: meet.notes.actionItems[0].due }]);
+  check('…with a reminder', (await sql("SELECT COUNT(*)::int AS n FROM hana_reminders WHERE text = 'Meeting follow-up: book the dentist by Friday'"))[0].n === 1);
+  eq('…and the notes show it’s in your tasks (no double-adding)', [added.data.meeting.notes.actionItems[0].taskId, (await ty.post(`/api/meetings/${meetId}/actions/0/task`)).status], [added.data.taskId, 409]);
+  eq('search across your meeting notes', [(await ty.get('/api/meetings?q=dentist')).data.meetings.map((m) => m.id), (await ty.get('/api/meetings?q=zebra')).data.meetings.length], [[meetId], 0]);
+  eq('private: not even another grown-up in the household sees it', [(await kayla.get(`/api/meetings/${meetId}`)).status, (await kayla.get('/api/meetings')).data.meetings.length], [404, 0]);
+  eq('rename it', (await ty.patch(`/api/meetings/${meetId}`, { title: 'Fall schedule' })).data.title, 'Fall schedule');
+  mu = await meetUpload(ty, 'STUB-FAIL-ONCE: Quick sync. Sam will send the budget tomorrow.');
+  let failed = await waitMeeting(ty, mu.data.meeting.id);
+  eq('transcription fails → the recording is kept and can be retried', [failed.status, failed.audioKept, /try again/i.test(failed.error)], ['failed', true, true]);
+  await ty.post(`/api/meetings/${failed.id}/retry`);
+  failed = await waitMeeting(ty, failed.id, (m) => m.status === 'ready');
+  eq('…retry → notes, audio removed', [failed.status, failed.audioKept, failed.notes.actionItems[0]?.owner], ['ready', false, 'Sam']);
+  eq('…retrying a finished meeting is refused', (await ty.post(`/api/meetings/${failed.id}/retry`)).status, 409);
+  eq('delete a meeting', [(await ty.del(`/api/meetings/${failed.id}`)).status, (await ty.get(`/api/meetings/${failed.id}`)).status], [200, 404]);
+
   section('solo grown-ups (“Just me”): no kid or partner tools until someone joins full time');
   const { liveFeatures } = await import(pathToFileURL(path.join(root, 'shared', 'dist', 'index.js')).href);
   const sol = new Client('solo-one');
@@ -3257,6 +3297,25 @@ async function uiGate() {
     eq('Family+ picked', await blp.getByTestId('plan-familyplus').getAttribute('aria-pressed'), 'true');
     await billCtx.close();
 
+    section('Meetings in the browser: big record button, a running clock and a clear Stop, notes, Add to tasks');
+    await page.goto(`${BASE}/meetings`);
+    await page.getByTestId('meeting-record').click();
+    await page.getByTestId('meeting-live').waitFor({ timeout: 10000 });
+    await page.waitForTimeout(3200);
+    check('recording: the clock runs and Stop is right there', /^0:0[2-4]$/.test((await page.getByTestId('meeting-clock').innerText()).trim()) && (await page.getByTestId('meeting-stop').isVisible()), await page.getByTestId('meeting-clock').innerText());
+    eq('…the app and its tabs are covered while recording (no wandering off mid-meeting)', await page.locator('.tabs').isVisible() ? await page.evaluate(() => { const r = document.querySelector('.tabs').getBoundingClientRect(); const el = document.elementFromPoint(r.left + 10, r.top + 10); return !!el?.closest('[data-testid="meeting-live"]'); }) : true, true);
+    await page.getByTestId('meeting-stop').click();
+    await page.waitForURL(/\/meetings\/\d+$/, { timeout: 20000 });
+    await page.getByTestId('meeting-summary').waitFor({ timeout: 20000 });
+    check('stop → uploaded → notes render', (await page.getByTestId('meeting-summary').innerText()).length > 20);
+    await page.goto(`${BASE}/meetings`);
+    await page.getByTestId('meeting-list').getByText('Fall schedule').click();
+    await page.getByTestId('meeting-actions').waitFor({ timeout: 10000 });
+    eq('the first action item is already in tasks', await page.getByTestId('action-item').first().getByText('In your tasks ✓').count(), 1);
+    await page.getByTestId('action-item').nth(1).getByTestId('add-to-tasks').click();
+    await page.getByTestId('action-item').nth(1).getByText('In your tasks ✓').waitFor({ timeout: 10000 });
+    check('Add to tasks → in your tasks, with a reminder', /Added to your tasks for .+ reminder/.test(await page.getByRole('status').filter({ hasText: 'Added to your tasks' }).innerText()));
+
     section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
     const soloCtx = await browser.newContext(phone);
     const sp = await soloCtx.newPage();
@@ -3386,7 +3445,7 @@ async function uiGate() {
     await tyHealth.close();
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed', '/errands', '/inbox', '/calendar'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed', '/errands', '/inbox', '/calendar', '/meetings'];
     const notFound = [];
     const tooWide = [];
     // Wider than the phone = the page slides (shakes) sideways under your thumb and boxes run off the edge.

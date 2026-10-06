@@ -88,7 +88,7 @@ const when = (ms: number): string =>
 
 /** Recordings saved on this phone that haven't reached the server yet. */
 function WaitingList({ userId, classes }: { userId: number; classes: SchoolLite['classes'] }) {
-  const pending = usePendingRecordings().filter((r) => r.state !== 'recording');
+  const pending = usePendingRecordings().filter((r) => r.state !== 'recording' && r.kind !== 'meeting');
   const confirm = useConfirm();
   if (!pending.length) return null;
   const mine = pending.filter((r) => r.userId === userId);

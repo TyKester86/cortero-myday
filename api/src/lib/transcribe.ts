@@ -45,10 +45,21 @@ export const STUB_LECTURE =
   'Remember that plants also do cellular respiration, so they use some of the glucose they make. ' +
   'For homework, finish worksheet 4.2 on the two stages, due Friday. Also read pages 112 to 118 before the quiz next Tuesday.';
 
+/** Tests: audio starting with this fails the first time (like an outage), then transcribes. */
+const FAIL_ONCE = 'STUB-FAIL-ONCE:';
+const failedOnce = new Set<string>();
+
 class StubTranscriber implements Transcriber {
   readonly kind = 'stub' as const;
   async transcribe(audio: Buffer): Promise<string> {
-    const text = audio.toString('utf8');
+    let text = audio.toString('utf8');
+    if (text.startsWith(FAIL_ONCE)) {
+      if (!failedOnce.has(text)) {
+        failedOnce.add(text);
+        throw new HttpError(502, 'Transcription failed — try again later');
+      }
+      text = `STUB-TRANSCRIPT:${text.slice(FAIL_ONCE.length)}`;
+    }
     return text.startsWith('STUB-TRANSCRIPT:') ? text.slice('STUB-TRANSCRIPT:'.length).trim() : STUB_LECTURE;
   }
 }

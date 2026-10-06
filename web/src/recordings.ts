@@ -1,5 +1,5 @@
 /**
- * Lecture recordings that live on the device until they upload.
+ * Recordings (lectures and grown-ups' meetings) that live on the device until they upload.
  *
  * While recording, every 5-second chunk of audio is written to IndexedDB, so
  * a phone that kills the tab mid-class still keeps everything up to the last
@@ -15,6 +15,8 @@ import { useEffect, useSyncExternalStore } from 'react';
 
 export interface PendingRecording {
   id: string;
+  /** What it is (older saved recordings have no kind: lectures). */
+  kind?: 'lecture' | 'meeting';
   userId: number;
   /** null = recorded offline before the class list could load: pick one before it uploads. */
   classId: number | null;
@@ -108,7 +110,7 @@ async function get(id: string): Promise<PendingRecording | undefined> {
 /* ---------- recording ---------- */
 
 /** Start a recording on the device; hold a lock so other tabs know it's live. */
-export async function beginRecording(o: { userId: number; classId: number | null; className: string; mime: string }): Promise<string> {
+export async function beginRecording(o: { kind?: 'lecture' | 'meeting'; userId: number; classId: number | null; className: string; mime: string }): Promise<string> {
   const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   const now = Date.now();
   await put({ id, ...o, startedAt: now, lastChunkAt: now, state: 'recording', attempts: 0, lastError: '', stuck: false });
@@ -199,7 +201,7 @@ const localDay = (ms: number): string => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-export type UploadResult = { id: string; lectureId: number };
+export type UploadResult = { id: string; lectureId?: number; meetingId?: number };
 const uploadedListeners = new Set<(r: UploadResult) => void>();
 /** Hear about uploads (the recorder opens the new lecture when it's the one just recorded). */
 export function onUploaded(f: (r: UploadResult) => void): () => void {
@@ -218,7 +220,7 @@ export function flushRecordings(userId: number): Promise<void> {
     try {
       await recoverOrphans();
       const all = ((await tx<PendingRecording[]>([RECS], 'readonly', (t) => t.objectStore(RECS).getAll())) ?? [])
-        .filter((r) => r.userId === userId && r.state !== 'recording' && r.classId !== null && !r.stuck)
+        .filter((r) => r.userId === userId && r.state !== 'recording' && (r.kind === 'meeting' || r.classId !== null) && !r.stuck)
         .sort((a, b) => a.startedAt - b.startedAt);
       let retryLater = false;
       for (const r of all) {
@@ -231,17 +233,20 @@ export function flushRecordings(userId: number): Promise<void> {
         try {
           const audio = await audioOf(r.id, r.mime);
           const durationS = Math.max(0, Math.round((r.lastChunkAt - r.startedAt) / 1000));
-          const qs = new URLSearchParams({ classId: String(r.classId), durationS: String(durationS), clientId: r.id, recordedOn: localDay(r.startedAt) });
-          const res = await fetch(`/api/lectures/upload?${qs}`, {
+          const meeting = r.kind === 'meeting';
+          const qs = meeting
+            ? new URLSearchParams({ durationS: String(durationS), clientId: r.id, recordedAt: String(r.startedAt) })
+            : new URLSearchParams({ classId: String(r.classId), durationS: String(durationS), clientId: r.id, recordedOn: localDay(r.startedAt) });
+          const res = await fetch(`/api/${meeting ? 'meetings' : 'lectures'}/upload?${qs}`, {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': r.mime || 'audio/webm', 'X-MyDay-Upload': '1' },
             body: audio,
           });
-          const out = (await res.json().catch(() => null)) as { lecture?: { id: number }; error?: string } | null;
-          if (res.ok && out?.lecture) {
+          const out = (await res.json().catch(() => null)) as { lecture?: { id: number }; meeting?: { id: number }; error?: string } | null;
+          if (res.ok && (out?.lecture || out?.meeting)) {
             await removeRecording(r.id);
-            uploadedListeners.forEach((f) => f({ id: r.id, lectureId: out.lecture?.id ?? 0 }));
+            uploadedListeners.forEach((f) => f(out.meeting ? { id: r.id, meetingId: out.meeting.id } : { id: r.id, lectureId: out.lecture?.id ?? 0 }));
             continue;
           }
           // 4xx = the server won't take it as is (policy screen, deleted class, signed out): the kid has to act.

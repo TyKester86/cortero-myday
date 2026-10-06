@@ -9,6 +9,8 @@ const HealthToday = lazy(() => import('./health/HealthToday'));
 const Calendar = lazy(() => import('./calendar/Calendar'));
 const Inbox = lazy(() => import('./inbox/Inbox'));
 const Errands = lazy(() => import('./errands/Errands'));
+const Meetings = lazy(() => import('./meetings/Meetings'));
+const MeetingPage = lazy(() => import('./meetings/Meetings').then((m) => ({ default: m.MeetingPage })));
 const Village = lazy(() => import('./community/Community').then((m) => ({ default: m.Village })));
 const VillageThreadPage = lazy(() => import('./community/Community').then((m) => ({ default: m.VillageThreadPage })));
 const Feed = lazy(() => import('./community/Community').then((m) => ({ default: m.Feed })));
@@ -111,6 +113,8 @@ export const MODULES: ModuleRoute[] = [
   { path: '/rewards', element: <Rewards />, audience: 'all', kidsOnly: true, nav: { label: 'Rewards', icon: 'rewards', group: 'family', tabFor: ['kid'] } },
   { path: '/score', element: <Score />, audience: 'all', nav: { label: 'My progress', icon: 'my-progress', group: 'me', tabFor: ['kid'], tabLabel: 'Score' } },
   { path: '/day', element: <MyDay />, audience: 'adult', nav: { label: 'My day', icon: 'my-day', group: 'me' } },
+  { path: '/meetings', element: <Meetings />, audience: 'adult', nav: { label: 'Meetings', icon: 'meetings', group: 'me' } },
+  { path: '/meetings/:id', element: <MeetingPage />, audience: 'adult' },
   { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', module: 'hana', nav: { label: 'Ask Hana', icon: 'hana', group: 'connect' } },
   { path: '/health', element: <HealthToday />, audience: 'all', module: 'health', nav: { label: 'Health', icon: 'health', group: 'me' } },
   { path: '/health/plan', element: <HealthPlan />, audience: 'all', module: 'health' },
