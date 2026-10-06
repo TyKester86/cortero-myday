@@ -103,7 +103,7 @@ main { padding: 8px 16px 24px; }
   display: inline-block; border: 0; background: var(--navy); color: #fff; font-weight: 700; font-size: 16px;
   border-radius: 12px; padding: 12px 18px; cursor: pointer; text-decoration: none; margin: 6px 0;
 }
-.btn:disabled { opacity: 0.5; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.small { padding: 7px 12px; font-size: 14px; margin: 0; }
 .link { background: none; border: 0; color: var(--navy-2); cursor: pointer; font-size: 14px; padding: 4px; }
 .link.light { color: #fff; opacity: 0.8; }
@@ -602,3 +602,13 @@ h2 { font-size: 19px; line-height: 1.25; }
   margin-top: 6px;
 }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Billing: plan picker */
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 10px; }
+.plan-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; cursor: pointer; min-width: 0; }
+.plan-opt.on { border: 2px solid var(--text); padding: 11px; }
+.plan-price { font-size: 22px; font-weight: 700; }
+.plan-price small { font-size: 14px; font-weight: 400; }
+/* Create household: say why the button is off, and a way back */
+.create-missing { margin: 4px 0 0; }
+.create-back { margin: 0 0 8px; }

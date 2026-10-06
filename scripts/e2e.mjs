@@ -139,7 +139,9 @@ const serverEnv = (fakeNow) => ({
   CLASSROOM_PROVIDER: 'fake',
   SCHEDULERS: 'off',
   EXERCISE_IMAGES: path.join(root, 'scripts', 'fixtures', 'exercise-images.e2e.json'),
-  ADMIN_EMAILS: 'admin@example.com',
+  ADMIN_EMAILS: 'admin@example.com,owner-admin@example.com',
+  // One founding spot in tests (100 in real life), so "spots run out" is testable.
+  FOUNDING_LIMIT: '1',
   BILLING_PROVIDER: 'stub',
   // Email sign-in links go to an in-memory outbox; Apple tokens are checked against our test key.
   MAIL_PROVIDER: 'stub',
@@ -1413,11 +1415,16 @@ async function billingAdmin() {
   // gap between them grows every real day — so check the end date against real time, and the days left against the server's clock.
   const trialEnd = Date.parse(sb.trialEndsAt);
   const serverDaysLeft = Math.ceil((trialEnd - Date.parse(noonOn('Sun'))) / 86_400_000);
-  check('a signup gets the default plan, price not set, 30-day trial', sb.plan.name === 'Household' && sb.plan.priceCents === null && sb.status === 'trialing' && Math.abs(trialEnd - (Date.now() + 30 * 86_400_000)) < 86_400_000 && Math.abs(sb.trialDaysLeft - serverDaysLeft) <= 1, `${sb.trialDaysLeft} days left, ends ${sb.trialEndsAt}`);
+  check('a signup gets the default plan (Family, $12.99/month), 30-day trial', sb.plan.name === 'Family' && sb.plan.priceCents === 1299 && sb.plan.interval === 'month' && sb.status === 'trialing' && Math.abs(trialEnd - (Date.now() + 30 * 86_400_000)) < 86_400_000 && Math.abs(sb.trialDaysLeft - serverDaysLeft) <= 1, `${sb.trialDaysLeft} days left, ends ${sb.trialEndsAt}`);
   eq('can’t start the paid plan without a payment method', (await sam.post('/api/billing/subscribe')).status, 409);
   sb = (await sam.post('/api/billing/payment-method', { last4: '4242' })).data;
   eq('stub payment method recorded as a test card', [sb.paymentMethod?.brand, sb.paymentMethod?.last4, sb.paymentMethod?.test], ['Test card', '4242', true]);
-  eq('…and no price yet → can’t subscribe (409)', (await sam.post('/api/billing/subscribe')).status, 409);
+  const opt = (b, tier, interval) => b.options.find((o) => o.tier === tier && o.interval === interval);
+  eq('the plans on offer: Family at the founding price ($9.99/mo, $79/yr) while spots last, and Family+ ($19.99/mo, $149/yr)',
+    [opt(sb, 'family', 'month')?.priceCents, opt(sb, 'family', 'year')?.priceCents, opt(sb, 'family', 'month')?.founding, opt(sb, 'familyplus', 'month')?.priceCents, opt(sb, 'familyplus', 'year')?.priceCents, sb.foundingLeft],
+    [999, 7900, true, 1999, 14900, 1]);
+  const regularFamily = (await sql("SELECT id FROM billing_plans WHERE code = 'family-monthly'"))[0].id;
+  eq('…a plan that isn’t one of yours can’t be picked (regular Family while founding spots are open)', (await sam.post('/api/billing/subscribe', { planId: regularFamily })).status, 400);
 
   section('3. admin dashboard (ADMIN_EMAILS)');
   eq('non-admins get 403', (await ty.get('/api/admin/dashboard')).status, 403);
@@ -1429,13 +1436,17 @@ async function billingAdmin() {
   eq('every household listed, with members and status', [d.totals.households, d.households.every((h) => h.status && h.members >= 0)], [hhCount, true]);
   eq('MRR is $0 while nobody pays', d.totals.mrrCents, 0);
   const plan = d.plans.find((p) => p.isDefault);
-  d = (await adm.patch(`/api/admin/plans/${plan.id}`, { priceCents: 1299, interval: 'month' })).data;
-  eq('admin sets the price (not hardcoded)', d.plans.find((p) => p.id === plan.id).priceCents, 1299);
+  d = (await adm.patch(`/api/admin/plans/${plan.id}`, { priceCents: 1399, interval: 'month' })).data;
+  eq('admin can change a price (not hardcoded)', d.plans.find((p) => p.id === plan.id).priceCents, 1399);
+  await adm.patch(`/api/admin/plans/${plan.id}`, { priceCents: 1299, interval: 'month' });
   eq('bad price → 400', (await adm.patch(`/api/admin/plans/${plan.id}`, { interval: 'week' })).status, 400);
-  sb = (await sam.post('/api/billing/subscribe')).data;
-  eq('Sam starts the paid plan (stub, no charge)', sb.status, 'active');
+  sb = (await sam.post('/api/billing/subscribe', { planId: opt(sb, 'family', 'month').planId })).data;
+  eq('Sam starts Family at the founding price (stub, no charge)', [sb.status, sb.plan.name, sb.plan.priceCents, sb.foundingLeft], ['active', 'Family (founding)', 999, null]);
   d = (await adm.get('/api/admin/dashboard')).data;
-  eq('MRR counts it: $12.99', [d.totals.mrrCents, d.totals.active], [1299, 1]);
+  eq('MRR counts it: $9.99', [d.totals.mrrCents, d.totals.active], [999, 1]);
+  const pat = (await ret.get('/api/billing')).data;
+  eq('the founding spots are gone → the next household sees regular Family ($12.99/mo, $99/yr)', [opt(pat, 'family', 'month')?.priceCents, opt(pat, 'family', 'year')?.priceCents, opt(pat, 'family', 'month')?.founding, pat.foundingLeft], [1299, 9900, false, 0]);
+  eq('…and can’t pick the founding price', (await ret.post('/api/billing/subscribe', { planId: opt(sb, 'family', 'month').planId })).status, 400);
   d = (await adm.post('/api/admin/plans', { code: 'household-yearly', name: 'Household (yearly)', priceCents: 12000, interval: 'year' })).data;
   const yearly = d.plans.find((p) => p.code === 'household-yearly');
   const samId = (await sam.get('/api/me')).data.household.id;
@@ -1444,6 +1455,10 @@ async function billingAdmin() {
   eq('duplicate plan code → 409', (await adm.post('/api/admin/plans', { code: 'household-yearly', name: 'x' })).status, 409);
   sb = (await sam.post('/api/billing/cancel')).data;
   eq('cancel', [sb.status, (await adm.get('/api/admin/dashboard')).data.totals.mrrCents], ['canceled', 0]);
+  // (the yearly test above moved Sam to a staff-made plan; put Sam back on the founding plan Sam subscribed with)
+  await adm.patch(`/api/admin/households/${samId}`, { planId: (await sql("SELECT id FROM billing_plans WHERE code = 'founding-monthly'"))[0].id });
+  sb = (await sam.get('/api/billing')).data;
+  eq('the founding price is Sam’s for life: after canceling, it’s still offered to Sam', [opt(sb, 'family', 'month')?.priceCents, opt(sb, 'family', 'month')?.founding], [999, true]);
   // A day before the server's (fake) today, not the DB's real today.
   await sql("UPDATE households SET trial_ends_at = $1::timestamptz - interval '1 day' WHERE id = (SELECT household_id FROM household_members WHERE name = 'Pat')", [noonOn('Sun')]);
   eq('a lapsed trial shows as trial_ended (app keeps working)', [(await ret.get('/api/billing')).data.status, (await ret.get('/api/day')).status], ['trial_ended', 200]);
@@ -2545,6 +2560,12 @@ async function stripeBilling() {
       sess?.body.get('line_items[0][price_data][unit_amount]'), sess?.body.get('line_items[0][price_data][recurring][interval]'), Number(sess?.body.get('subscription_data[trial_end]')) > Date.now() / 1000,
     ], ['Bearer sk_test_fake', String(hhId), 'subscription', String(hhId), '1299', 'month', true]);
     eq('a kid can’t start billing', (await call2(avery, 'POST', '/api/billing/checkout')).status, 403);
+    const tyOpts = (await call2(ty, 'GET', '/api/billing')).data.options;
+    const plusYear = tyOpts.find((o) => o.tier === 'familyplus' && o.interval === 'year');
+    await call2(ty, 'POST', '/api/billing/checkout', { planId: plusYear.planId });
+    const sess2 = calls.filter((c) => c.path === '/v1/checkout/sessions').at(-1);
+    eq('picking Family+ yearly → Stripe checkout for $149/year', [sess2?.body.get('line_items[0][price_data][unit_amount]'), sess2?.body.get('line_items[0][price_data][recurring][interval]'), sess2?.body.get('line_items[0][price_data][product_data][name]')], ['14900', 'year', 'MyDay Family+ (yearly)']);
+    eq('…an unknown plan is refused', (await call2(ty, 'POST', '/api/billing/checkout', { planId: 999999 })).status, 400);
     const hook = async (type, object, secret = 'whsec_fake') => {
       const payload = JSON.stringify({ id: `evt_${type}`, type, data: { object } });
       const t = Math.floor(Date.now() / 1000);
@@ -3086,6 +3107,50 @@ async function uiGate() {
     await page.getByTestId('msg-delete').click();
     await page.waitForTimeout(500);
     eq('tap a message → Delete removes it', await page.getByTestId('msg-me').filter({ hasText: 'supercalifragilistic' }).count(), 0);
+
+    section('admin with a household of their own can open /admin; the signup screen says what’s missing and has a Back button');
+    const ownerCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const op = await ownerCtx.newPage();
+    await op.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=owner-admin@example.com`);
+    await op.goto(`${BASE}/`);
+    await op.getByTestId('create-household').waitFor({ timeout: 10000 });
+    const startBtn = op.getByTestId('start-trial');
+    await op.getByLabel('Household name').fill('');
+    await op.getByLabel('Your first name').fill('');
+    eq('desktop: “Start my free trial” is visible, off, and says why', [await startBtn.isVisible(), await startBtn.isDisabled(), /household name and your first name/.test(await op.getByTestId('start-trial-missing').innerText())], [true, true, true]);
+    eq('…and there’s a Back button', await op.getByTestId('create-back').isVisible(), true);
+    await op.getByLabel('Household name').fill('Owner House');
+    await op.getByLabel('Your first name').fill('Olive');
+    eq('fill them in → the button turns on and the hint goes away', [await startBtn.isDisabled(), await op.getByTestId('start-trial-missing').count()], [false, 0]);
+    await startBtn.click();
+    await op.waitForURL('**/setup', { timeout: 15000 });
+    await op.goto(`${BASE}/admin`);
+    await op.getByTestId('admin-totals').waitFor({ timeout: 15000 });
+    eq('an admin who has a household opens /admin (the dashboard renders)', await op.getByRole('heading', { name: 'Admin' }).count(), 1);
+    await ownerCtx.close();
+    const backCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const bp = await backCtx.newPage();
+    await bp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=wrong-account@example.com`);
+    await bp.goto(`${BASE}/`);
+    await bp.getByTestId('create-back').click();
+    await bp.waitForURL(`${BASE}/`, { timeout: 10000 });
+    await bp.waitForTimeout(800);
+    eq('Back → signed out, back at the start (not stuck on setup)', [await bp.getByTestId('create-household').count(), (await (await bp.request.get(`${BASE}/api/me`)).status())], [0, 401]);
+    await backCtx.close();
+
+    section('Billing in the browser: choose Family or Family+, monthly or yearly');
+    const billCtx = await browser.newContext(phone);
+    const blp = await billCtx.newPage();
+    await blp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=plan-picker@example.com`);
+    eq('a fresh household to pick a plan for', (await blp.request.post(`${BASE}/api/households`, { data: { householdName: 'Picker Home', type: 'solo', yourName: 'Pia' } })).status(), 201);
+    await blp.request.patch(`${BASE}/api/me/prefs`, { data: { firstRunDone: true } });
+    await blp.goto(`${BASE}/billing`);
+    await blp.getByTestId('plan-picker').waitFor({ timeout: 10000 });
+    await blp.getByRole('button', { name: 'Yearly' }).click();
+    check('yearly prices with the saving', /\$99\.00/.test(await blp.getByTestId('plan-family').innerText()) && /\$149\.00/.test(await blp.getByTestId('plan-familyplus').innerText()) && /save \d+%/.test(await blp.getByTestId('plan-family').innerText()));
+    await blp.getByTestId('plan-familyplus').click();
+    eq('Family+ picked', await blp.getByTestId('plan-familyplus').getAttribute('aria-pressed'), 'true');
+    await billCtx.close();
 
     section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
     const soloCtx = await browser.newContext(phone);

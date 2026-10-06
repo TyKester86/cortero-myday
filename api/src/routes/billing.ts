@@ -16,6 +16,7 @@ import type {
   AdminDashboard,
   AdminHousehold,
   BillingDisplayStatus,
+  BillingOption,
   BillingPlan,
   BillingResponse,
   BillingStatus,
@@ -45,7 +46,16 @@ interface PlanRow {
   interval: 'month' | 'year';
   active: boolean;
   is_default: boolean;
+  tier: 'family' | 'familyplus';
+  founding: boolean;
+  offered: boolean;
+  sort: number;
 }
+
+/** How many households get the founding price (env override for tests). */
+const FOUNDING_LIMIT = (): number => Math.max(0, Number(process.env.FOUNDING_LIMIT ?? 100));
+/** Holding a plan = subscribed on it at some point (a canceled household that comes back keeps its founding price). */
+const HOLDING = "billing_status IN ('active', 'past_due', 'canceled')";
 
 const toPlan = (r: PlanRow): BillingPlan => ({
   id: r.id,
@@ -56,7 +66,26 @@ const toPlan = (r: PlanRow): BillingPlan => ({
   interval: r.interval,
   active: r.active,
   isDefault: r.is_default,
+  tier: r.tier,
+  founding: r.founding,
 });
+
+/** The plans a household can pick: Family at the founding price while spots last (or if it already holds it), else regular Family; and Family+. */
+async function optionsFor(h: Pick<HhRow, 'id' | 'plan_id' | 'billing_status'>): Promise<{ options: BillingOption[]; foundingLeft: number | null }> {
+  const { rows: plans } = await pool.query<PlanRow>('SELECT * FROM billing_plans WHERE offered AND active AND price_cents IS NOT NULL ORDER BY sort, id');
+  const { rows: cur } = await pool.query<{ founding: boolean }>('SELECT founding FROM billing_plans WHERE id = $1', [h.plan_id]);
+  const holdsFounding = !!cur[0]?.founding && ['active', 'past_due', 'canceled'].includes(h.billing_status);
+  const { rows: used } = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM households WHERE id <> $1 AND ${HOLDING} AND plan_id IN (SELECT id FROM billing_plans WHERE founding)`,
+    [h.id],
+  );
+  const left = Math.max(0, FOUNDING_LIMIT() - (used[0]?.n ?? 0));
+  const founding = holdsFounding || left > 0;
+  const options = plans
+    .filter((p) => (p.tier === 'family' ? p.founding === founding : !p.founding))
+    .map((p): BillingOption => ({ planId: p.id, name: p.name, tier: p.tier, interval: p.interval, priceCents: p.price_cents ?? 0, currency: p.currency, founding: p.founding }));
+  return { options, foundingLeft: holdsFounding ? null : left };
+}
 
 const monthly = (p: Pick<PlanRow, 'price_cents' | 'interval'> | null): number =>
   p?.price_cents == null ? 0 : p.interval === 'year' ? Math.round(p.price_cents / 12) : p.price_cents;
@@ -90,7 +119,10 @@ async function billingFor(householdId: number, canManage: boolean): Promise<Bill
       [h.plan_id],
     );
     const left = h.trial_ends_at ? Math.max(0, Math.ceil((h.trial_ends_at.getTime() - Date.now()) / 86_400_000)) : null;
+    const { options, foundingLeft } = await optionsFor(h);
     return {
+      options,
+      foundingLeft,
       plan: p[0] ? toPlan(p[0]) : null,
       status: displayStatus(h.billing_status, h.trial_ends_at),
       trialEndsAt: h.trial_ends_at?.toISOString() ?? null,
@@ -105,6 +137,34 @@ async function billingFor(householdId: number, canManage: boolean): Promise<Bill
 
 async function setBilling(householdId: number, sets: string, params: unknown[]): Promise<void> {
   await asSystem(() => pool.query(`UPDATE households SET ${sets}, billing_updated_at = now() WHERE id = $1`, [householdId, ...params]));
+}
+
+/**
+ * The plan to charge: the one they picked (must be one of their options), or
+ * the household's current plan if it's priced and still theirs to have, or the
+ * first option. Saved as the household's plan.
+ */
+async function choosePlan(hh: number, picked: unknown): Promise<BillingPlan> {
+  return asSystem(async () => {
+    const { rows } = await pool.query<HhRow>('SELECT id, name, plan_id, billing_status, trial_ends_at, payment_method, stripe_customer_id, paid_through FROM households WHERE id = $1', [hh]);
+    const h = rows[0];
+    if (!h) throw new HttpError(404, 'No household');
+    const { options } = await optionsFor(h);
+    let id: number | undefined;
+    if (picked !== undefined && picked !== null) {
+      id = options.find((o) => o.planId === Number(picked))?.planId;
+      if (!id) throw new HttpError(400, 'That plan isn’t available — pick one of the plans shown');
+    } else {
+      const { rows: cur } = await pool.query<PlanRow>('SELECT * FROM billing_plans WHERE id = $1', [h.plan_id]);
+      const c = cur[0];
+      // Offered plans must be one of their options; a plan staff assigned by hand (not offered) stands if it's priced.
+      id = c && c.price_cents !== null && (c.offered ? options.some((o) => o.planId === c.id) : c.active) ? c.id : options[0]?.planId;
+    }
+    if (!id) throw new HttpError(409, 'The plan price hasn’t been set yet');
+    await pool.query('UPDATE households SET plan_id = $2 WHERE id = $1', [hh, id]);
+    const { rows: p } = await pool.query<PlanRow>('SELECT * FROM billing_plans WHERE id = $1', [id]);
+    return toPlan(p[0] as PlanRow);
+  });
 }
 
 function householdOf(req: Request): number {
@@ -147,10 +207,10 @@ billingRouter.post('/api/billing/subscribe', async (req, res) => {
   const b = await billingFor(hh, true);
   if (b.provider !== 'stub') throw new HttpError(503, 'Payments aren’t live yet');
   if (b.status === 'comped') throw new HttpError(409, 'This household is complimentary — nothing to pay');
+  const plan = await choosePlan(hh, (req.body as { planId?: unknown } | undefined)?.planId);
   if (!b.paymentMethod) throw new HttpError(409, 'Add a payment method first');
-  if (b.plan?.priceCents == null) throw new HttpError(409, 'The plan price hasn’t been set yet');
   await setBilling(hh, "billing_status = 'active'", []);
-  await logEvent('billing_change', { action: 'subscribed', plan: b.plan.code }, me.id);
+  await logEvent('billing_change', { action: 'subscribed', plan: plan.code }, me.id);
   res.json(await billingFor(hh, true));
 });
 
@@ -173,8 +233,8 @@ billingRouter.post('/api/billing/checkout', async (req, res) => {
   const b = await billingFor(hh, true);
   if (b.status === 'comped') throw new HttpError(409, 'This household is complimentary — nothing to pay');
   if (b.status === 'active') throw new HttpError(409, 'You’re already subscribed — use “Manage billing”');
-  const plan = b.plan;
-  if (!plan || plan.priceCents == null) throw new HttpError(409, 'The plan price hasn’t been set yet');
+  const plan = await choosePlan(hh, (req.body as { planId?: unknown } | undefined)?.planId);
+  if (plan.priceCents == null) throw new HttpError(409, 'The plan price hasn’t been set yet');
   const h = await hhRow(hh);
   let customer = h.stripe_customer_id;
   if (!customer) {
@@ -188,13 +248,13 @@ billingRouter.post('/api/billing/checkout', async (req, res) => {
     mode: 'subscription',
     customer,
     client_reference_id: hh,
-    line_items: [{ quantity: 1, price_data: { currency: plan.currency, unit_amount: plan.priceCents, recurring: { interval: plan.interval }, product_data: { name: `MyDay ${plan.name}` } } }],
+    line_items: [{ quantity: 1, price_data: { currency: plan.currency, unit_amount: plan.priceCents, recurring: { interval: plan.interval }, product_data: { name: `MyDay ${plan.name}${plan.interval === 'year' ? ' (yearly)' : ''}` } } }],
     subscription_data: { metadata: { household_id: hh }, trial_end: trialEnd },
     success_url: `${config.publicUrl}/billing?paid=1`,
     cancel_url: `${config.publicUrl}/billing`,
     allow_promotion_codes: true,
   });
-  await logEvent('billing_change', { action: 'checkout_started', provider: 'stripe' }, me.id);
+  await logEvent('billing_change', { action: 'checkout_started', provider: 'stripe', plan: plan.code }, me.id);
   res.json({ url: session.url });
 });
 

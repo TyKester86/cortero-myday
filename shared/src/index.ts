@@ -1947,6 +1947,20 @@ export interface BillingPlan {
   interval: 'month' | 'year';
   active: boolean;
   isDefault: boolean;
+  tier: 'family' | 'familyplus';
+  /** The founding price (first households on Family), kept for life by whoever holds it. */
+  founding: boolean;
+}
+
+/** A plan this household can pick on the Billing page. */
+export interface BillingOption {
+  planId: number;
+  name: string;
+  tier: 'family' | 'familyplus';
+  interval: 'month' | 'year';
+  priceCents: number;
+  currency: string;
+  founding: boolean;
 }
 
 export interface BillingResponse {
@@ -1960,6 +1974,10 @@ export interface BillingResponse {
   /** Stripe: the paid period runs until this date (shown after canceling). */
   paidThrough: string | null;
   canManage: boolean;
+  /** What this household can choose (founding prices while spots last, or if it already holds one). */
+  options: BillingOption[];
+  /** Founding spots still open (null when this household already holds the founding price). */
+  foundingLeft: number | null;
 }
 
 export interface AdminHousehold {

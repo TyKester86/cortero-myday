@@ -32,6 +32,12 @@ export function CreateHousehold() {
   const [school, setSchool] = useState('');
   const [build, setBuild] = useState<BuildKey | ''>('');
   const [err, setErr] = useState<string | null>(null);
+  const missing = [!householdName.trim() && 'a household name', !yourName.trim() && 'your first name'].filter(Boolean) as string[];
+  // Back = sign out and return to the start (e.g. signed in with the wrong account).
+  const back = async (): Promise<void> => {
+    await api('/api/auth/logout', 'POST').catch(() => undefined);
+    window.location.href = '/';
+  };
   const create = async (): Promise<void> => {
     try {
       const body: CreateHouseholdRequest = { householdName, type, yourName, school: school || null, build: build || null };
@@ -43,6 +49,12 @@ export function CreateHousehold() {
   };
   return (
     <div className="landing" data-testid="create-household">
+      <p className="create-back">
+        <button type="button" className="btn small ghost" onClick={() => void back()} data-testid="create-back">
+          ← Back
+        </button>{' '}
+        <span className="small muted">Signed in as {me.email}</span>
+      </p>
       <div className="steps-bar">
         <i className="on" />
         <i />
@@ -93,9 +105,14 @@ export function CreateHousehold() {
             ))}
           </select>
         </label>
-        <button className="btn" disabled={!householdName.trim() || !yourName.trim()} onClick={() => void create()}>
+        <button className="btn" disabled={missing.length > 0} onClick={() => void create()} data-testid="start-trial">
           Start my free trial
         </button>
+        {missing.length > 0 && (
+          <p className="small muted create-missing" data-testid="start-trial-missing">
+            To start, fill in {missing.join(' and ')} above.
+          </p>
+        )}
         {err && <p className="error">{err}</p>}
       </div>
     </div>
