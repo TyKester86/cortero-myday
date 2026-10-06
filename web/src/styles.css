@@ -204,10 +204,33 @@ a.chip { text-decoration: none; }
 .spark { display: flex; align-items: flex-end; gap: 2px; height: 48px; margin-top: 8px; }
 .spark i { flex: 1; background: var(--navy-2); border-radius: 2px; opacity: 0.6; }
 .spark i.hot { background: var(--sun); opacity: 1; }
-.chat .bubbles { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; min-height: 40vh; }
-.bubble { max-width: 85%; padding: 10px 14px; border-radius: 18px; white-space: pre-wrap; line-height: 1.4; }
+.chat .bubbles { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; min-height: 240px; overflow-x: hidden; }
+/* Long words and links wrap inside the bubble instead of pushing the page sideways (the "shake"). */
+.bubble { max-width: 85%; padding: 10px 14px; border-radius: 18px; white-space: pre-wrap; line-height: 1.4; overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
 .bubble.me { align-self: flex-end; background: var(--navy); color: #fff; border-bottom-right-radius: 6px; }
 .bubble.hana { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
+.bubble a { color: inherit; text-decoration: underline; }
+/* Ask Hana: rows with her face on the first of her messages in a run. */
+.msg { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
+.msg.me { justify-content: flex-end; }
+.msg .face-gap { width: 28px; flex: none; }
+.msg .hana-face { flex: none; }
+.msg-body { display: flex; flex-direction: column; min-width: 0; max-width: 85%; }
+.msg.me .msg-body { align-items: flex-end; }
+.msg-body .bubble { max-width: 100%; font: inherit; text-align: left; cursor: pointer; }
+.msg-body .bubble.me { color: #fff; }
+.msg-body .bubble.hana { color: var(--text); }
+.msg.failed .bubble.me { opacity: 0.6; }
+.msg.sending .bubble.me { opacity: 0.75; }
+.msg-failed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; color: var(--danger, #b91c1c); margin-top: 4px; text-align: right; }
+.msg-tools { margin-top: 2px; }
+.chat-empty { text-align: center; margin: auto 0; }
+.bubble.thinking { display: inline-flex; gap: 4px; align-items: center; min-height: 20px; cursor: default; }
+.bubble.thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: hana-dot 1.2s infinite ease-in-out; }
+.bubble.thinking i:nth-child(3) { animation-delay: 0.15s; }
+.bubble.thinking i:nth-child(4) { animation-delay: 0.3s; }
+@keyframes hana-dot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .bubble.thinking i { animation: none; opacity: 0.6; } }
 .kidpicker { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin: 8px 0; }
 .kidbtn { display: flex; flex-direction: column; align-items: center; gap: 6px; background: rgba(255, 255, 255, 0.1); color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 16px; padding: 12px 16px; font-size: 15px; cursor: pointer; min-width: 88px; }
@@ -529,6 +552,7 @@ h2 { font-size: 19px; line-height: 1.25; }
 .hana-fab { overflow: hidden; padding: 0; }
 .hana-fab .hana-face { width: 100%; height: 100%; }
 .chat-title { display: flex; align-items: center; gap: 12px; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .chat-title .hana-face { border: 2px solid var(--sun); }
 /* Community: The Village + The Feed. */
 .safety-line { margin: 0 0 10px; }
@@ -577,3 +601,4 @@ h2 { font-size: 19px; line-height: 1.25; }
   border-radius: 8px;
   margin-top: 6px;
 }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

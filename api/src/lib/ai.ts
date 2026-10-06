@@ -76,7 +76,10 @@ function apiError(e: unknown): never {
   }
   if (e instanceof Anthropic.RateLimitError) throw new HttpError(429, 'Hana is busy — try again in a minute');
   if (e instanceof Anthropic.APIError) {
-    console.error('chat: API error', e.status);
+    // The API's own words (never the key): a bad tool schema, a low credit balance, a bad model name...
+    const body = e.error as { error?: { type?: string; message?: string } } | undefined;
+    console.error('chat: API error', e.status, body?.error?.type ?? '', '-', (body?.error?.message ?? e.message).slice(0, 300), e.requestID ? `(request ${e.requestID})` : '');
+    if (e.status === 400 && /credit balance/i.test(body?.error?.message ?? '')) throw new HttpError(503, 'Hana’s AI account is out of credit — the person who runs MyDay needs to top it up');
     throw new HttpError(502, 'Hana could not answer right now — try again');
   }
   throw e;
@@ -153,12 +156,21 @@ class ClaudeModel implements ChatModel {
   }
 }
 
+/** Tests: a message containing this fails the first time it's sent (like a rejected API call), then works. */
+const STUB_FAIL = '__stub_fail__';
+const stubFailedOnce = new Set<string>();
+
 /** Local proof only: echoes what it was given so tests can check the wiring. */
 class StubModel implements ChatModel {
   readonly kind = 'stub' as const;
 
   async reply(system: string, messages: ChatTurn[], maxTokens: number): Promise<string> {
     const last = messages[messages.length - 1]?.content ?? '';
+    if (last.includes('__stub_slow__')) await new Promise((r) => setTimeout(r, 1500));
+    if (last.includes(STUB_FAIL) && !stubFailedOnce.has(last)) {
+      stubFailedOnce.add(last);
+      throw new HttpError(502, 'Hana could not answer right now — try again');
+    }
     const facts = [
       `turns=${messages.length}`,
       `max_tokens=${maxTokens}`,

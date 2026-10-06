@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
 import { api, useLoad } from '../../api';
+import { useConfirm } from '../../components/Confirm';
 import { HanaFace } from '../../components/NavIcon';
 import { useSession } from '../../session';
+
+const newClientId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
 const COPY: Record<ChatMode, { title: string; intro: string; placeholder: string }> = {
   companion: {
@@ -22,16 +25,23 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   const { me } = useSession();
   const { data, error, setData } = useLoad<ChatState>(`/api/chat/${mode}`);
   const [msg, setMsg] = useState('');
-  const [pending, setPending] = useState<string | null>(null);
+  // The message on its way: shown at once, and the Send button is off until it lands.
+  const [pending, setPending] = useState<{ text: string; clientId: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Why Hana couldn't answer a message (by its id), shown under it until it's retried.
+  const [failNote, setFailNote] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<number | null>(null);
   const [actions, setActions] = useState<HanaAction[]>([]);
+  const confirm = useConfirm();
   // B3: /tutor?lecture=ID quizzes from one of the student's own lectures.
   const lectureId = mode === 'tutor' ? new URLSearchParams(window.location.search).get('lecture') : null;
   const end = useRef<HTMLDivElement>(null);
+  // Scroll only when a message is added (not on every refresh), so the page doesn't jump around.
+  const count = (data?.history.length ?? 0) + (pending ? 1 : 0);
   useEffect(() => {
     // Braces matter: newer browsers return a Promise from scrollIntoView, which React would treat as a cleanup.
-    void end.current?.scrollIntoView({ block: 'end' });
-  }, [data, pending]);
+    if (count) void end.current?.scrollIntoView({ block: 'nearest' });
+  }, [count]);
 
   if (mode === 'tutor' && !me.aiAllowed) {
     return (
@@ -48,23 +58,57 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   if (!data) return <p className="muted">Loading…</p>;
   const copy = COPY[mode];
 
-  const send = async (e: FormEvent): Promise<void> => {
-    e.preventDefault();
-    const text = msg.trim();
-    if (!text) return;
-    setMsg('');
-    setPending(text);
+  /** Send (or retry: same clientId, so the server reuses the message instead of saving a copy). */
+  const deliver = async (text: string, clientId: string): Promise<void> => {
+    if (pending) return; // one at a time — a second tap or Enter does nothing
+    setPending({ text, clientId });
     setErr(null);
+    setPicked(null);
+    setFailNote(({ [clientId]: _gone, ...rest }) => rest);
     try {
-      const r = await api<ChatSendResponse>(`/api/chat/${mode}`, 'POST', { message: text, ...(lectureId ? { lectureId: Number(lectureId) } : {}) });
+      const r = await api<ChatSendResponse>(`/api/chat/${mode}`, 'POST', { message: text, clientId, ...(lectureId ? { lectureId: Number(lectureId) } : {}) });
       setData({ ...data, history: r.history, pending: [...data.pending, ...r.actions.filter((a) => a.status === 'pending')] });
       setActions(r.actions.filter((a) => a.status !== 'pending'));
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : 'That didn’t go through — try again');
-      setMsg(text);
+      const why = e2 instanceof Error ? e2.message : 'That didn’t go through';
+      // The server kept the message, marked as not answered: reload so it shows with Retry.
+      const fresh = await api<ChatState>(`/api/chat/${mode}`).catch(() => null);
+      if (fresh && fresh.history.some((m) => m.clientId === clientId)) {
+        setData({ ...data, history: fresh.history });
+        setFailNote((n) => ({ ...n, [clientId]: why }));
+      } else {
+        // It never reached the server (offline): put it back to send again.
+        setErr(why);
+        setMsg(text);
+      }
     } finally {
       setPending(null);
     }
+  };
+
+  const send = (e: FormEvent): void => {
+    e.preventDefault();
+    const text = msg.trim();
+    if (!text || pending) return;
+    setMsg('');
+    void deliver(text, newClientId());
+  };
+
+  const remove = async (m: ChatMessage): Promise<void> => {
+    try {
+      const r = await api<{ history: ChatMessage[] }>(`/api/chat/${mode}/messages/${m.id}`, 'DELETE');
+      setData({ ...data, history: r.history });
+      setPicked(null);
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : 'Couldn’t delete that');
+    }
+  };
+
+  const clearAll = async (): Promise<void> => {
+    if (!(await confirm({ title: 'Clear this conversation?', body: 'Every message here is deleted. What Hana remembers about you stays (it’s listed below the chat).', confirmLabel: 'Clear', danger: true }))) return;
+    const r = await api<{ history: ChatMessage[] }>(`/api/chat/${mode}`, 'DELETE');
+    setData({ ...data, history: r.history });
+    setActions([]);
   };
 
   const decide = async (a: HanaAction, verb: 'confirm' | 'cancel'): Promise<void> => {
@@ -78,23 +122,73 @@ export default function Chat({ mode }: { mode: ChatMode }) {
 
   return (
     <section className="chat">
-      <h1 className="chat-title">
-        <HanaFace size={44} />
-        {copy.title}
-      </h1>
+      <div className="chat-head">
+        <h1 className="chat-title">
+          <HanaFace size={44} />
+          {copy.title}
+        </h1>
+        {data.history.length > 0 && (
+          <button className="link small" onClick={() => void clearAll()} data-testid="chat-clear">
+            Clear chat
+          </button>
+        )}
+      </div>
       <p className="muted small">{copy.intro}</p>
       {lectureId && <p className="pill sun">Quiz mode: questions from your lecture</p>}
       {!data.available && <p className="warn">Hana isn’t set up yet — a grown-up needs to add the AI key on the server.</p>}
       <div className="bubbles" data-testid="chat-history">
-        {data.history.map((m) => (
-          <div key={m.id} className={m.who === 'user' ? 'bubble me' : 'bubble hana'}>
-            {m.who === 'user' ? m.text : <Linked text={m.text} />}
-          </div>
-        ))}
+        {data.history.length === 0 && !pending && <p className="muted small chat-empty">Say hi, or try “what’s on today?”</p>}
+        {data.history.map((m, i) => {
+          const mine = m.who === 'user';
+          const firstOfRun = !mine && data.history[i - 1]?.who !== 'hana';
+          const sendingThis = pending?.clientId === m.clientId && m.clientId !== null;
+          return (
+            <div key={m.id} className={`msg ${mine ? 'me' : 'hana'}${m.failed && !sendingThis ? ' failed' : ''}`} data-testid={mine ? 'msg-me' : 'msg-hana'}>
+              {!mine && (firstOfRun ? <HanaFace size={28} /> : <span className="face-gap" />)}
+              <div className="msg-body">
+                {/* Tap a message to show Delete (links inside Hana's replies still open normally). */}
+                <div className={mine ? 'bubble me' : 'bubble hana'} onClick={(ev) => (ev.target as HTMLElement).closest('a') || setPicked(picked === m.id ? null : m.id)}>
+                  {mine ? m.text : <Linked text={m.text} />}
+                </div>
+                {mine && m.failed && !sendingThis && (
+                  <div className="msg-failed" role="alert" data-testid="msg-failed">
+                    <span>{failNote[m.clientId ?? ''] ?? 'Hana couldn’t answer this one.'}</span>
+                    <button className="link small" disabled={pending !== null} onClick={() => void deliver(m.text, m.clientId ?? newClientId())} data-testid="msg-retry">
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {picked === m.id && (
+                  <div className="msg-tools">
+                    <button className="link danger small" onClick={() => void remove(m)} data-testid="msg-delete">
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
         {pending && (
           <>
-            <div className="bubble me">{pending}</div>
-            <div className="bubble hana muted">Thinking…</div>
+            {!data.history.some((m) => m.clientId === pending.clientId) && (
+              <div className="msg me sending">
+                <div className="msg-body">
+                  <div className="bubble me">{pending.text}</div>
+                </div>
+              </div>
+            )}
+            <div className="msg hana" data-testid="hana-thinking" aria-live="polite">
+              <HanaFace size={28} />
+              <div className="msg-body">
+                <div className="bubble hana thinking">
+                  <span className="sr-only">Hana is thinking</span>
+                  <i />
+                  <i />
+                  <i />
+                </div>
+              </div>
+            </div>
           </>
         )}
         {actions.map((a) => (
@@ -119,10 +213,10 @@ export default function Chat({ mode }: { mode: ChatMode }) {
         <div ref={end} />
       </div>
       {err && <p className="error">{err}</p>}
-      <form className="inline" onSubmit={(e) => void send(e)}>
-        <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder={copy.placeholder} maxLength={2000} disabled={!data.available} />
-        <button className="btn small" disabled={!data.available || pending !== null}>
-          Send
+      <form className="inline chat-send" onSubmit={send}>
+        <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder={copy.placeholder} maxLength={2000} disabled={!data.available} aria-label="Message Hana" />
+        <button className="btn small" disabled={!data.available || pending !== null || !msg.trim()} data-testid="chat-send">
+          {pending ? 'Sending…' : 'Send'}
         </button>
       </form>
       {mode === 'companion' && <HanaKnows refreshKey={data.history.length} />}

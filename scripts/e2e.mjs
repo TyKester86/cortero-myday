@@ -1409,8 +1409,11 @@ async function billingAdmin() {
   eq('the founding household (operator-created) is complimentary', (await ty.get('/api/billing')).data.status, 'comped');
   eq('kids can’t open billing', (await avery.get('/api/billing')).status, 403);
   let sb = (await sam.get('/api/billing')).data;
-  // (the DB clock sets the 30-day trial; the test server runs on a fake Sunday clock, so allow ±2 days)
-  check('a signup gets the default plan, price not set, 30-day trial', sb.plan.name === 'Household' && sb.plan.priceCents === null && sb.status === 'trialing' && sb.trialDaysLeft >= 28 && sb.trialDaysLeft <= 30, `${sb.trialDaysLeft} days left`);
+  // The DB's real clock stamps the trial end; the test server runs on a fixed fake clock (noonOn('Sun')), and the
+  // gap between them grows every real day — so check the end date against real time, and the days left against the server's clock.
+  const trialEnd = Date.parse(sb.trialEndsAt);
+  const serverDaysLeft = Math.ceil((trialEnd - Date.parse(noonOn('Sun'))) / 86_400_000);
+  check('a signup gets the default plan, price not set, 30-day trial', sb.plan.name === 'Household' && sb.plan.priceCents === null && sb.status === 'trialing' && Math.abs(trialEnd - (Date.now() + 30 * 86_400_000)) < 86_400_000 && Math.abs(sb.trialDaysLeft - serverDaysLeft) <= 1, `${sb.trialDaysLeft} days left, ends ${sb.trialEndsAt}`);
   eq('can’t start the paid plan without a payment method', (await sam.post('/api/billing/subscribe')).status, 409);
   sb = (await sam.post('/api/billing/payment-method', { last4: '4242' })).data;
   eq('stub payment method recorded as a test card', [sb.paymentMethod?.brand, sb.paymentMethod?.last4, sb.paymentMethod?.test], ['Test card', '4242', true]);
@@ -1441,7 +1444,8 @@ async function billingAdmin() {
   eq('duplicate plan code → 409', (await adm.post('/api/admin/plans', { code: 'household-yearly', name: 'x' })).status, 409);
   sb = (await sam.post('/api/billing/cancel')).data;
   eq('cancel', [sb.status, (await adm.get('/api/admin/dashboard')).data.totals.mrrCents], ['canceled', 0]);
-  await sql("UPDATE households SET trial_ends_at = now() - interval '1 day' WHERE id = (SELECT household_id FROM household_members WHERE name = 'Pat')");
+  // A day before the server's (fake) today, not the DB's real today.
+  await sql("UPDATE households SET trial_ends_at = $1::timestamptz - interval '1 day' WHERE id = (SELECT household_id FROM household_members WHERE name = 'Pat')", [noonOn('Sun')]);
   eq('a lapsed trial shows as trial_ended (app keeps working)', [(await ret.get('/api/billing')).data.status, (await ret.get('/api/day')).status], ['trial_ended', 200]);
 
   section('0e. purge test households (admin, exact-name confirmation)');
@@ -1623,6 +1627,56 @@ async function careTeam() {
   eq('30 minutes before → one reminder', (await ty.post(`/api/calendar/run-reminders?at=${encodeURIComponent(at('16:31'))}`)).data.sent, 1);
   eq('…never twice', (await ty.post(`/api/calendar/run-reminders?at=${encodeURIComponent(at('16:40'))}`)).data.sent, 0);
   eq('the calendar is in your data export', ((await ty.get('/api/account/export')).data.data.calendar_events ?? []).some((e) => e.title === 'Dentist'), true);
+
+  section('Ask Hana: one message per send — retries never duplicate; a failed answer is kept with Retry; delete and clear');
+  const chatCount = async (who) => (await who.get('/api/chat/companion')).data.history.length;
+  let n0 = await chatCount(ty);
+  let cr = await ty.post('/api/chat/companion', { message: 'hello there', clientId: 'e2e-msg-0001' });
+  eq('a send → exactly one message and one reply', [cr.status, (await chatCount(ty)) - n0], [200, 2]);
+  cr = await ty.post('/api/chat/companion', { message: 'hello there', clientId: 'e2e-msg-0001' });
+  eq('the same send again (a retry or a double tap) → nothing new', [cr.status, cr.data.reply, (await chatCount(ty)) - n0], [200, null, 2]);
+  n0 = await chatCount(ty);
+  cr = await ty.post('/api/chat/companion', { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
+  check('Hana can’t answer → a clear error', cr.status >= 500 && /could not answer/i.test(cr.data.error), JSON.stringify(cr.data));
+  let ch = (await ty.get('/api/chat/companion')).data.history;
+  eq('…the message is kept, marked not answered', [ch.length - n0, ch.at(-1).text, ch.at(-1).failed], [1, 'please __stub_fail__ once', true]);
+  cr = await ty.post('/api/chat/companion', { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
+  ch = cr.data.history;
+  eq('Retry → the same message (not a copy) gets its answer', [cr.status, ch.filter((m) => m.text === 'please __stub_fail__ once').length, ch.find((m) => m.clientId === 'e2e-msg-0002').failed, ch.at(-1).who], [200, 1, false, 'hana']);
+  const mineMsg = ch.find((m) => m.clientId === 'e2e-msg-0001');
+  eq('nobody else can delete your messages', (await kayla.del(`/api/chat/companion/messages/${mineMsg.id}`)).status, 404);
+  ch = (await ty.del(`/api/chat/companion/messages/${mineMsg.id}`)).data.history;
+  eq('delete one of your messages', ch.some((m) => m.id === mineMsg.id), false);
+  eq('Kayla’s chat is untouched by Ty clearing his', await (async () => {
+    await kayla.post('/api/chat/companion', { message: 'kayla says hi', clientId: 'e2e-msg-k001' });
+    const before = await chatCount(kayla);
+    await ty.del('/api/chat/companion');
+    return [await chatCount(ty), (await chatCount(kayla)) === before];
+  })(), [0, true]);
+
+  section('Hana’s tool list passes the real API’s rules (the stand-in model can’t catch these)');
+  // Oct 2026: a nullable enum and then a 21st strict tool each made EVERY real chat fail with a 400.
+  const toolDefs = JSON.parse(runNode(['--input-type=module', '-e', "const m = await import('./dist/lib/hana.js'); process.stdout.write(JSON.stringify(m.hanaToolDefs())); process.exit(0);"]));
+  check('at most 20 strict tools', toolDefs.filter((t) => t.strict).length <= 20, `${toolDefs.filter((t) => t.strict).length} of ${toolDefs.length}`);
+  const schemaProblems = [];
+  const walk = (sch, at) => {
+    if (!sch || typeof sch !== 'object') return;
+    if (Array.isArray(sch.enum)) {
+      const types = [sch.type ?? []].flat();
+      if (Array.isArray(sch.type)) schemaProblems.push(`${at}: an enum with a type list (use anyOf)`);
+      for (const v of sch.enum) if (types.length && !types.includes(v === null ? 'null' : typeof v === 'number' ? (Number.isInteger(v) ? 'integer' : 'number') : typeof v)) schemaProblems.push(`${at}: enum value ${JSON.stringify(v)} isn’t a ${types.join('/')}`);
+    }
+    if (sch.type === 'object' && sch.properties) {
+      if (sch.additionalProperties !== false) schemaProblems.push(`${at}: additionalProperties must be false`);
+      for (const k of Object.keys(sch.properties)) if (!(sch.required ?? []).includes(k)) schemaProblems.push(`${at}.${k}: strict tools need every property required`);
+    }
+    for (const [k, v] of Object.entries(sch.properties ?? {})) walk(v, `${at}.${k}`);
+    for (const [n, v] of (sch.anyOf ?? []).entries()) walk(v, `${at}|${n}`);
+    if (sch.items) walk(sch.items, `${at}[]`);
+  };
+  for (const t of toolDefs.filter((x) => x.strict)) walk(t.input_schema, t.name);
+  eq('every strict tool schema is one the API accepts', schemaProblems, []);
+  eq('confirm-first tools are strict', toolDefs.filter((t) => ['forget', 'run_errand', 'send_groceries', 'delete_task', 'remove_bill', 'clear_checked_groceries'].includes(t.name) && !t.strict).map((t) => t.name), []);
 
   section('Hana as a personal assistant: calendar, reminders by push, memory, meals, chores, kids, money');
   const say = async (message) => (await kayla.post('/api/chat/companion', { message })).data;
@@ -3002,6 +3056,36 @@ async function uiGate() {
     check('the saved login shows its name and a hint, never the password', /Corner Store/.test(loginsText) && /sh•••@example\.com/.test(loginsText) && !/S3cret/.test(await page.content()));
     check('the finished order shows with its confirmation', (await page.getByTestId('errand').filter({ hasText: 'A1001' }).count()) > 0);
     eq('the add-login password box is a real password field', await page.getByTestId('add-login').getByLabel('Password').getAttribute('type'), 'password');
+
+    section('Ask Hana on a phone: one tap = one message, a thinking state, Retry when she can’t answer, no sideways shake');
+    await page.goto(`${BASE}/hana`);
+    const box = page.getByLabel('Message Hana');
+    await box.fill('slow one __stub_slow__');
+    const sendBtn = page.getByTestId('chat-send');
+    await sendBtn.click();
+    await page.getByTestId('hana-thinking').waitFor({ timeout: 5000 });
+    eq('the instant it’s sent: Send is off and Hana shows she’s thinking', [await sendBtn.isDisabled(), (await sendBtn.textContent()).trim()], [true, 'Sending…']);
+    await sendBtn.dispatchEvent('click').catch(() => {});
+    await box.press('Enter').catch(() => {});
+    await page.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+    eq('rapid taps → still exactly one message', await page.getByTestId('msg-me').filter({ hasText: 'slow one __stub_slow__' }).count(), 1);
+    await box.fill('ui __stub_fail__ test');
+    await sendBtn.click();
+    await page.getByTestId('msg-failed').waitFor({ timeout: 10000 });
+    check('Hana can’t answer → the message stays, with the reason and Retry', /could not answer/i.test(await page.getByTestId('msg-failed').innerText()) && (await page.getByTestId('msg-retry').count()) === 1);
+    eq('…and the text isn’t dumped back in the box (no copy on resend)', await box.inputValue(), '');
+    await page.getByTestId('msg-retry').click();
+    await page.getByTestId('msg-failed').waitFor({ state: 'detached', timeout: 10000 });
+    eq('Retry → answered, still one copy', await page.getByTestId('msg-me').filter({ hasText: 'ui __stub_fail__ test' }).count(), 1);
+    await box.fill(`look at https://www.example.com/${'a-very-long-path-segment-without-any-spaces'.repeat(4)} and ${'supercalifragilistic'.repeat(5)}`);
+    await sendBtn.click();
+    await page.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+    eq('a long link or word wraps — the page never scrolls sideways', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    eq('Hana’s replies show her face', (await page.getByTestId('msg-hana').locator('.hana-face').count()) > 0, true);
+    await page.getByTestId('msg-me').last().locator('.bubble').click();
+    await page.getByTestId('msg-delete').click();
+    await page.waitForTimeout(500);
+    eq('tap a message → Delete removes it', await page.getByTestId('msg-me').filter({ hasText: 'supercalifragilistic' }).count(), 0);
 
     section('solo grown-up in the browser: Today · Plan · Money · Me, no Family, until a partner signs in');
     const soloCtx = await browser.newContext(phone);

@@ -1151,6 +1151,10 @@ export interface ChatMessage {
   who: 'user' | 'hana';
   text: string;
   at: string;
+  /** A message of theirs Hana couldn't answer (shows Retry). */
+  failed: boolean;
+  /** The phone's id for a message it sent (a retry reuses it). */
+  clientId: string | null;
 }
 
 export interface ChatState {
@@ -1163,7 +1167,7 @@ export interface ChatState {
 }
 
 export interface ChatSendResponse {
-  reply: ChatMessage;
+  reply: ChatMessage | null;
   history: ChatMessage[];
   /** What Hana did this turn, and anything waiting for your OK (companion only). */
   actions: HanaAction[];
@@ -1922,7 +1926,7 @@ export interface HanaAction {
 }
 
 export interface ChatTurnResult {
-  reply: ChatMessage;
+  reply: ChatMessage | null;
   history: ChatMessage[];
   /** Things Hana did this turn, and anything waiting for your OK. */
   actions: HanaAction[];

@@ -42,13 +42,15 @@ interface MsgRow {
   who: 'user' | 'hana';
   text: string;
   created_at: Date;
+  failed: boolean;
+  client_id: string | null;
 }
 
-const toMsg = (r: MsgRow): ChatMessage => ({ id: r.id, who: r.who, text: r.text, at: r.created_at.toISOString() });
+const toMsg = (r: MsgRow): ChatMessage => ({ id: r.id, who: r.who, text: r.text, at: r.created_at.toISOString(), failed: r.failed, clientId: r.client_id });
 
 async function history(memberId: number, mode: ChatMode, limit = 40): Promise<ChatMessage[]> {
   const { rows } = await pool.query<MsgRow>(
-    `SELECT id, who, text, created_at FROM chat_messages WHERE member_id = $1 AND mode = $2 ORDER BY id DESC LIMIT $3`,
+    `SELECT id, who, text, created_at, failed, client_id FROM chat_messages WHERE member_id = $1 AND mode = $2 ORDER BY id DESC LIMIT $3`,
     [memberId, mode, limit],
   );
   return rows.reverse().map(toMsg);
@@ -164,8 +166,9 @@ chatRouter.get('/api/chat/:mode', async (req, res) => {
 
 chatRouter.post('/api/chat/:mode', async (req, res) => {
   const { me, mode } = await modeFor(req);
-  const body = req.body as { message?: unknown; lectureId?: unknown };
+  const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown };
   const msg = str(body.message, 'message', 2000, true);
+  const clientId = typeof body.clientId === 'string' && /^[\w-]{8,64}$/.test(body.clientId) ? body.clientId : null;
   // Under 13: a parent turns the homework helper on first (it sends the child's words to an AI provider).
   if (mode === 'tutor') await requireAiConsent(me);
   await checkAiMonthly();
@@ -173,9 +176,36 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   if (!model) throw new HttpError(503, 'Ask Hana needs a grown-up to finish setting it up');
   if (!chatLimit(String(me.id))) throw new HttpError(429, "That's a lot of questions — take a breather and try again soon");
 
-  const prior = await history(me.id, mode, 10);
-  await pool.query("INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'user', $3)", [me.id, mode, msg]);
-  const turns: ChatTurn[] = prior.map((m) => ({ role: m.who === 'hana' ? 'assistant' : 'user', content: m.text.slice(0, 1000) }));
+  // One row per message: a retry (same clientId) reuses it instead of saving a copy.
+  let rowId: number;
+  const existing = clientId
+    ? (await pool.query<{ id: number; failed: boolean }>("SELECT id, failed FROM chat_messages WHERE member_id = $1 AND mode = $2 AND client_id = $3 AND who = 'user'", [me.id, mode, clientId])).rows[0]
+    : undefined;
+  if (existing && !existing.failed) {
+    // Already answered (or still being answered): never twice.
+    const answered = (await pool.query("SELECT 1 FROM chat_messages WHERE member_id = $1 AND mode = $2 AND id > $3 AND who = 'hana' LIMIT 1", [me.id, mode, existing.id])).rowCount;
+    if (!answered) throw new HttpError(409, 'Hana is still answering that one');
+    const out: ChatSendResponse = { reply: null, history: await history(me.id, mode), actions: [] };
+    res.json(out);
+    return;
+  }
+  if (existing) {
+    rowId = existing.id;
+    await pool.query('UPDATE chat_messages SET failed = false WHERE id = $1', [rowId]);
+  } else {
+    const ins = await pool.query<{ id: number }>(
+      "INSERT INTO chat_messages (member_id, mode, who, text, client_id) VALUES ($1, $2, 'user', $3, $4) ON CONFLICT DO NOTHING RETURNING id",
+      [me.id, mode, msg, clientId],
+    );
+    if (!ins.rows[0]) throw new HttpError(409, 'Hana is still answering that one');
+    rowId = ins.rows[0].id;
+  }
+  // What Hana sees: the conversation before this message, without ones she couldn't answer.
+  const { rows: priorRows } = await pool.query<MsgRow>(
+    'SELECT id, who, text, created_at, failed, client_id FROM chat_messages WHERE member_id = $1 AND mode = $2 AND id < $3 AND NOT failed ORDER BY id DESC LIMIT 10',
+    [me.id, mode, rowId],
+  );
+  const turns: ChatTurn[] = priorRows.reverse().map((m) => ({ role: m.who === 'hana' ? 'assistant' : 'user', content: m.text.slice(0, 1000) }));
   turns.push({ role: 'user', content: msg });
   // The API wants the first turn from the user.
   while (turns[0]?.role === 'assistant') turns.shift();
@@ -191,19 +221,44 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     }
   }
   const actions: HanaAction[] = [];
-  const text =
-    mode === 'companion'
-      ? await model.act(system, turns, hanaKit(me, actions), 600)
-      : await model.reply(system, turns, mode === 'tutor' ? 450 : 600);
+  const started = Date.now();
+  let text: string;
+  try {
+    text =
+      mode === 'companion'
+        ? await model.act(system, turns, hanaKit(me, actions), 600)
+        : await model.reply(system, turns, mode === 'tutor' ? 450 : 600);
+  } catch (e) {
+    // Kept, marked: the screen shows it with Retry (and a retry reuses this row).
+    await pool.query('UPDATE chat_messages SET failed = true WHERE id = $1', [rowId]);
+    console.error(`chat: send ${mode} member=${me.id} model=${model.kind === 'claude' ? process.env.CHAT_MODEL || 'claude-opus-5-5' : 'stub'} ms=${Date.now() - started} error=${e instanceof HttpError ? e.status : 'exception'}`);
+    throw e;
+  }
+  console.log(`chat: send ${mode} member=${me.id} model=${model.kind === 'claude' ? process.env.CHAT_MODEL || 'claude-opus-5-5' : 'stub'} ms=${Date.now() - started} ok actions=${actions.length}`);
   await logEvent('hana_asked', { mode, actions: actions.length }, me.id);
   const { rows } = await pool.query<MsgRow>(
-    "INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING id, who, text, created_at",
+    "INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING id, who, text, created_at, failed, client_id",
     [me.id, mode, text],
   );
   const reply = rows[0];
   if (!reply) throw new Error('reply insert returned nothing');
   const out: ChatSendResponse = { reply: toMsg(reply), history: await history(me.id, mode), actions };
   res.json(out);
+});
+
+/** Delete one message from your own conversation with Hana. */
+chatRouter.delete('/api/chat/:mode/messages/:id', async (req, res) => {
+  const { me, mode } = await modeFor(req);
+  const { rowCount } = await pool.query('DELETE FROM chat_messages WHERE id = $1 AND member_id = $2 AND mode = $3', [idParam(req.params.id), me.id, mode]);
+  if (!rowCount) throw new HttpError(404, 'Not found');
+  res.json({ history: await history(me.id, mode) });
+});
+
+/** Clear your whole conversation with Hana (what she remembers is separate, on the same page). */
+chatRouter.delete('/api/chat/:mode', async (req, res) => {
+  const { me, mode } = await modeFor(req);
+  await pool.query('DELETE FROM chat_messages WHERE member_id = $1 AND mode = $2', [me.id, mode]);
+  res.json({ history: [] });
 });
 
 /** Confirm or cancel an action Hana proposed; her note about it lands in the chat. */

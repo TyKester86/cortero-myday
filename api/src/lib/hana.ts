@@ -291,7 +291,7 @@ export const HANA_TOOLS = [
     schema: z.object({ meal: z.string().min(2).max(120), day: z.enum(WEEKDAYS).nullable() }),
     json: {
       type: 'object',
-      properties: { meal: { type: 'string' }, day: { type: ['string', 'null'], enum: [...WEEKDAYS, null] } },
+      properties: { meal: { type: 'string' }, day: { anyOf: [{ type: 'string', enum: [...WEEKDAYS] }, { type: 'null' }] } },
       required: ['meal', 'day'],
       additionalProperties: false,
     },
@@ -578,10 +578,23 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   return [];
 }
 
+/**
+ * The API allows at most 20 strict tools per request (a 21st makes every chat
+ * fail with a 400). Strict mode goes to the tools where exact arguments matter
+ * most — confirm-first ones, then ones with arguments; the rest are still
+ * checked by their zod schema before they run.
+ */
+export const MAX_STRICT_TOOLS = 20;
+export function hanaToolDefs(): BetaTool[] {
+  const rank = (t: AnyTool): number => (t.destructive ? 0 : Object.keys((t.json as { properties?: object }).properties ?? {}).length ? 1 : 2);
+  const strict = new Set([...(HANA_TOOLS as readonly AnyTool[])].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_STRICT_TOOLS).map((t) => t.name));
+  return HANA_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.json, ...(strict.has(t.name) ? { strict: true } : {}) }));
+}
+
 /** The tools for one chat turn, recording every action taken or proposed. */
 export function hanaKit(me: HouseholdMember, taken: HanaAction[]): ToolKit {
   return {
-    tools: HANA_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.json, strict: true })),
+    tools: hanaToolDefs(),
     stubPlan,
     exec: async (name, input) => {
       const tool = byName(name);
