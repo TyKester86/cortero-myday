@@ -19,8 +19,20 @@ import { config } from './config.js';
 // date in this app is a household-calendar day, not an instant.
 pg.types.setTypeParser(pg.types.builtins.DATE, (v: string) => v);
 
-/** The raw pool. Use only for things outside household data (session store). */
-export const rawPool = new pg.Pool({ connectionString: config.databaseUrl, max: 12 });
+/**
+ * The raw pool: every API request holds one of these connections for its
+ * whole life (requestScope). If none frees up in time the request fails
+ * instead of waiting forever.
+ */
+export const rawPool = new pg.Pool({ connectionString: config.databaseUrl, max: 12, connectionTimeoutMillis: 15_000 });
+
+/**
+ * The session store's own pool. It must never share rawPool: a request already
+ * holds a rawPool connection when its session is loaded and saved, so with 12
+ * requests in flight every one of them would wait for a 13th connection that
+ * never comes — and the whole server would hang.
+ */
+export const sessionPool = new pg.Pool({ connectionString: config.databaseUrl, max: 4, connectionTimeoutMillis: 15_000 });
 
 interface Scope {
   client: pg.PoolClient;
@@ -49,7 +61,7 @@ export const pool: Queryable & { end(): Promise<void> } = {
     const s = als.getStore();
     return s ? s.client.query<R>(text, values) : rawPool.query<R>(text, values);
   },
-  end: () => rawPool.end(),
+  end: () => Promise.all([rawPool.end(), sessionPool.end()]).then(() => undefined),
 };
 
 /**

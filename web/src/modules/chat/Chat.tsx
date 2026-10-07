@@ -80,7 +80,16 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   const end = useRef<HTMLDivElement>(null);
   const bar = useRef<HTMLFormElement>(null);
   const picker = useRef<HTMLInputElement>(null);
+  const field = useRef<HTMLTextAreaElement>(null);
   const canAttach = mode === 'companion' && me.member?.kind === 'adult';
+
+  // The message box grows with what's typed (CSS caps it at ~5 lines, then it scrolls inside).
+  useEffect(() => {
+    const el = field.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [msg, data !== null]);
 
   // Scroll only when a message is added (not on every refresh), so the page doesn't jump around.
   const count = (data?.history.length ?? 0) + (pending ? 1 : 0);
@@ -342,7 +351,26 @@ export default function Chat({ mode }: { mode: ChatMode }) {
                 <input ref={picker} type="file" accept={ACCEPT} multiple hidden onChange={(e) => attach(e.target.files)} data-testid="chat-file" />
               </>
             )}
-            <input value={msg} onChange={(e) => setMsg(e.target.value)} onFocus={onFocus} placeholder={copy.placeholder} maxLength={2000} disabled={!data.available} aria-label="Message Hana" enterKeyHint="send" />
+            <textarea
+              ref={field}
+              className="chat-box"
+              rows={1}
+              value={msg}
+              onChange={(e) => setMsg(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter sends (Shift+Enter for a new line), like the one-line box it replaced.
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  bar.current?.requestSubmit();
+                }
+              }}
+              onFocus={onFocus}
+              placeholder={copy.placeholder}
+              maxLength={2000}
+              disabled={!data.available}
+              aria-label="Message Hana"
+              enterKeyHint="send"
+            />
             <button className="btn small" disabled={!data.available || pending !== null || uploading || (!msg.trim() && !ready.length)} data-testid="chat-send">
               {pending ? 'Sending…' : 'Send'}
             </button>

@@ -5,7 +5,7 @@ import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import type { HealthCheck, HouseholdResponse } from '@myday/shared';
 import { config } from './config.js';
-import { rawPool, requestScope } from './db.js';
+import { rawPool, requestScope, sessionPool } from './db.js';
 import { authRouter, kidAccessRouter, loadUser, meHandler, requireAuth, requireHousehold } from './auth.js';
 import { errorHandler, HttpError } from './lib/http.js';
 import { reportError } from './lib/report.js';
@@ -76,7 +76,7 @@ const PgStore = connectPgSimple(session);
 app.use(
   session({
     name: 'myday.sid',
-    store: new PgStore({ pool: rawPool, tableName: 'session', createTableIfMissing: false }),
+    store: new PgStore({ pool: sessionPool, tableName: 'session', createTableIfMissing: false }),
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,

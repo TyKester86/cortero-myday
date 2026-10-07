@@ -1727,6 +1727,11 @@ async function careTeam() {
   cr = await ty.post('/api/chat/companion', { clientId: 'e2e-att-0002', attachmentIds: [onlyPhoto] });
   check('a photo with no words is fine — Hana is asked to look at it', cr.status === 200 && /images=1/.test(cr.data.reply.text), JSON.stringify(cr.data).slice(0, 200));
   eq('more than 4 at once → 400', (await ty.post('/api/chat/companion', { message: 'many', attachmentIds: [1, 2, 3, 4, 5] })).status, 400);
+  const burst = await Promise.race([
+    Promise.all(Array.from({ length: 40 }, (_, i) => (i % 2 ? ty.get(`/api/chat/attachments/${photoId}`) : ty.get('/api/me')).then((r) => r.status))),
+    new Promise((ok) => setTimeout(() => ok('hung'), 20000)),
+  ]);
+  eq('40 requests at once (a chat full of photos loading) → all answered: the server never runs out of database connections', Array.isArray(burst) && burst.every((s) => s === 200) ? 'all 200' : burst, 'all 200');
   cr = await ty.post('/api/chat/companion', { message: 'and what about dessert?' });
   check('a later message: Hana is told what was attached earlier (no re-sending the bytes)', cr.status === 200 && !/images=/.test(cr.data.reply.text), cr.data.reply.text);
 
@@ -3385,14 +3390,83 @@ async function uiGate() {
     await page.waitForTimeout(300);
     const kbUp = await layout();
     eq('tap the input → the tab bar stays down (never floats above the keyboard)', [kbUp.kb, kbUp.tabsShown], [true, false]);
-    // Headless has no on-screen keyboard: stand in for one covering 300px of the screen.
-    await page.evaluate(() => document.documentElement.style.setProperty('--kb-inset', '300px'));
-    const riding = await layout();
-    eq('…and the input bar rides up on top of the keyboard', riding.barBottom, riding.h - 300);
     await box.blur();
     await page.waitForTimeout(400);
     const kbDown = await layout();
     eq('keyboard closed → the tab bar is back and the bar sits above it', [kbDown.kb, kbDown.tabsShown, Math.abs(kbDown.barBottom - kbDown.tabsTop) <= 1], [false, true, true]);
+
+    section('Ask Hana on an iPhone (simulated keyboard): the input stays pinned right on top of the keyboard while typing');
+    // Headless Chromium has no on-screen keyboard, so this page gets an iOS-like one: the visual viewport
+    // shrinks (and iOS may scroll it), window.innerHeight reports the shrunken height, and the layout
+    // viewport — what position:fixed uses — stays put. That's the combination that hid the bar on a real iPhone.
+    const iosCtx = await browser.newContext(phone);
+    await iosCtx.addCookies(await tyCtx.cookies());
+    await iosCtx.addInitScript(() => {
+      const real = window.visualViewport;
+      const st = { h: null, top: 0 };
+      const fake = new EventTarget();
+      const props = {
+        height: () => st.h ?? real.height,
+        width: () => real.width,
+        offsetTop: () => (st.h === null ? 0 : st.top),
+        offsetLeft: () => 0,
+        pageTop: () => window.scrollY + (st.h === null ? 0 : st.top),
+        pageLeft: () => 0,
+        scale: () => 1,
+      };
+      for (const [k, get] of Object.entries(props)) Object.defineProperty(fake, k, { get });
+      Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => fake });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => st.h ?? document.documentElement.clientHeight });
+      window.__keyboard = (h, top = 0) => {
+        st.h = h;
+        st.top = top;
+        fake.dispatchEvent(new Event('resize'));
+        fake.dispatchEvent(new Event('scroll'));
+      };
+    });
+    const ip = await iosCtx.newPage();
+    await ip.goto(`${BASE}/hana`);
+    await ip.getByTestId('chat-bar').waitFor();
+    const ibox = ip.getByLabel('Message Hana');
+    const pinned = () =>
+      ip.evaluate(() => {
+        const b = document.querySelector('[data-testid=chat-bar]').getBoundingClientRect();
+        const f = document.querySelector('textarea[aria-label="Message Hana"]').getBoundingClientRect();
+        const t = document.querySelector('nav.tabs');
+        const v = window.visualViewport;
+        return { barBottom: Math.round(b.bottom), boxTop: Math.round(f.top), boxBottom: Math.round(f.bottom), boxH: Math.round(f.height), vvTop: v.offsetTop, vvBottom: Math.round(v.offsetTop + v.height), tabsShown: getComputedStyle(t).display !== 'none', tabsTop: Math.round(t.getBoundingClientRect().top) };
+      });
+    await ibox.focus();
+    const slide = [];
+    for (const h of [744, 640, 560, 508]) {
+      // the keyboard sliding up (an iPhone keyboard covers ≈ 336px)
+      await ip.evaluate((x) => window.__keyboard(x), h);
+      await ip.waitForTimeout(60);
+      slide.push(await pinned());
+    }
+    check('keyboard sliding up → the input bar tracks it all the way, sitting right on top of it', slide.every((s) => Math.abs(s.barBottom - s.vvBottom) <= 1 && !s.tabsShown), JSON.stringify(slide));
+    await ip.evaluate(() => window.__keyboard(508, 140)); // iOS scrolls the visible area to reveal the field
+    await ip.waitForTimeout(60);
+    const panned = await pinned();
+    check('…and still on top of it when iOS scrolls the visible area', Math.abs(panned.barBottom - panned.vvBottom) <= 1 && panned.boxTop >= panned.vvTop, JSON.stringify(panned));
+    await ip.evaluate(() => window.__keyboard(508, 0));
+    await ip.waitForTimeout(60);
+    const beforeTyping = await pinned();
+    await ibox.pressSequentially('This is a long message typed on the phone, to make sure the text box stays visible above the keyboard the whole time, ');
+    const midTyping = await pinned();
+    await ibox.pressSequentially('even as it wraps onto several lines while I keep typing more and more words.');
+    const typed = await pinned();
+    const visible = (s) => s.boxTop >= s.vvTop && s.boxBottom <= s.vvBottom && Math.abs(s.barBottom - s.vvBottom) <= 1;
+    check('type a long message → the box grows upward and every line stays visible above the keyboard', typed.boxH > beforeTyping.boxH && [beforeTyping, midTyping, typed].every(visible), JSON.stringify([beforeTyping, midTyping, typed]));
+    await ibox.press('Enter');
+    await ip.getByTestId('msg-me').filter({ hasText: 'even as it wraps' }).waitFor({ timeout: 10000 });
+    eq('…Enter sends it, and the box shrinks back', [await ibox.inputValue(), (await pinned()).boxH <= beforeTyping.boxH], ['', true]);
+    await ip.evaluate(() => window.__keyboard(null));
+    await ibox.blur();
+    await ip.waitForTimeout(400);
+    const closed = await pinned();
+    eq('keyboard closed → the tab bar is back and the input sits right above it', [closed.tabsShown, Math.abs(closed.barBottom - closed.tabsTop) <= 1], [true, true]);
+    await iosCtx.close();
 
     const png = await page.evaluate(() => {
       const c = document.createElement('canvas');
@@ -3841,8 +3915,9 @@ ${para}`]), para);
     await fp.getByRole('button', { name: 'Leave mine and join' }).click();
     await fp.getByTestId('confirm').waitFor();
     check('the in-page confirm names both households', (await fp.getByTestId('confirm').innerText()).includes('Fay place'));
+    const joined = fp.waitForResponse((r) => r.url().endsWith('/api/join') && r.request().method() === 'POST');
     await fp.getByTestId('confirm-ok').click();
-    await fp.waitForResponse((r) => r.url().endsWith('/api/join') && r.request().method() === 'POST');
+    await joined;
     eq('confirmed in the modal → Fay is in the family household', (await sql("SELECT h.name FROM users u JOIN household_members m ON m.id = u.member_id JOIN households h ON h.id = m.household_id WHERE u.email = 'fay@example.com'"))[0].name, (await ty.get('/api/me')).data.household.name);
     await page.goto(`${BASE}/settings`);
     await page.getByTestId('invite-grown-up').waitFor();
