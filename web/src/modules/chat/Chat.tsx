@@ -82,13 +82,20 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   const end = useRef<HTMLDivElement>(null);
   const bar = useRef<HTMLFormElement>(null);
   const picker = useRef<HTMLInputElement>(null);
+  const camera = useRef<HTMLInputElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
-  const canAttach = mode === 'companion' && me.member?.kind === 'adult';
+  // Ask Hana: grown-ups. Homework helper: kids and students (photos of their work on paper).
+  const canAttach = mode === 'tutor' || me.member?.kind === 'adult';
 
   // The message box grows with what's typed (CSS caps it at ~5 lines, then it scrolls inside).
   useEffect(() => {
     const el = field.current;
     if (!el) return;
+    // Empty: its natural one line (a long placeholder in a narrow box would otherwise measure as two).
+    if (!msg) {
+      el.style.height = '';
+      return;
+    }
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight + 2}px`;
   }, [msg, data !== null]);
@@ -148,6 +155,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
       );
     }
     if (picker.current) picker.current.value = '';
+    if (camera.current) camera.current.value = '';
   };
 
   /** Send (or retry: same clientId, so the server reuses the message instead of saving a copy). */
@@ -193,6 +201,8 @@ export default function Chat({ mode }: { mode: ChatMode }) {
     if ((!text && !ready.length) || pending || uploading) return;
     setMsg('');
     setDrafts([]);
+    // The keyboard stays up for the next message (like any chat app).
+    field.current?.focus({ preventScroll: true });
     void deliver(text, newClientId(), ready);
   };
 
@@ -245,7 +255,32 @@ export default function Chat({ mode }: { mode: ChatMode }) {
       {lectureId && <p className="pill sun">Quiz mode: questions from your lecture</p>}
       {!data.available && <p className="warn">Hana isn’t set up yet — a grown-up needs to add the AI key on the server.</p>}
       <div className="bubbles" data-testid="chat-history">
-        {data.history.length === 0 && !pending && <p className="muted small chat-empty">Say hi, or try “what’s on today?”</p>}
+        {data.history.length === 0 && !pending && mode === 'companion' && <p className="muted small chat-empty">Say hi, or try “what’s on today?”</p>}
+        {data.history.length === 0 && !pending && mode === 'tutor' && (
+          <div className="msg hana" data-testid="tutor-hello">
+            <HanaFace size={28} />
+            <div className="msg-body">
+              <div className="bubble hana">
+                {data.nextUp
+                  ? `Hi ${me.member?.name ?? ''}! ${data.nextUp.assignment}${data.nextUp.subject ? ` (${data.nextUp.subject})` : ''} is ${data.nextUp.dueLabel}. Want to work on it together? You can snap a photo of it too.`
+                  : `Hi ${me.member?.name ?? ''}! What are you working on? Type the question or snap a photo of it.`}
+              </div>
+              {data.nextUp && data.available && (
+                <button
+                  type="button"
+                  className="chip"
+                  data-testid="tutor-next-up"
+                  onClick={() => {
+                    const n = data.nextUp;
+                    if (n) void deliver(`Can you help me with my ${n.subject ? `${n.subject} ` : ''}homework: ${n.assignment}?`, newClientId());
+                  }}
+                >
+                  Help me with {data.nextUp.assignment}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         {data.history.map((m, i) => {
           const mine = m.who === 'user';
           const firstOfRun = !mine && data.history[i - 1]?.who !== 'hana';
@@ -356,9 +391,20 @@ export default function Chat({ mode }: { mode: ChatMode }) {
           <div className="chat-send-row">
             {canAttach && (
               <>
-                <button type="button" className="attach-btn" aria-label="Attach a photo or file" disabled={!data.available || drafts.length >= MAX_FILES} onClick={() => picker.current?.click()} data-testid="chat-attach">
-                  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.4 11.1l-8.5 8.5a5.5 5.5 0 01-7.8-7.8l8.5-8.5a3.7 3.7 0 015.2 5.2l-8.5 8.5a1.8 1.8 0 01-2.6-2.6l7.8-7.8" />
+                {/* Take a photo: straight to the rear camera. */}
+                <button type="button" className="attach-btn" aria-label="Take a photo" disabled={!data.available || drafts.length >= MAX_FILES} onClick={() => camera.current?.click()} data-testid="chat-camera">
+                  <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 8.5A2.5 2.5 0 015.5 6h1.6l1.4-2h7l1.4 2h1.6A2.5 2.5 0 0121 8.5v9a2.5 2.5 0 01-2.5 2.5h-13A2.5 2.5 0 013 17.5z" />
+                    <circle cx="12" cy="13" r="3.6" />
+                  </svg>
+                </button>
+                <input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => attach(e.target.files)} data-testid="chat-camera-file" />
+                {/* Pick from the photo library (or a PDF / text file). */}
+                <button type="button" className="attach-btn" aria-label="Choose a photo or file" disabled={!data.available || drafts.length >= MAX_FILES} onClick={() => picker.current?.click()} data-testid="chat-attach">
+                  <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+                    <circle cx="9" cy="9.5" r="1.8" />
+                    <path d="M21 16l-5-5-8 9" />
                   </svg>
                 </button>
                 <input ref={picker} type="file" accept={ACCEPT} multiple hidden onChange={(e) => attach(e.target.files)} data-testid="chat-file" />
@@ -384,7 +430,13 @@ export default function Chat({ mode }: { mode: ChatMode }) {
               aria-label="Message Hana"
               enterKeyHint="send"
             />
-            <button className="btn small" disabled={!data.available || pending !== null || uploading || (!msg.trim() && !ready.length)} data-testid="chat-send">
+            <button
+              className="btn small"
+              // Tapping Send must not take focus from the message box, or the phone's keyboard closes after every message.
+              onMouseDown={(e) => e.preventDefault()}
+              disabled={!data.available || pending !== null || uploading || (!msg.trim() && !ready.length)}
+              data-testid="chat-send"
+            >
               {pending ? 'Sending…' : 'Send'}
             </button>
           </div>

@@ -846,11 +846,29 @@ async function build3Monday() {
   eq("kids don't get the companion", (await avery.get('/api/chat/companion')).status, 403);
   const st = (await avery.get('/api/chat/tutor')).data;
   eq('kid tutor available (stub), empty history', [st.available, st.history.length], [true, 0]);
+  check('…and Hana knows what’s due soonest on the Homework tab (to offer help with it)', st.nextUp?.assignment === 'Math worksheet' && /^(overdue|due today|due tomorrow|due [A-Z][a-z]{2} \d+|no due date)$/.test(st.nextUp?.dueLabel ?? ''), JSON.stringify(st.nextUp));
   const a1 = await avery.post('/api/chat/tutor', { message: 'Can you just tell me the answer to 3x+5=20?' });
   check('tutor reply comes back through the full pipeline', a1.status === 200 && a1.data.reply.text.startsWith('[stub reply]'), a1.data.reply?.text);
-  check('…with the tutor’s "never give the answer" rule in the system prompt', a1.data.reply.text.includes('rule=no-answers'));
-  check('…Avery’s open homework as context', a1.data.reply.text.includes('ctx=Math worksheet (Math)'));
-  check('…and the tutor’s 450-token cap', a1.data.reply.text.includes('max_tokens=450'));
+  check('…as Hana the teacher: expert subject knowledge, accuracy rules, photo reading, and hints first (no answer-dumping)', ['teach=expert', 'rule=hints-first'].every((x) => a1.data.reply.text.includes(x)) && !a1.data.reply.text.includes('rule=direct'), a1.data.reply.text);
+  check('…at Avery’s level (15: full high-school depth)', a1.data.reply.text.includes('level=15'), a1.data.reply.text);
+  check('…Avery’s open homework as context, soonest due first, with when it’s due', a1.data.reply.text.includes('ctx=Math worksheet (Math)') && /due=(overdue|due today|due tomorrow|due [A-Z][a-z]{2} \d+|no due date)/.test(a1.data.reply.text), a1.data.reply.text);
+  check('…with room for worked steps and more care than small talk (1000 tokens, medium effort)', a1.data.reply.text.includes('max_tokens=1000') && a1.data.reply.text.includes('effort=medium'), a1.data.reply.text);
+  const evanHadConsent = !!(await ty.get('/api/household/ai-consent')).data.kids.find((k) => k.key === 'evan')?.consentAt;
+  await ty.post('/api/household/members/evan/ai-consent', { consent: true });
+  const e1 = await evan.post('/api/chat/tutor', { message: 'how does long division work' });
+  check('Evan (11) gets the simpler, more encouraging level', e1.status === 200 && e1.data.reply.text.includes('level=11'), e1.data.reply?.text ?? JSON.stringify(e1.data));
+  await evan.del('/api/chat/tutor');
+  await ty.post('/api/household/members/evan/ai-consent', { consent: evanHadConsent });
+  eq('a parent switches Avery to direct answers', (await ty.post('/api/household/members/avery/tutor-style', { direct: true })).status, 200);
+  check('…and Hana gives direct answers (with the worked steps) instead of hints first', (await avery.post('/api/chat/tutor', { message: 'what is 3x+5=20' })).data.reply.text.includes('rule=direct'));
+  const hint = await ty.post('/api/chat/companion', { message: 'hints for Avery' });
+  check('…or just tells Hana in a word (“hints for Avery”) to switch back', /hints first/.test(hint.data.reply?.text ?? '') && (await avery.post('/api/chat/tutor', { message: 'and now?' })).data.reply.text.includes('rule=hints-first'), hint.data.reply?.text);
+  eq('kids can’t change their own homework-help style', (await avery.post('/api/household/members/avery/tutor-style', { direct: true })).status, 403);
+  eq('…and it’s only for kids', (await ty.post('/api/household/members/kayla/tutor-style', { direct: true })).status, 404);
+  check('Ask Hana knows the subjects too (for a parent helping with homework)', (await ty.post('/api/chat/companion', { message: 'how do I explain fractions to Evan' })).data.reply.text.includes('teach=expert'));
+  await avery.del('/api/chat/tutor');
+  const a1b = await avery.post('/api/chat/tutor', { message: 'Can you just tell me the answer to 3x+5=20?' });
+  check('(fresh conversation for the next checks)', a1b.status === 200);
   const a2 = await avery.post('/api/chat/tutor', { message: 'ok what do I do first' });
   check('second turn includes the stored history (3 turns sent)', a2.data.reply.text.includes('turns=3'), a2.data.reply.text);
   eq('conversation stored server-side', a2.data.history.map((h) => h.who), ['user', 'hana', 'user', 'hana']);
@@ -1165,7 +1183,7 @@ async function bigBuild() {
   sv = (await avery.post(`/api/study/${bio.id}/cards`, { front: 'Where is the Calvin cycle?', back: 'The stroma' })).data;
   check('own flashcard added', sv.cards.some((c) => c.front === 'Where is the Calvin cycle?'));
   const tq = await avery.post('/api/chat/tutor', { message: 'quiz me', lectureId: l1.id });
-  check('tutor quizzes from the lecture material (and keeps its no-answers rule)', tq.data.reply.text.includes('quiz=lecture') && tq.data.reply.text.includes('rule=no-answers'), tq.data.reply.text);
+  check('tutor quizzes from the lecture material (and keeps hints first)', tq.data.reply.text.includes('quiz=lecture') && tq.data.reply.text.includes('rule=hints-first'), tq.data.reply.text);
   eq("tutor can't quiz from someone else's lecture", (await evan.post('/api/chat/tutor', { message: 'quiz', lectureId: l1.id })).status, 404);
   const l2 = await waitLecture(avery, (await upload(avery, bio.id)).data.lecture.id);
   eq('2nd lecture: notes shown right away', [l2.scaffold, l2.notes !== null], ['none', true]);
@@ -1720,7 +1738,11 @@ async function careTeam() {
   eq('without the upload header → 400 (no cross-site uploads)', (await attach(ty, photo, 'image/jpeg', 'x.jpg', { 'X-MyDay-Upload': '0' })).status, 400);
   eq('a file that isn’t a photo, PDF or text → 415', (await attach(ty, Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff]), 'application/octet-stream', 'setup.exe')).status, 415);
   eq('a photo that claims to be a PDF is checked by its bytes', (await attach(ty, Buffer.from('not really a pdf at all'), 'application/pdf', 'fake.pdf')).status, 415);
-  eq('kids can’t attach files to Hana', (await attach(avery, photo, 'image/jpeg', 'k.jpg')).status, 403);
+  const kidPhoto = await attach(avery, photo, 'image/jpeg', 'worksheet.jpg');
+  eq('kids can send a photo of their homework (Avery, 15)', kidPhoto.status, 201);
+  const kt2 = await avery.post('/api/chat/tutor', { message: 'can you check my work?', attachmentIds: [kidPhoto.data.id] });
+  check('…and Hana the tutor sees it, with the rule to read it back and ask for a retake rather than guess', kt2.status === 200 && /images=1/.test(kt2.data.reply.text) && kt2.data.reply.text.includes('teach=expert'), kt2.data.reply?.text ?? JSON.stringify(kt2.data));
+  await avery.del('/api/chat/tutor');
   const own = await ty.req('GET', `/api/chat/attachments/${photoId}`, undefined, { json: false });
   eq('the owner opens their photo (never cached)', [own.status, own.headers.get('content-type'), own.headers.get('cache-control')], [200, 'image/jpeg', 'private, no-store']);
   eq('another grown-up in the house can’t open it', (await kayla.get(`/api/chat/attachments/${photoId}`)).status, 404);
@@ -2637,6 +2659,7 @@ async function privacyRules() {
   eq('…the homework helper refuses with a “ask a grown-up” reason', [t1.status, t1.data.code], [409, 'needs_parent_consent']);
   await jo.post('/api/lectures/ack');
   eq('…and so does lecture recording', (await jo.req('POST', '/api/lectures/upload?classId=1', Buffer.from('x'.repeat(50)), { json: false, headers: { 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1' } })).data.code, 'needs_parent_consent');
+  eq('…and so do homework photos for Hana', (await jo.req('POST', '/api/chat/attachments?name=hw.jpg', Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100, 7)]), { json: false, headers: { 'Content-Type': 'image/jpeg', 'X-MyDay-Upload': '1' } })).data.code, 'needs_parent_consent');
   eq('a kid can’t turn it on for themselves', (await jo.post('/api/household/members/jordan/ai-consent', { consent: true })).status, 403);
   const cl = (await ty.get('/api/household/ai-consent')).data.kids;
   eq('parents see which kids need it (under 13; teens don’t)', [cl.find((k) => k.key === 'jordan')?.needsConsent, cl.find((k) => k.key === 'avery')?.needsConsent], [true, false]);
@@ -2644,7 +2667,7 @@ async function privacyRules() {
   eq('a parent turns it on → the helper answers', [(await jo.get('/api/me')).data.aiAllowed, (await jo.post('/api/chat/tutor', { message: 'help with fractions' })).status], [true, 200]);
   await ty.post('/api/household/members/jordan/ai-consent', { consent: false });
   eq('…and can withdraw it', (await jo.get('/api/me')).data.aiAllowed, false);
-  eq('consent is logged (who, when)', (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name IN ('ai_consent_given', 'ai_consent_withdrawn')"))[0].n, 2);
+  eq('consent is logged (who, when)', (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name IN ('ai_consent_given', 'ai_consent_withdrawn') AND props->>'kid' = $1", [String((await jo.get('/api/me')).data.member.id)]))[0].n, 2);
 
   section('audit: your data — download it, delete your account, delete the household');
   const ex = await ty.get('/api/account/export');
@@ -3582,6 +3605,56 @@ async function uiGate() {
     const closed = await pinned();
     eq('keyboard closed → the tab bar is back and the input sits right above it', [closed.tabsShown, Math.abs(closed.barBottom - closed.tabsTop) <= 1], [true, true]);
     await iosCtx.close();
+
+    section('Homework helper on a phone: Hana offers help with what’s due, camera + photo library, the keyboard stays up');
+    await avery.patch('/api/me/prefs', { firstRunDone: true });
+    await avery.del('/api/chat/tutor');
+    const kidCtx = await browser.newContext(phone);
+    const tp = await kidCtx.newPage();
+    await tp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`);
+    await tp.goto(`${BASE}/tutor`);
+    await tp.getByTestId('tutor-hello').waitFor({ timeout: 10000 });
+    const nextUp = (await (await tp.request.get(`${BASE}/api/chat/tutor`)).json()).nextUp;
+    check('Hana opens by offering help with what’s due soonest on the Homework tab', !!nextUp && (await tp.getByTestId('tutor-hello').innerText()).includes(nextUp.assignment) && (await tp.getByTestId('tutor-next-up').isVisible()), JSON.stringify(nextUp));
+    eq('…a Take-a-photo button that opens the rear camera, and a photo-library button', [
+      await tp.getByTestId('chat-camera').isVisible(), await tp.getByTestId('chat-camera-file').getAttribute('capture'), await tp.getByTestId('chat-camera-file').getAttribute('accept'), await tp.getByTestId('chat-attach').isVisible(),
+    ], [true, 'environment', 'image/*', true]);
+    const camBox = await tp.getByTestId('chat-camera').boundingBox();
+    check('…big enough to tap (44 × 44)', camBox.width >= 44 && camBox.height >= 44, JSON.stringify(camBox));
+    await tp.getByTestId('tutor-next-up').click();
+    await tp.getByTestId('msg-me').filter({ hasText: nextUp.assignment }).waitFor({ timeout: 10000 });
+    await tp.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+    check('tap it → Hana starts on that assignment', /rule=hints-first/.test(await tp.getByTestId('msg-hana').last().innerText()));
+    const kidPng = await tp.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 80;
+      c.height = 60;
+      const x = c.getContext('2d');
+      x.fillStyle = '#fff';
+      x.fillRect(0, 0, 80, 60);
+      x.fillStyle = '#333';
+      x.fillText('2x+3=11', 8, 34);
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    await tp.getByTestId('chat-camera-file').setInputFiles({ name: 'IMG_0412.png', mimeType: 'image/png', buffer: Buffer.from(kidPng, 'base64') });
+    await tp.waitForFunction(() => { const d = document.querySelector('[data-testid=chat-draft]'); return d && !d.textContent.includes('Attaching'); }, null, { timeout: 10000 });
+    await tp.getByTestId('chat-send').click();
+    await tp.getByTestId('msg-me').last().getByTestId('msg-photo').waitFor({ timeout: 10000 });
+    await tp.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+    check('a photo from the camera → shrunk on the phone, sent, and Hana sees it', /images=1/.test(await tp.getByTestId('msg-hana').last().innerText()));
+    // Three messages in a row, typing into whatever has focus: if Send ever took the focus (closing the keyboard), the next one would go nowhere.
+    await tp.getByLabel('Message Hana').focus();
+    const stayedUp = [];
+    for (const q of ['what is a quadratic?', 'how do I factor it?', 'thanks!']) {
+      await tp.keyboard.type(q);
+      await tp.getByTestId('chat-send').click();
+      await tp.getByTestId('msg-me').filter({ hasText: q }).waitFor({ timeout: 10000 });
+      await tp.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+      stayedUp.push(await tp.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Message Hana' && document.documentElement.classList.contains('kb-open')));
+    }
+    eq('send three messages in a row: the keyboard stays up for all three (no re-tapping the box)', stayedUp, [true, true, true]);
+    await kidCtx.close();
+    await avery.del('/api/chat/tutor');
 
     const png = await page.evaluate(() => {
       const c = document.createElement('canvas');

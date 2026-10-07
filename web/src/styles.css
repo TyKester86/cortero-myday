@@ -659,7 +659,7 @@ html.kb-open .chat-send { top: var(--vv-bottom, 100%); bottom: auto; transform: 
 .app.sidebar .chat-send { position: sticky; bottom: 0; }
 html.kb-open .app.sidebar .chat-send { position: fixed; left: 250px; right: 0; }
 .app.sidebar .chat-send-in { max-width: none; padding-inline: 0; }
-.attach-btn { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; padding: 0; }
+.attach-btn { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; padding: 0; }
 .attach-btn:disabled { opacity: 0.45; cursor: default; }
 .draft-files { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .draft-file { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 200px; padding: 4px 4px 4px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 13px; }

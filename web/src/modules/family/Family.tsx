@@ -4,7 +4,7 @@ import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
 import { ago } from '../../dates';
 import { useSession } from '../../session';
-import { KidAiConsent } from '../settings/YourData';
+import { HomeworkHelpStyle, KidAiConsent } from '../settings/YourData';
 
 type EarnFamily = EarnResult & { family: FamilyResponse };
 
@@ -91,6 +91,7 @@ export default function Family() {
       <h1>Family</h1>
 
       {data.kids.length > 0 && <KidAiConsent />}
+      {data.kids.length > 0 && <HomeworkHelpStyle />}
       {data.kids.length > 0 && <h2>The kids</h2>}
       {data.kids.map((k) => (
         <KidCard

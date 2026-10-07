@@ -19,6 +19,7 @@ import { checkHanaDaily } from '../lib/limits.js';
 import { requireAiConsent } from './account.js';
 import { chatModel, turnText, type ChatTurn } from '../lib/ai.js';
 import { trackOf } from '../lib/adult.js';
+import { homeworkLine, openHomework, PARENT_TEACHING, teachingRules, tutorDirect } from '../lib/teaching.js';
 import { hanaStats, REWRITE_SYSTEM, STATS_RULE, statsLine, stripWrongStats, wrongStats, type HanaStats } from '../lib/hanaStats.js';
 import { isoToWeekday } from '../lib/dates.js';
 import { libraryBrief } from '../lib/library.js';
@@ -88,14 +89,8 @@ function withAttachments(text: string, files: LoadedAttachment[]): ChatTurn['con
 async function dayContext(me: HouseholdMember, mode: ChatMode, stats: HanaStats | null): Promise<string> {
   const t = today();
   const bits: string[] = [];
-  if (mode === 'tutor' && me.kind === 'kid') {
-    const { rows } = await pool.query<{ assignment: string; subject: string }>(
-      'SELECT assignment, subject FROM homework WHERE member_id = $1 AND NOT done ORDER BY due NULLS LAST, id LIMIT 6',
-      [me.id],
-    );
-    if (rows.length) bits.push(rows.map((r) => `${r.assignment} (${r.subject || 'general'})`).join('; '));
-    return bits.join('. ');
-  }
+  // A kid's open homework from the Homework tab, soonest due first.
+  if (mode === 'tutor' && me.kind === 'kid') return homeworkLine(await openHomework(me));
   const { rows: open } = await pool.query<{ id: number; task: string }>(
     'SELECT id, task FROM tasks WHERE member_id = $1 AND day = $2 AND NOT done ORDER BY id LIMIT 12',
     [me.id, t],
@@ -140,25 +135,20 @@ async function dayContext(me: HouseholdMember, mode: ChatMode, stats: HanaStats 
 async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): Promise<string> {
   const day = today();
   if (mode === 'tutor' && me.kind === 'kid') {
-    const age = me.age ?? 12;
     return (
-      `You are a friendly homework tutor for ${me.name}, age ${age}, inside the MyDay family app. ` +
-      'YOUR #1 RULE: never give the final answer directly. Never do their homework for them. Instead: ask one guiding ' +
-      'question at a time, break problems into tiny steps, give hints, and celebrate effort and good thinking. If they ask ' +
-      'you to just give the answer, calmly decline ("That is my one rule — I help you figure it out.") and ask a ' +
-      `guiding question. Keep replies under 100 words, warm, at a ${age}-year-old reading level. Today is ${day}. ` +
-      (ctx ? `Their open homework: ${ctx}. ` : '') +
-      'If they are frustrated, be extra encouraging - effort counts here.'
+      `You are Hana, the warm, patient tutor inside the MyDay family app, helping ${me.name} (age ${me.age ?? 12}) with school. Today is ${day}. ` +
+      `${ctx} ${teachingRules(me.age, await tutorDirect(me.id))} ` +
+      'Keep every reply short: usually under 120 words. A worked solution can run longer, but with one step per line.'
     );
   }
   if (mode === 'tutor') {
     return (
-      `You are a Socratic tutor for college student ${me.name} inside the MyDay app (built on the ConquerADHD book system). ` +
+      `You are Hana, a Socratic tutor for college student ${me.name} inside the MyDay app (built on the ConquerADHD book system). Today is ${day}. ` +
       'Never hand over finished work: no complete essays, no direct answers to graded problems, no doing assignments for them. ' +
       'Instead: probe understanding with sharp questions, suggest study strategies (SQ3R, retrieval practice, spaced repetition, ' +
       'office hours), help them plan their approach, and review THEIR work when they share it. Be direct, college-level, no fluff. ' +
-      `Keep replies focused (under 150 words unless they ask for depth). Today is ${day}. ` +
-      (ctx ? `Their open assignments: ${ctx}.` : '')
+      `Keep replies focused (under 150 words unless they ask for depth). ${ctx ? `Their open tasks today: ${ctx}. ` : ''}` +
+      teachingRules('college', false)
     );
   }
   const role = { leader: 'Family Leader', woman: 'Heart of Home', student: 'Student', kid: 'Kid' }[await trackOf(me.id)];
@@ -168,6 +158,7 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     (ctx ? `What you can see of their day: ${ctx}. ` : '') +
     'Be brief (under 120 words unless they ask for more), concrete, encouraging. ADHD-friendly: one clear next step, no ' +
     'lectures, no shame. Reference their day when useful. Never invent data you were not given. ' +
+    `${PARENT_TEACHING} ` +
     `${STATS_RULE} ` +
     'You are their personal assistant and can act in MyDay with your tools: tasks, groceries, notes, homework, workouts, bills, ' +
     'the shared household calendar (add and read events), push reminders at a time ("remind me at 5 to…"), planning meals from ' +
@@ -189,6 +180,7 @@ chatRouter.get('/api/chat/:mode', async (req, res) => {
     available: chatModel() !== null,
     history: await history(me.id, mode),
     pending: mode === 'companion' ? await pendingActions(me.id) : [],
+    nextUp: mode === 'tutor' && me.kind === 'kid' ? ((await openHomework(me, 1))[0] ?? null) : null,
   };
   res.json(out);
 });
@@ -220,7 +212,6 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown; attachmentIds?: unknown; retryId?: unknown };
   const wanted = Array.isArray(body.attachmentIds) ? [...new Set(body.attachmentIds.map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))] : [];
   if (wanted.length > 4) throw new HttpError(400, 'Up to 4 attachments per message');
-  if (wanted.length && mode !== 'companion') throw new HttpError(400, 'Attachments are for Ask Hana');
   const msg = str(body.message, 'message', 2000, wanted.length === 0);
   const clientId = typeof body.clientId === 'string' && /^[\w-]{8,64}$/.test(body.clientId) ? body.clientId : null;
   // Under 13: a parent turns the homework helper on first (it sends the child's words to an AI provider).
@@ -307,7 +298,7 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     text =
       mode === 'companion'
         ? await model.act(system, turns, hanaKit(me, actions), 600)
-        : await model.reply(system, turns, mode === 'tutor' ? 450 : 600);
+        : await model.reply(system, turns, 1000, { effort: 'medium' });
   } catch (e) {
     // Kept, marked: the screen shows it with Retry (and a retry reuses this row).
     await pool.query('UPDATE chat_messages SET failed = true WHERE id = $1', [rowId]);

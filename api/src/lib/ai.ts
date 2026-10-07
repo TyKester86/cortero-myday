@@ -38,9 +38,14 @@ export interface ToolKit {
   stubPlan: (message: string) => Array<{ name: string; input: unknown }>;
 }
 
+export interface ReplyOptions {
+  /** low (default) for quick chat; medium where getting it right matters more (homework help). */
+  effort?: 'low' | 'medium' | 'high';
+}
+
 export interface ChatModel {
   readonly kind: 'claude' | 'stub';
-  reply(system: string, messages: ChatTurn[], maxTokens: number): Promise<string>;
+  reply(system: string, messages: ChatTurn[], maxTokens: number, opts?: ReplyOptions): Promise<string>;
   /** A reply that may use tools (Hana actions). */
   act(system: string, messages: ChatTurn[], kit: ToolKit, maxTokens: number): Promise<string>;
 }
@@ -99,15 +104,15 @@ class ClaudeModel implements ChatModel {
     this.client = new Anthropic({ apiKey, maxRetries: 2, timeout: 60_000 });
   }
 
-  async reply(system: string, messages: ChatTurn[], maxTokens: number): Promise<string> {
+  async reply(system: string, messages: ChatTurn[], maxTokens: number, opts: ReplyOptions = {}): Promise<string> {
     try {
       const res = await this.client.beta.messages.create({
         model: this.model,
         max_tokens: maxTokens,
         system,
         messages,
-        // Short, warm chat replies: low effort is plenty and keeps it snappy.
-        output_config: { effort: 'low' },
+        // Short, warm chat replies: low effort is plenty and keeps it snappy (homework help asks for more care).
+        output_config: { effort: opts.effort ?? 'low' },
         betas: ['server-side-fallback-2026-07-01'],
         fallbacks: 'default',
       });
@@ -170,7 +175,7 @@ const stubFailedOnce = new Set<string>();
 class StubModel implements ChatModel {
   readonly kind = 'stub' as const;
 
-  async reply(system: string, messages: ChatTurn[], maxTokens: number): Promise<string> {
+  async reply(system: string, messages: ChatTurn[], maxTokens: number, opts: ReplyOptions = {}): Promise<string> {
     const lastTurn = messages[messages.length - 1];
     const last = lastTurn ? turnText(lastTurn) : '';
     const blocks = lastTurn && typeof lastTurn.content !== 'string' ? lastTurn.content : [];
@@ -186,10 +191,15 @@ class StubModel implements ChatModel {
     const facts = [
       `turns=${messages.length}`,
       `max_tokens=${maxTokens}`,
-      system.includes('never give the final answer') ? 'rule=no-answers' : '',
+      system.includes('HINTS FIRST:') ? 'rule=hints-first' : '',
+      system.includes('DIRECT ANSWERS (turned on by their parent)') ? 'rule=direct' : '',
+      system.includes('SUBJECT MASTERY:') && system.includes('ACCURACY:') && system.includes('PHOTOS:') ? 'teach=expert' : '',
+      ((m) => (m ? `level=${m[1]}` : ''))(system.match(/AGE (\d+):/)),
+      opts.effort ? `effort=${opts.effort}` : '',
       system.includes('Socratic tutor') ? 'rule=socratic' : '',
       system.startsWith('You are Hana') ? 'persona=hana' : '',
-      system.includes('Their open homework:') ? `ctx=${system.split('Their open homework: ')[1]?.split('.')[0] ?? ''}` : '',
+      ((m) => (m ? `ctx=${m[1]}` : ''))(system.match(/Their open homework, soonest due first: #\d+ (.+?) — /)),
+      system.includes('Their open homework, soonest due first:') ? `due=${system.match(/ — (overdue|due today|due tomorrow|due [A-Z][a-z]{2} \d+|no due date)/)?.[1] ?? ''}` : '',
       system.includes('What you can see of their day:') ? 'ctx=day' : '',
       system.includes('QUIZ MODE') ? 'quiz=lecture' : '',
       system.includes('FROM THE BOOK') ? 'library=book' : '',

@@ -41,13 +41,24 @@ accountRouter.post('/api/household/members/:key/ai-consent', async (req, res) =>
   res.json({ key: kid.key, consent: on });
 });
 
+/** Homework help style for a kid: hints first (default) or direct answers with the worked steps. */
+accountRouter.post('/api/household/members/:key/tutor-style', async (req, res) => {
+  const me = requireAdult(req);
+  const kid = await memberByKey(String(req.params.key));
+  if (!kid || kid.kind !== 'kid') throw new HttpError(404, 'No such kid');
+  const direct = bool((req.body as { direct?: unknown }).direct, 'direct');
+  await pool.query('UPDATE household_members SET tutor_direct = $2 WHERE id = $1', [kid.id, direct]);
+  await logEvent('tutor_style_changed', { kid: kid.id, direct }, me.id);
+  res.json({ key: kid.key, direct });
+});
+
 accountRouter.get('/api/household/ai-consent', async (req, res) => {
   requireAdult(req);
-  const { rows } = await pool.query<{ key: string; name: string; age: number | null; at: Date | null }>(
-    "SELECT key, name, age, ai_consent_at AS at FROM household_members WHERE kind = 'kid' AND archived_at IS NULL ORDER BY sort_order, id",
+  const { rows } = await pool.query<{ key: string; name: string; age: number | null; at: Date | null; direct: boolean }>(
+    "SELECT key, name, age, ai_consent_at AS at, tutor_direct AS direct FROM household_members WHERE kind = 'kid' AND archived_at IS NULL ORDER BY sort_order, id",
   );
   res.json({
-    kids: rows.map((r) => ({ key: r.key, name: r.name, age: r.age, needsConsent: needsAiConsent({ kind: 'kid', age: r.age }), consentAt: r.at ? r.at.toISOString() : null })),
+    kids: rows.map((r) => ({ key: r.key, name: r.name, age: r.age, needsConsent: needsAiConsent({ kind: 'kid', age: r.age }), consentAt: r.at ? r.at.toISOString() : null, direct: r.direct })),
   });
 });
 

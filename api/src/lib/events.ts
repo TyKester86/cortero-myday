@@ -41,6 +41,7 @@ export type EventName =
   | 'cut_paused'
   | 'ai_consent_given'
   | 'ai_consent_withdrawn'
+  | 'tutor_style_changed'
   | 'data_exported'
   | 'account_deleted'
   | 'community_post'

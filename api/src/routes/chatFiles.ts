@@ -9,6 +9,7 @@ import type { ChatAttachment } from '@myday/shared';
 import { pool } from '../db.js';
 import { HttpError, idParam } from '../lib/http.js';
 import { currentKeyId, openBytes, sealBytes } from '../lib/seal.js';
+import { requireAiConsent } from './account.js';
 
 export const chatUploadRouter = Router();
 export const chatFilesRouter = Router();
@@ -32,8 +33,9 @@ export const attachmentUrl = (id: number): string => `/api/chat/attachments/${id
 chatUploadRouter.post('/api/chat/attachments', express.raw({ type: () => true, limit: LIMIT.pdf }), async (req: Request, res) => {
   if (req.headers['x-myday-upload'] !== '1') throw new HttpError(400, 'Missing upload header');
   if (!req.user || !req.member || !req.householdId) throw new HttpError(401, 'Not signed in');
-  if (req.member.kind !== 'adult') throw new HttpError(403, 'Attachments are for grown-ups');
   const me = req.member;
+  // Kids send photos of their homework; under 13, only once a parent has turned AI helpers on.
+  await requireAiConsent(me);
   const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
   if (data.length < 10) throw new HttpError(400, 'That file was empty');
   const declared = String(req.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '';

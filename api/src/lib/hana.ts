@@ -417,6 +417,31 @@ export const HANA_TOOLS = [
     },
   }),
   def({
+    name: 'set_homework_help',
+    description:
+      "How Hana helps a kid with homework: 'hints' (guide with questions and hints first — the default) or 'direct' (give the answer with the full worked steps). kid_name null = every kid. Grown-ups only.",
+    destructive: false,
+    schema: z.object({ kid_name: z.string().min(1).max(40).nullable(), style: z.enum(['hints', 'direct']) }),
+    json: {
+      type: 'object',
+      properties: { kid_name: { anyOf: [{ type: 'string' }, { type: 'null' }] }, style: { type: 'string', enum: ['hints', 'direct'] } },
+      required: ['kid_name', 'style'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Homework help for ${i.kid_name ?? 'every kid'}: ${i.style === 'direct' ? 'direct answers' : 'hints first'}`,
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'That’s for grown-ups');
+      const kids = (await listMembers()).filter((m) => m.kind === 'kid' && (i.kid_name === null || m.name.toLowerCase() === i.kid_name.trim().toLowerCase()));
+      if (!kids.length) throw new HttpError(404, i.kid_name ? `There's no kid named ${i.kid_name} in this household` : 'There are no kids on the roster');
+      await pool.query('UPDATE household_members SET tutor_direct = $2 WHERE id = ANY($1)', [kids.map((k) => k.id), i.style === 'direct']);
+      await logEvent('tutor_style_changed', { kids: kids.length, direct: i.style === 'direct' }, me.id);
+      const who = kids.map((k) => k.name).join(' and ');
+      return i.style === 'direct'
+        ? `Done — I'll give ${who} direct answers with the worked steps when they ask.`
+        : `Done — I'll guide ${who} with hints first and give the answer only when they're stuck or ask twice.`;
+    },
+  }),
+  def({
     name: 'my_stats',
     description:
       "This person's own live numbers from MyDay: today's score (and what it's made of), current and longest streak, XP and level, tasks done/open today. Call it before stating any of these numbers if the conversation has gone on a while.",
@@ -582,6 +607,7 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   }
   if ((x = m.match(/^errand on ([^:]{2,60}):\s*(.{4,})$/i))) return [{ name: 'run_errand', input: { site: x[1], goal: x[2] } }];
   if (/^how are the kids/i.test(m)) return [{ name: 'kids_overview', input: {} }];
+  if ((x = m.match(/^(direct|hints)(?: answers| first)?(?: for (\w+))?$/i))) return [{ name: 'set_homework_help', input: { kid_name: x[2] ?? null, style: (x[1] ?? '').toLowerCase() } }];
   if (/^what['’]?s my (?:score|streak|xp|level)/i.test(m)) return [{ name: 'my_stats', input: {} }];
   if (/^how['’]?s (?:my|our) money/i.test(m)) return [{ name: 'money_summary', input: {} }];
   if ((x = m.match(/^add homework for (\w+):\s*(.+?)(?: due (\d{4}-\d{2}-\d{2}))?$/i))) {

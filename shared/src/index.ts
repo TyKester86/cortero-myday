@@ -1204,6 +1204,8 @@ export interface ChatState {
   history: ChatMessage[];
   /** Actions Hana proposed that are still waiting for your OK. */
   pending: HanaAction[];
+  /** Homework helper: the open assignment due soonest (Hana offers help with it). */
+  nextUp?: { id: number; assignment: string; subject: string; dueLabel: string } | null;
 }
 
 export interface ChatSendResponse {

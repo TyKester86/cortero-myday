@@ -66,7 +66,44 @@ export function YourData({ householdName }: { householdName: string }) {
 }
 
 interface ConsentKids {
-  kids: Array<{ key: string; name: string; age: number | null; needsConsent: boolean; consentAt: string | null }>;
+  kids: Array<{ key: string; name: string; age: number | null; needsConsent: boolean; consentAt: string | null; direct: boolean }>;
+}
+
+/** How Hana helps each kid with homework: hints first (default) or direct answers with the worked steps. */
+export function HomeworkHelpStyle() {
+  const { data, setData } = useLoad<ConsentKids>('/api/household/ai-consent');
+  if (!data?.kids.length) return null;
+  const set = async (key: string, direct: boolean): Promise<void> => {
+    await api(`/api/household/members/${key}/tutor-style`, 'POST', { direct });
+    setData({ kids: data.kids.map((k) => (k.key === key ? { ...k, direct } : k)) });
+  };
+  return (
+    <div className="card" data-testid="homework-help-style">
+      <h2>Homework help</h2>
+      <p className="small muted">
+        <b>Hints first</b>: Hana guides with questions and gives the answer only when they’re stuck or ask twice. <b>Direct</b>: the answer with every step, explained.
+        You can also just tell Hana (“direct for Evan”).
+      </p>
+      <ul className="plain">
+        {data.kids.map((k) => (
+          <li key={k.key} className="row small" style={{ alignItems: 'center' }}>
+            <span className="grow">
+              <b>{k.name}</b>
+              {k.age !== null && <span className="muted"> · {k.age}</span>}
+            </span>
+            <div className="chips" role="group" aria-label={`Homework help for ${k.name}`}>
+              <button type="button" className={k.direct ? 'chip' : 'chip on'} aria-pressed={!k.direct} onClick={() => void set(k.key, false)} data-testid={`hints-${k.key}`}>
+                Hints first
+              </button>
+              <button type="button" className={k.direct ? 'chip on' : 'chip'} aria-pressed={k.direct} onClick={() => void set(k.key, true)} data-testid={`direct-${k.key}`}>
+                Direct
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 /** A parent turns on the AI helpers (homework helper, lecture notes) for kids under 13. */
