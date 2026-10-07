@@ -91,7 +91,8 @@ export async function openHomework(member: Pick<HouseholdMember, 'id'>, limit = 
 
 export function homeworkLine(list: OpenHomework[]): string {
   if (!list.length) return 'Their Homework tab has nothing open right now.';
-  return `Their open homework, soonest due first: ${list.map((h) => `#${h.id} ${h.assignment} (${h.subject || 'general'}) — ${h.dueLabel}`).join('; ')}.`;
+  // No ids: a kid would read "#7" as a problem number.
+  return `Their open homework, soonest due first: ${list.map((h) => `${h.assignment} (${h.subject || 'general'}) — ${h.dueLabel}`).join('; ')}.`;
 }
 
 export const HOMEWORK_USE =

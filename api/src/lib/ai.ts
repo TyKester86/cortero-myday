@@ -198,7 +198,7 @@ class StubModel implements ChatModel {
       opts.effort ? `effort=${opts.effort}` : '',
       system.includes('Socratic tutor') ? 'rule=socratic' : '',
       system.startsWith('You are Hana') ? 'persona=hana' : '',
-      ((m) => (m ? `ctx=${m[1]}` : ''))(system.match(/Their open homework, soonest due first: #\d+ (.+?) — /)),
+      ((m) => (m ? `ctx=${m[1]}` : ''))(system.match(/Their open homework, soonest due first: (.+?) — /)),
       system.includes('Their open homework, soonest due first:') ? `due=${system.match(/ — (overdue|due today|due tomorrow|due [A-Z][a-z]{2} \d+|no due date)/)?.[1] ?? ''}` : '',
       system.includes('What you can see of their day:') ? 'ctx=day' : '',
       system.includes('QUIZ MODE') ? 'quiz=lecture' : '',
