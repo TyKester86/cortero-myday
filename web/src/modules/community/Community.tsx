@@ -647,7 +647,7 @@ function WebTab() {
           </span>
         </a>
       ))}
-      <CaughtUp days={14} />
+      <CaughtUp days={30} />
     </div>
   );
 }

@@ -5,9 +5,16 @@
  * shows a labeled card (publisher, title, a short summary) that links out —
  * MyDay never republishes the article.
  *
- * WEB_FEEDS overrides the list: "key|Publisher|https://feed-url, ..." (tests
- * point it at a local feed). Understood.org has no public feed yet; add it here
- * when it does.
+ * The lineup: CHADD; Child Mind Institute (their feed covers all of children's
+ * mental health, so only ADHD topics are kept); ADDitude through Google News'
+ * RSS (additudemag.com blocks our server's address; Google fetches it instead —
+ * durable fix: ask ADDitude to allowlist us). Understood.org is out: no public
+ * feed, and their terms forbid automated fetching.
+ *
+ * WEB_FEEDS overrides the list: "key|Publisher|https://feed-url|options, ..."
+ * where options (comma-separated, optional) are "adhd" (keep ADHD topics only)
+ * and "gnews" (a Google News feed: strip " - Publisher" from titles, no summary).
+ * Tests point it at local feeds.
  */
 import { asSystem, pool } from '../db.js';
 import { registerJob } from './schedulers.js';
@@ -17,21 +24,34 @@ export interface WebSource {
   key: string;
   publisher: string;
   url: string;
+  /** Keep only ADHD topics (for publishers that cover more than ADHD). */
+  adhdOnly?: boolean;
+  /** A Google News RSS proxy: titles end " - Publisher"; the description is just a link (no summary). */
+  gnews?: boolean;
 }
 
 const DEFAULT_SOURCES: WebSource[] = [
-  { key: 'additude', publisher: 'ADDitude', url: 'https://www.additudemag.com/feed/' },
   { key: 'chadd', publisher: 'CHADD', url: 'https://chadd.org/feed/' },
+  { key: 'childmind', publisher: 'Child Mind Institute', url: 'https://childmind.org/feed/', adhdOnly: true },
+  { key: 'additude', publisher: 'ADDitude', url: 'https://news.google.com/rss/search?q=site:additudemag.com&hl=en-US&gl=US&ceid=US:en', gnews: true },
 ];
+
+/** ADHD topics: ADHD / ADD (as words, any case for ADHD, upper-case ADD), attention, focus, executive function. */
+export function isAdhdTopic(text: string): boolean {
+  return /\badhd\b/i.test(text) || /\bADD\b/.test(text) || /\b(attention|focus(ed|ing)?|executive function(s|ing)?)\b/i.test(text);
+}
 
 export function webSources(): WebSource[] {
   const raw = process.env.WEB_FEEDS?.trim();
   if (!raw) return DEFAULT_SOURCES;
   return raw
-    .split(',')
+    .split(/,(?=\s*[\w-]+\|)/)
     .map((s) => s.trim().split('|'))
-    .filter((p): p is [string, string, string] => p.length === 3 && /^https?:\/\//.test(p[2] ?? ''))
-    .map(([key, publisher, url]) => ({ key: key.trim(), publisher: publisher.trim(), url: url.trim() }));
+    .filter((p) => (p.length === 3 || p.length === 4) && /^https?:\/\//.test(p[2] ?? ''))
+    .map(([key = '', publisher = '', url = '', opts = '']) => {
+      const o = opts.split(/[\s,;]+/);
+      return { key: key.trim(), publisher: publisher.trim(), url: url.trim(), adhdOnly: o.includes('adhd'), gnews: o.includes('gnews') };
+    });
 }
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“' };
@@ -87,7 +107,12 @@ export async function refreshWebFeeds(): Promise<{ added: number; hidden: number
       console.error('web feed fetch failed', src.key, e instanceof Error ? e.message : e);
       continue;
     }
-    for (const it of parseFeed(xml).slice(0, 20)) {
+    // Newest first (a Google News feed isn't in date order), then the publisher-specific clean-up.
+    const items = parseFeed(xml)
+      .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
+      .map((it) => (src.gnews ? { ...it, title: it.title.replace(new RegExp(`\\s+[-–—]\\s+${src.publisher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`), ''), summary: '' } : it))
+      .filter((it) => !src.adhdOnly || isAdhdTopic(`${it.title} ${it.summary}`));
+    for (const it of items.slice(0, 20)) {
       const { rowCount } = await asSystem(() => pool.query('SELECT 1 FROM web_items WHERE url = $1', [it.url]));
       if (rowCount) continue;
       const s = await screenText(`${it.title}\n\n${it.summary}`);

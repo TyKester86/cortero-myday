@@ -111,6 +111,23 @@ const PHISH = `http://127.0.0.1:${phishServer.address().port}`;
 // "Around the Web": a fake publisher RSS feed — one good article, one with dosage advice (must be screened out), one non-https link (skipped).
 const rssServer = createHttp((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
+  const day = (n) => new Date(Date.now() - n * 86400000).toUTCString();
+  // A publisher that covers more than ADHD (like Child Mind Institute): only the ADHD item is kept.
+  if (req.url.startsWith('/mind')) {
+    res.end(`<?xml version="1.0"?><rss version="2.0"><channel><title>Test Mind</title>
+<item><title>Teaching kids about consent</title><link>https://mind.example/consent</link><pubDate>${day(1)}</pubDate><description>Conversations at home.</description></item>
+<item><title>Treating ADHD with methylphenidate</title><link>https://mind.example/adhd-meds</link><pubDate>${day(2)}</pubDate><description>What parents should know.</description></item>
+</channel></rss>`);
+    return;
+  }
+  // A Google News RSS proxy (like ADDitude's): " - Publisher" on titles, a link as the description, not in date order.
+  if (req.url.startsWith('/gnews')) {
+    res.end(`<?xml version="1.0"?><rss version="2.0"><channel><title>site:news.example - Google News</title>
+<item><title>Old piece on ADHD - Test News</title><link>https://news.google.example/rss/articles/OLD</link><pubDate>${day(400)}</pubDate><description>&lt;a href="https://news.google.example/rss/articles/OLD"&gt;Old piece&lt;/a&gt;&amp;nbsp;&lt;font color="#6f6f6f"&gt;Test News&lt;/font&gt;</description></item>
+<item><title>Using a dopamine menu - Test News</title><link>https://news.google.example/rss/articles/NEW</link><pubDate>${day(3)}</pubDate><description>&lt;a href="https://news.google.example/rss/articles/NEW"&gt;Using a dopamine menu&lt;/a&gt;&amp;nbsp;&lt;font color="#6f6f6f"&gt;Test News&lt;/font&gt;</description></item>
+</channel></rss>`);
+    return;
+  }
   res.end(`<?xml version="1.0"?><rss version="2.0"><channel><title>Test Publisher</title>
 <item><title>Five calm-morning routines that actually stick</title><link>https://publisher.example/calm-mornings</link><pubDate>${new Date(Date.now() - 86400000).toUTCString()}</pubDate><description><![CDATA[<p>Visual checklists, a launch pad by the door &amp; fewer decisions before 8am.</p><p>The post Five calm-morning routines appeared first on Test Publisher.</p>]]></description></item>
 <item><title>Just double the dose: 40mg is fine</title><link>https://publisher.example/dose</link><pubDate>${new Date().toUTCString()}</pubDate><description>Bad advice.</description></item>
@@ -118,7 +135,8 @@ const rssServer = createHttp((req, res) => {
 </channel></rss>`);
 });
 await new Promise((r) => rssServer.listen(0, '127.0.0.1', r));
-const RSS = `http://127.0.0.1:${rssServer.address().port}/rss`;
+const RSS_BASE = `http://127.0.0.1:${rssServer.address().port}`;
+const RSS = `${RSS_BASE}/rss`;
 let robotChromium = '';
 try {
   robotChromium = createRequire(path.join(root, 'package.json'))('playwright').chromium.executablePath();
@@ -161,7 +179,7 @@ const serverEnv = (fakeNow) => ({
   GROCERY_STUB: '1',
   FLIGHT_STUB: '1',
   ROBOT_STUB: '1',
-  WEB_FEEDS: `testpub|Test Publisher|${RSS}`,
+  WEB_FEEDS: `testpub|Test Publisher|${RSS},testmind|Test Mind|${RSS_BASE}/mind|adhd,testnews|Test News|${RSS_BASE}/gnews|gnews`,
   ROBOT_ALLOW_LOCAL: '1',
   ...(robotChromium ? { ROBOT_CHROMIUM: robotChromium } : {}),
   ERROR_WEBHOOK_URL: ALERT_URL,
@@ -2099,10 +2117,14 @@ async function careTeam() {
   await sql('UPDATE social_posts SET created_at = now() WHERE id = $1', [samPost.id]);
   eq('only moderators can pull the publisher feeds', (await ty.post('/api/feed/web/refresh')).status, 403);
   let wr = (await cmod.post('/api/feed/web/refresh')).data;
-  eq('Around the Web: new articles stored; the one with dosage advice is screened out; a non-https link is skipped', [wr.added, wr.hidden], [2, 1]);
+  eq('Around the Web: new articles stored; the one with dosage advice is screened out; a non-https link is skipped', [wr.added, wr.hidden], [5, 1]);
   let web = (await ty.get('/api/feed/web')).data.items;
-  eq('…grown-ups see the screened article as a labeled link-out', web.map((w) => [w.publisher, w.title, w.url]), [['Test Publisher', 'Five calm-morning routines that actually stick', 'https://publisher.example/calm-mornings']]);
-  eq('…with a short clean summary (no HTML, no “appeared first on”)', web[0].summary, 'Visual checklists, a launch pad by the door & fewer decisions before 8am.');
+  const pub = web.find((w) => w.publisher === 'Test Publisher');
+  eq('…grown-ups see the screened article as a labeled link-out', [pub?.title, pub?.url, web.some((w) => /double the dose/i.test(w.title))], ['Five calm-morning routines that actually stick', 'https://publisher.example/calm-mornings', false]);
+  eq('…with a short clean summary (no HTML, no “appeared first on”)', pub.summary, 'Visual checklists, a launch pad by the door & fewer decisions before 8am.');
+  eq('a publisher that covers more than ADHD: only ADHD topics are kept', web.filter((w) => w.publisher === 'Test Mind').map((w) => w.title), ['Treating ADHD with methylphenidate']);
+  const gnItem = web.find((w) => w.publisher === 'Test News');
+  eq('a Google News proxy feed: clean title, no link-text “summary”, newest only, link-out kept', [gnItem?.title, gnItem?.summary, gnItem?.url, web.some((w) => w.title === 'Old piece on ADHD')], ['Using a dopamine menu', '', 'https://news.google.example/rss/articles/NEW', false]);
   eq('…read again: nothing duplicated', (await cmod.post('/api/feed/web/refresh')).data.added, 0);
   eq('kids get no trace of it', (await avery.get('/api/feed/web')).status, 403);
   const tyName = (await ty.get('/api/community/me')).data.profile.displayName;

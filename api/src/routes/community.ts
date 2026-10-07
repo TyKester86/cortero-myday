@@ -662,12 +662,12 @@ communityStaffRouter.post('/api/village/posts/:id/trusted', async (req, res) => 
   res.json(await threadView(by ?? 0, reply.thread_id));
 });
 
-/** Around the Web: trusted publishers' articles (screened), newest first, the last two weeks. */
+/** Around the Web: trusted publishers' articles (screened), newest first, the last 30 days (publishers post less often than people). */
 communityRouter.get('/api/feed/web', async (req, res) => {
   await member(req);
   const { rows } = await pool.query<{ id: number; publisher: string; title: string; summary: string; url: string; published_at: Date }>(
     `SELECT id, publisher, title, summary, url, published_at FROM web_items
-      WHERE status = 'visible' AND published_at > now() - interval '14 days' ORDER BY published_at DESC LIMIT 30`,
+      WHERE status = 'visible' AND published_at > now() - interval '30 days' ORDER BY published_at DESC LIMIT 30`,
   );
   const items: WebItem[] = rows.map((r) => ({ id: r.id, publisher: r.publisher, title: r.title, summary: r.summary, url: r.url, publishedAt: r.published_at.toISOString() }));
   res.json({ items });
