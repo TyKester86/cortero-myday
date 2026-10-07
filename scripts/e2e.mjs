@@ -1717,13 +1717,18 @@ async function careTeam() {
   eq('every medical entry: a summary, a dated source, and a link to CDC / NIMH / NICE / a DOI', medIssues, []);
   const bookDir = path.join(root, 'api', 'content', 'book');
   eq('no copyright boilerplate in the chapter files', readdirSync(bookDir).filter((f) => /All rights reserved|ISBN|Copyright ©/i.test(readFileSync(path.join(bookDir, f), 'utf8'))), []);
-  const askLib = async (message) => (await kayla.post('/api/chat/companion', { message, clientId: `lib-${randomBytes(4).toString('hex')}` })).data.reply.text;
-  check('a question the book answers → Hana gets the book passages', /library=book/.test(await askLib('What is the Men’s Executive Command System?')));
-  const fish = await askLib('Does fish oil help ADHD symptoms?');
-  check('a question the medical reference answers → Hana gets it', /library=medical/.test(fish) && !/library=book/.test(fish), fish.slice(0, 200));
-  const both = await askLib('Is ADHD medication safe, and what does research say about stimulants?');
+  const askAs = async (who, message) => (await who.post('/api/chat/companion', { message, clientId: `lib-${randomBytes(4).toString('hex')}` })).data.reply.text;
+  check('a question the book answers → Hana gets the book passages', /library=book/.test(await askAs(kayla, 'What is the Men’s Executive Command System?')));
+  check('a follow-up still has the passages her last answers used (so she never “un-cites” them)', /library=book/.test(await askAs(kayla, 'Thanks! Can you say that more simply?')));
+  await ty.del('/api/chat/companion');
+  const fish = await askAs(ty, 'Does fish oil help ADHD symptoms?');
+  check('a question the medical reference answers → Hana gets it (fresh conversation)', /library=medical/.test(fish) && !/library=book/.test(fish), fish.slice(0, 200));
+  await ty.del('/api/chat/companion');
+  const both = await askAs(ty, 'Is ADHD medication safe, and what does research say about stimulants?');
   check('a question needing both → book and medical reference together', /library=book/.test(both) && /library=medical/.test(both), both.slice(0, 200));
-  check('outside the library → told nothing matched (so she says what she doesn’t know)', /library=none/.test(await askLib('What is the capital of France?')));
+  await ty.del('/api/chat/companion');
+  const outside = await askAs(ty, 'What is the capital of France?');
+  check('outside the library (fresh conversation) → told nothing matched (so she says what she doesn’t know)', /library=none/.test(outside), outside.slice(0, 200));
 
   section('Hana’s tool list passes the real API’s rules (the stand-in model can’t catch these)');
   // Oct 2026: a nullable enum and then a 21st strict tool each made EVERY real chat fail with a 400.

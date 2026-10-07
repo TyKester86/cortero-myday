@@ -187,9 +187,16 @@ export function citeMedical(e: MedicalEntry): string {
   return e.source;
 }
 
-/** The library excerpts for Hana's system prompt (book first, then the medical reference). */
-export function libraryBrief(question: string): string {
-  const { book, medical } = searchLibrary(question);
+/**
+ * The library excerpts for Hana's system prompt (book first, then the medical
+ * reference): passages for this message plus the last couple of questions, so
+ * a follow-up still sees what her earlier answers were based on.
+ */
+export function libraryBrief(question: string, earlier: string[] = []): string {
+  const now = searchLibrary(question);
+  const before = earlier.slice(-2).map((q) => searchLibrary(q, { book: 2, medical: 2 }));
+  const book = [...new Set([...now.book, ...before.flatMap((b) => b.book)])].slice(0, 6);
+  const medical = [...new Set([...now.medical, ...before.flatMap((b) => b.medical)])].slice(0, 6);
   if (!book.length && !medical.length) return '';
   const parts: string[] = [];
   if (book.length) {
