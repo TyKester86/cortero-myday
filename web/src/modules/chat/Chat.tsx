@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatAttachment, ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
-import { api, useLoad } from '../../api';
+import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import Markdown from '../../components/Markdown';
 import { HanaFace } from '../../components/NavIcon';
@@ -67,9 +67,11 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   const { data, error, setData } = useLoad<ChatState>(`/api/chat/${mode}`);
   const [msg, setMsg] = useState('');
   // The message on its way: shown at once, and the Send button is off until it lands.
-  const [pending, setPending] = useState<{ text: string; clientId: string; files: Draft[] } | null>(null);
+  const [pending, setPending] = useState<{ text: string; clientId: string; files: Draft[]; retryId?: number } | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // The household used today's Hana messages (Solo/Family): grown-ups get a way to unlimited.
+  const [capped, setCapped] = useState(false);
   // Why Hana couldn't answer a message (by its id), shown under it until it's retried.
   const [failNote, setFailNote] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<number | null>(null);
@@ -149,9 +151,9 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   };
 
   /** Send (or retry: same clientId, so the server reuses the message instead of saving a copy). */
-  const deliver = async (text: string, clientId: string, files: Draft[] = []): Promise<void> => {
+  const deliver = async (text: string, clientId: string, files: Draft[] = [], retryId?: number): Promise<void> => {
     if (pending) return; // one at a time — a second tap or Enter does nothing
-    setPending({ text, clientId, files });
+    setPending({ text, clientId, files, retryId });
     setErr(null);
     setPicked(null);
     setFailNote(({ [clientId]: _gone, ...rest }) => rest);
@@ -160,6 +162,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
       const r = await api<ChatSendResponse>(`/api/chat/${mode}`, 'POST', {
         message: text,
         clientId,
+        ...(retryId ? { retryId } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(lectureId ? { lectureId: Number(lectureId) } : {}),
       });
@@ -173,8 +176,9 @@ export default function Chat({ mode }: { mode: ChatMode }) {
         setData({ ...data, history: fresh.history });
         setFailNote((n) => ({ ...n, [clientId]: why }));
       } else {
-        // It never reached the server (offline): put it back to send again.
+        // It never reached the server (offline, or today's Hana messages are used up): put it back to send again.
         setErr(why);
+        setCapped(e2 instanceof ApiFail && e2.code === 'hana_daily_limit');
         setMsg(text);
         setDrafts((d) => [...files, ...d]);
       }
@@ -245,7 +249,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
         {data.history.map((m, i) => {
           const mine = m.who === 'user';
           const firstOfRun = !mine && data.history[i - 1]?.who !== 'hana';
-          const sendingThis = pending?.clientId === m.clientId && m.clientId !== null;
+          const sendingThis = (pending?.clientId === m.clientId && m.clientId !== null) || (pending?.retryId !== undefined && pending.retryId === m.id);
           return (
             <div key={m.id} className={`msg ${mine ? 'me' : 'hana'}${m.failed && !sendingThis ? ' failed' : ''}`} data-testid={mine ? 'msg-me' : 'msg-hana'}>
               {!mine && (firstOfRun ? <HanaFace size={28} /> : <span className="face-gap" />)}
@@ -260,7 +264,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
                 {mine && m.failed && !sendingThis && (
                   <div className="msg-failed" role="alert" data-testid="msg-failed">
                     <span>{failNote[m.clientId ?? ''] ?? 'Hana couldn’t answer this one.'}</span>
-                    <button className="link small" disabled={pending !== null} onClick={() => void deliver(m.text, m.clientId ?? newClientId())} data-testid="msg-retry">
+                    <button className="link small" disabled={pending !== null} onClick={() => void deliver(m.text, m.clientId ?? newClientId(), [], m.clientId ? undefined : m.id)} data-testid="msg-retry">
                       Retry
                     </button>
                   </div>
@@ -278,7 +282,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
         })}
         {pending && (
           <>
-            {!data.history.some((m) => m.clientId === pending.clientId) && (
+            {!data.history.some((m) => m.clientId === pending.clientId || m.id === pending.retryId) && (
               <div className="msg me sending">
                 <div className="msg-body">
                   {pending.files.length > 0 && (
@@ -323,6 +327,15 @@ export default function Chat({ mode }: { mode: ChatMode }) {
           </div>
         ))}
         {err && <p className="error">{err}</p>}
+        {capped && me.member?.kind === 'adult' && (
+          <div className="card" data-testid="hana-upgrade">
+            <b>Want more Hana?</b>
+            <p className="small">Family+ has unlimited Hana for the whole household.</p>
+            <a className="btn small" href="/billing">
+              See Family+
+            </a>
+          </div>
+        )}
         <div ref={end} className="chat-end" />
       </div>
       <form className="chat-send" onSubmit={send} ref={bar} data-testid="chat-bar">

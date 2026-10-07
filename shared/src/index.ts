@@ -1987,7 +1987,7 @@ export interface BillingPlan {
   interval: 'month' | 'year';
   active: boolean;
   isDefault: boolean;
-  tier: 'family' | 'familyplus';
+  tier: 'solo' | 'family' | 'familyplus';
   /** The founding price (first households on Family), kept for life by whoever holds it. */
   founding: boolean;
 }
@@ -1996,7 +1996,7 @@ export interface BillingPlan {
 export interface BillingOption {
   planId: number;
   name: string;
-  tier: 'family' | 'familyplus';
+  tier: 'solo' | 'family' | 'familyplus';
   interval: 'month' | 'year';
   priceCents: number;
   currency: string;
@@ -2016,6 +2016,12 @@ export interface BillingResponse {
   canManage: boolean;
   /** What this household can choose (founding prices while spots last, or if it already holds one). */
   options: BillingOption[];
+  /** Every tier on offer (Solo included even when this household has too many grown-ups for it), for showing all prices. */
+  catalog: BillingOption[];
+  /** Grown-ups in the household (Solo is for one). */
+  adults: number;
+  /** Hana messages per household per day on the current plan (null = unlimited). */
+  hanaDailyCap: number | null;
   /** Founding spots still open (null when this household already holds the founding price). */
   foundingLeft: number | null;
 }

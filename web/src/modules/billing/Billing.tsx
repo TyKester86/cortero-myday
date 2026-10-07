@@ -64,17 +64,35 @@ export default function Billing() {
         </span>
       </div>
 
-      {data.options.length > 0 && data.status !== 'comped' && data.status !== 'active' && data.status !== 'past_due' && (
-        <PlanPicker options={data.options} tier={t} interval={iv} foundingLeft={data.foundingLeft} onTier={setTier} onInterval={setInterval_} />
+      {data.catalog.length > 0 && (
+        <PlanPicker
+          catalog={data.catalog}
+          options={data.options}
+          adults={data.adults}
+          // Already paying (or complimentary): the prices are shown, but picking happens in “Manage billing”.
+          readOnly={data.status === 'comped' || data.status === 'active' || data.status === 'past_due'}
+          current={plan?.tier ?? null}
+          tier={t}
+          interval={iv}
+          foundingLeft={data.foundingLeft}
+          onTier={setTier}
+          onInterval={setInterval_}
+        />
       )}
 
       <div className="card" data-testid="billing-plan">
         <h2>{data.status === 'active' || data.status === 'past_due' ? 'Your plan' : 'Current plan'}</h2>
         {plan ? (
-          <p>
-            <b>{plan.name}</b> — one price for the whole household ·{' '}
-            {plan.priceCents === null ? <span className="muted">price not set yet</span> : `${money(plan.priceCents, plan.currency)} / ${plan.interval}`}
-          </p>
+          <>
+            <p>
+              <b>{plan.name}</b> — {plan.tier === 'solo' ? 'for one grown-up' : 'one price for the whole household'} ·{' '}
+              {plan.priceCents === null ? <span className="muted">price not set yet</span> : `${money(plan.priceCents, plan.currency)} / ${plan.interval}`}
+              {data.status === 'comped' && <span className="muted"> (complimentary — nothing to pay)</span>}
+            </p>
+            <p className="small muted" data-testid="hana-allowance">
+              Hana: {data.hanaDailyCap === null ? 'unlimited' : `${data.hanaDailyCap} messages a day for the household`}.
+            </p>
+          </>
         ) : (
           <p className="muted">No plan yet.</p>
         )}
@@ -160,17 +178,28 @@ export default function Billing() {
   );
 }
 
-/** Family or Family+, monthly or yearly. Family shows the founding price while spots last. */
+const TIERS: Record<BillingOption['tier'], { label: string; blurb: string }> = {
+  solo: { label: 'Solo', blurb: 'Everything in MyDay for one grown-up. Hana: 50 messages a day.' },
+  family: { label: 'Family', blurb: 'Everything in MyDay for the whole household. Hana: 50 messages a day, shared.' },
+  familyplus: { label: 'Family+', blurb: 'Everything in Family, plus unlimited Hana.' },
+};
+
+/** Solo, Family or Family+, monthly or yearly. Family shows the founding price while spots last. */
 function PlanPicker(p: {
+  catalog: BillingOption[];
   options: BillingOption[];
+  adults: number;
+  readOnly: boolean;
+  current: BillingOption['tier'] | null;
   tier: BillingOption['tier'];
   interval: BillingOption['interval'];
   foundingLeft: number | null;
   onTier: (t: BillingOption['tier']) => void;
   onInterval: (i: BillingOption['interval']) => void;
 }) {
-  const of = (tier: BillingOption['tier'], interval: BillingOption['interval']): BillingOption | undefined => p.options.find((o) => o.tier === tier && o.interval === interval);
-  const tiers = (['family', 'familyplus'] as const).filter((t) => p.options.some((o) => o.tier === t));
+  const of = (tier: BillingOption['tier'], interval: BillingOption['interval']): BillingOption | undefined => p.catalog.find((o) => o.tier === tier && o.interval === interval);
+  const canPick = (tier: BillingOption['tier']): boolean => p.options.some((o) => o.tier === tier);
+  const tiers = (['solo', 'family', 'familyplus'] as const).filter((t) => p.catalog.some((o) => o.tier === t));
   const save = (tier: BillingOption['tier']): string | null => {
     const m = of(tier, 'month');
     const y = of(tier, 'year');
@@ -178,8 +207,8 @@ function PlanPicker(p: {
   };
   return (
     <div className="card" data-testid="plan-picker">
-      <h2>Choose a plan</h2>
-      <p className="small muted">One price for the whole household. Change or cancel any time.</p>
+      <h2>{p.readOnly ? 'Plans' : 'Choose a plan'}</h2>
+      <p className="small muted">{p.readOnly ? 'What each plan costs. To switch, use “Manage billing”.' : 'Change or cancel any time.'}</p>
       <div className="chips" role="group" aria-label="Billing period">
         {(['month', 'year'] as const).map((i) => (
           <button key={i} type="button" className={p.interval === i ? 'chip on' : 'chip'} aria-pressed={p.interval === i} onClick={() => p.onInterval(i)}>
@@ -191,16 +220,19 @@ function PlanPicker(p: {
         {tiers.map((tier) => {
           const o = of(tier, p.interval);
           if (!o) return null;
-          const on = p.tier === tier;
+          const pickable = !p.readOnly && canPick(tier);
+          const on = p.readOnly ? p.current === tier : p.tier === tier && pickable;
           return (
-            <button key={tier} type="button" className={on ? 'plan-opt on' : 'plan-opt'} aria-pressed={on} onClick={() => p.onTier(tier)} data-testid={`plan-${tier}`}>
-              <b>{tier === 'family' ? 'Family' : 'Family+'}</b>
+            <button key={tier} type="button" className={on ? 'plan-opt on' : !p.readOnly && !canPick(tier) ? 'plan-opt off' : 'plan-opt'} aria-pressed={on} disabled={!pickable} onClick={() => p.onTier(tier)} data-testid={`plan-${tier}`}>
+              <b>{TIERS[tier].label}</b>
               <span className="plan-price">
                 {money(o.priceCents, o.currency)} <small>/ {o.interval}</small>
               </span>
               {o.founding && <span className="pill sun">Founding price — yours for life</span>}
               {p.interval === 'year' && save(tier) && <small className="muted">{save(tier)} vs monthly</small>}
-              <small className="muted">{tier === 'family' ? 'Everything in MyDay for the whole household.' : 'Everything in Family.'}</small>
+              <small className="muted">{TIERS[tier].blurb}</small>
+              {p.readOnly && p.current === tier && <span className="pill">Your plan</span>}
+              {!p.readOnly && !canPick(tier) && tier === 'solo' && <small className="muted">For one grown-up — your household has {p.adults}.</small>}
             </button>
           );
         })}

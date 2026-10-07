@@ -116,7 +116,7 @@ A grown-up can open their own day and their kids' days, but never another grown-
 | `APPLE_CLIENT_ID` | Sign in with Apple |
 | `PHOTO_KEY` | Dedicated encryption key for progress photos |
 | `SENTRY_DSN`, `ERROR_WEBHOOK_URL` | Error alerts |
-| `AI_MONTHLY_MESSAGES`, `LECTURE_MONTHLY_MINUTES`, `LECTURES_PER_DAY`, `PHOTOS_PER_DAY`, `SIGNUPS_PER_HOUR` | Fair-use limits (defaults: 1500 / 1200 / 8 / 24 / 5) |
+| `HANA_DAILY_MESSAGES`, `LECTURE_MONTHLY_MINUTES`, `LECTURES_PER_DAY`, `PHOTOS_PER_DAY`, `SIGNUPS_PER_HOUR` | Limits (defaults: 50 Hana messages per household per day on Solo/Family — Family+ unlimited / 1200 / 8 / 24 / 5) |
 
 Uptime monitors should check `/api/health/deep`, which also tests the database.
 

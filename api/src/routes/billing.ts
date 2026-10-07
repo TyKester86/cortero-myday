@@ -29,6 +29,7 @@ import { mergeHouseholds, planMerge as mergePlan } from '../lib/householdMove.js
 import { bool, HttpError, idParam, int, str } from '../lib/http.js';
 import { requireAdult } from '../lib/members.js';
 import { mailOn, sendMail } from '../lib/mail.js';
+import { hanaDailyCap } from '../lib/limits.js';
 import { registerJob } from '../lib/schedulers.js';
 import { statusFrom, stripe, verifyWebhook } from '../lib/stripe.js';
 
@@ -46,7 +47,7 @@ interface PlanRow {
   interval: 'month' | 'year';
   active: boolean;
   is_default: boolean;
-  tier: 'family' | 'familyplus';
+  tier: 'solo' | 'family' | 'familyplus';
   founding: boolean;
   offered: boolean;
   sort: number;
@@ -70,8 +71,11 @@ const toPlan = (r: PlanRow): BillingPlan => ({
   founding: r.founding,
 });
 
-/** The plans a household can pick: Family at the founding price while spots last (or if it already holds it), else regular Family; and Family+. */
-async function optionsFor(h: Pick<HhRow, 'id' | 'plan_id' | 'billing_status'>): Promise<{ options: BillingOption[]; foundingLeft: number | null }> {
+/**
+ * The plans a household can pick: Solo (only with at most one grown-up), Family at the founding price while
+ * spots last (or if it already holds it) else regular Family, and Family+.
+ */
+async function optionsFor(h: Pick<HhRow, 'id' | 'plan_id' | 'billing_status'>): Promise<{ options: BillingOption[]; catalog: BillingOption[]; adults: number; foundingLeft: number | null }> {
   const { rows: plans } = await pool.query<PlanRow>('SELECT * FROM billing_plans WHERE offered AND active AND price_cents IS NOT NULL ORDER BY sort, id');
   const { rows: cur } = await pool.query<{ founding: boolean }>('SELECT founding FROM billing_plans WHERE id = $1', [h.plan_id]);
   const holdsFounding = !!cur[0]?.founding && ['active', 'past_due', 'canceled'].includes(h.billing_status);
@@ -81,10 +85,13 @@ async function optionsFor(h: Pick<HhRow, 'id' | 'plan_id' | 'billing_status'>): 
   );
   const left = Math.max(0, FOUNDING_LIMIT() - (used[0]?.n ?? 0));
   const founding = holdsFounding || left > 0;
-  const options = plans
+  const { rows: grownUps } = await pool.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM household_members WHERE household_id = $1 AND kind = 'adult' AND archived_at IS NULL", [h.id]);
+  const adults = grownUps[0]?.n ?? 0;
+  const catalog = plans
     .filter((p) => (p.tier === 'family' ? p.founding === founding : !p.founding))
     .map((p): BillingOption => ({ planId: p.id, name: p.name, tier: p.tier, interval: p.interval, priceCents: p.price_cents ?? 0, currency: p.currency, founding: p.founding }));
-  return { options, foundingLeft: holdsFounding ? null : left };
+  const options = catalog.filter((o) => o.tier !== 'solo' || adults <= 1);
+  return { options, catalog, adults, foundingLeft: holdsFounding ? null : left };
 }
 
 const monthly = (p: Pick<PlanRow, 'price_cents' | 'interval'> | null): number =>
@@ -119,9 +126,12 @@ async function billingFor(householdId: number, canManage: boolean): Promise<Bill
       [h.plan_id],
     );
     const left = h.trial_ends_at ? Math.max(0, Math.ceil((h.trial_ends_at.getTime() - Date.now()) / 86_400_000)) : null;
-    const { options, foundingLeft } = await optionsFor(h);
+    const { options, catalog, adults, foundingLeft } = await optionsFor(h);
     return {
       options,
+      catalog,
+      adults,
+      hanaDailyCap: (await hanaDailyCap(householdId)).cap,
       foundingLeft,
       plan: p[0] ? toPlan(p[0]) : null,
       status: displayStatus(h.billing_status, h.trial_ends_at),

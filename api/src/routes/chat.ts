@@ -15,11 +15,11 @@ import { decideAction, hanaKit, pendingActions } from '../lib/hana.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
 import { rateLimiter } from '../lib/pin.js';
-import { checkAiMonthly } from '../lib/limits.js';
+import { checkHanaDaily } from '../lib/limits.js';
 import { requireAiConsent } from './account.js';
 import { chatModel, turnText, type ChatTurn } from '../lib/ai.js';
-import { dailyScore, trackOf } from '../lib/adult.js';
-import { activeDates, computeStreak } from '../lib/streak.js';
+import { trackOf } from '../lib/adult.js';
+import { hanaStats, REWRITE_SYSTEM, STATS_RULE, statsLine, stripWrongStats, wrongStats, type HanaStats } from '../lib/hanaStats.js';
 import { isoToWeekday } from '../lib/dates.js';
 import { libraryBrief } from '../lib/library.js';
 import { attachmentInfo, loadAttachments, type LoadedAttachment } from './chatFiles.js';
@@ -85,7 +85,7 @@ function withAttachments(text: string, files: LoadedAttachment[]): ChatTurn['con
 }
 
 /** chatDayContext_: what Hana can see. */
-async function dayContext(me: HouseholdMember, mode: ChatMode): Promise<string> {
+async function dayContext(me: HouseholdMember, mode: ChatMode, stats: HanaStats | null): Promise<string> {
   const t = today();
   const bits: string[] = [];
   if (mode === 'tutor' && me.kind === 'kid') {
@@ -104,11 +104,7 @@ async function dayContext(me: HouseholdMember, mode: ChatMode): Promise<string> 
     if (open.length) bits.push(open.map((r) => r.task).join('; '));
     return bits.join('. ');
   }
-  const track = await trackOf(me.id);
-  const score = await dailyScore(me.id, track, t);
-  bits.push(`Today score ${score.total}/100`);
-  const streak = computeStreak(await activeDates(me.id), t);
-  if (streak.current) bits.push(`streak ${streak.current} days`);
+  if (stats) bits.push(statsLine(stats));
   if (open.length) bits.push(`Open tasks today: ${open.map((r) => `#${r.id} ${r.task}`).join('; ')}`);
   const { rows: bills } = await pool.query<{ id: number; name: string; amount: string }>('SELECT id, name, amount FROM bills WHERE member_id = $1 ORDER BY id LIMIT 20', [me.id]);
   if (bills.length) bits.push(`Tracked bills: ${bills.map((b) => `#${b.id} ${b.name} $${Number(b.amount)}`).join('; ')}`);
@@ -172,6 +168,7 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     (ctx ? `What you can see of their day: ${ctx}. ` : '') +
     'Be brief (under 120 words unless they ask for more), concrete, encouraging. ADHD-friendly: one clear next step, no ' +
     'lectures, no shame. Reference their day when useful. Never invent data you were not given. ' +
+    `${STATS_RULE} ` +
     'You are their personal assistant and can act in MyDay with your tools: tasks, groceries, notes, homework, workouts, bills, ' +
     'the shared household calendar (add and read events), push reminders at a time ("remind me at 5 to…"), planning meals from ' +
     'the recipe library, kids’ chores, how the kids are doing, a read-only money picture, sending the grocery list to Instacart or their Kroger cart, searching flights with booking links, and errands on websites in a real browser with their saved logins (run_errand: reorder, check an order, book a table) — anything that spends money waits for their OK, so never say something was bought or booked until the errand says it was. When they ask you to do something, ' +
@@ -220,7 +217,7 @@ export function libraryInstructions(message: string, earlier: string[] = []): st
 
 chatRouter.post('/api/chat/:mode', async (req, res) => {
   const { me, mode } = await modeFor(req);
-  const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown; attachmentIds?: unknown };
+  const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown; attachmentIds?: unknown; retryId?: unknown };
   const wanted = Array.isArray(body.attachmentIds) ? [...new Set(body.attachmentIds.map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))] : [];
   if (wanted.length > 4) throw new HttpError(400, 'Up to 4 attachments per message');
   if (wanted.length && mode !== 'companion') throw new HttpError(400, 'Attachments are for Ask Hana');
@@ -228,13 +225,19 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   const clientId = typeof body.clientId === 'string' && /^[\w-]{8,64}$/.test(body.clientId) ? body.clientId : null;
   // Under 13: a parent turns the homework helper on first (it sends the child's words to an AI provider).
   if (mode === 'tutor') await requireAiConsent(me);
-  await checkAiMonthly();
+  await checkHanaDaily(req.householdId ?? 0, me.kind === 'adult' ? 'adult' : 'kid');
   const model = chatModel();
   if (!model) throw new HttpError(503, 'Ask Hana needs a grown-up to finish setting it up');
   if (!chatLimit(String(me.id))) throw new HttpError(429, "That's a lot of questions — take a breather and try again soon");
 
   // One row per message: a retry (same clientId) reuses it instead of saving a copy.
   let rowId: number;
+  // Retry of an older message that has no client id yet (sent before ids existed): it takes this one, so it's retried in place.
+  if (clientId && body.retryId !== undefined && body.retryId !== null) {
+    await pool.query("UPDATE chat_messages SET client_id = $4 WHERE id = $1 AND member_id = $2 AND mode = $3 AND who = 'user' AND failed AND client_id IS NULL", [
+      idParam(body.retryId), me.id, mode, clientId,
+    ]);
+  }
   const existing = clientId
     ? (await pool.query<{ id: number; failed: boolean }>("SELECT id, failed FROM chat_messages WHERE member_id = $1 AND mode = $2 AND client_id = $3 AND who = 'user'", [me.id, mode, clientId])).rows[0]
     : undefined;
@@ -283,7 +286,9 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   // The API wants the first turn from the user.
   while (turns[0]?.role === 'assistant') turns.shift();
 
-  let system = await systemPrompt(me, mode, await dayContext(me, mode));
+  // Live numbers (never the model's): in the prompt, and checked against the reply below.
+  const stats = mode === 'companion' ? await hanaStats(me) : null;
+  let system = await systemPrompt(me, mode, await dayContext(me, mode, stats));
   // B3: the tutor can quiz from one of the student's own lectures.
   if (mode === 'tutor' && body.lectureId !== undefined && body.lectureId !== null) {
     const material = await lectureMaterial(me.id, idParam(body.lectureId));
@@ -310,6 +315,17 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     throw e;
   }
   console.log(`chat: send ${mode} member=${me.id} model=${model.kind === 'claude' ? process.env.CHAT_MODEL || 'claude-opus-5-5' : 'stub'} ms=${Date.now() - started} ok actions=${actions.length}`);
+  // Personal numbers in the reply must be the real ones (before or after this turn's actions): else fix them before anyone sees it.
+  if (stats) {
+    const snaps = actions.length ? [stats, await hanaStats(me)] : [stats];
+    const bad = wrongStats(text, snaps);
+    if (bad.length) {
+      console.warn(`chat: corrected unverified stats member=${me.id} ${bad.map((b) => b.kind).join(',')}`);
+      const now = snaps[snaps.length - 1] as HanaStats;
+      const fixed = await model.reply(REWRITE_SYSTEM(now), [{ role: 'user', content: text }], 700).catch(() => '');
+      text = fixed && !wrongStats(fixed, snaps).length ? fixed : stripWrongStats(text, now, snaps);
+    }
+  }
   await logEvent('hana_asked', { mode, actions: actions.length }, me.id);
   const { rows } = await pool.query<MsgRow>(
     `INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING ${MSG_COLS}`,

@@ -174,6 +174,9 @@ class StubModel implements ChatModel {
     const lastTurn = messages[messages.length - 1];
     const last = lastTurn ? turnText(lastTurn) : '';
     const blocks = lastTurn && typeof lastTurn.content !== 'string' ? lastTurn.content : [];
+    // Tests: a model that makes up the person's numbers, and (rewrite pass) fails to fix them.
+    if (system.startsWith('You correct one message')) return last;
+    if (last.includes('__stub_fabricate__')) return 'Great work today! Your score is 99 and you’re on a 12-day streak. You have 5000 XP. Want to plan tomorrow?';
     if (last.includes('__stub_markdown__')) return ['Here is a plan:', '', '**Tonight:** lay out clothes.', '', '- Pack the bag', '- Shoes by the door', '', '1. Wake up', '2. *Breakfast*', '', 'That’s it.'].join('\n');
     if (last.includes('__stub_slow__')) await new Promise((r) => setTimeout(r, 1500));
     if (last.includes(STUB_FAIL) && !stubFailedOnce.has(last)) {
@@ -192,6 +195,7 @@ class StubModel implements ChatModel {
       system.includes('FROM THE BOOK') ? 'library=book' : '',
       system.includes('FROM THE MEDICAL REFERENCE') ? 'library=medical' : '',
       system.includes('No library passages matched') ? 'library=none' : '',
+      system.includes('VERIFIED STATS (live from MyDay') && system.includes('PERSONAL NUMBERS:') ? 'stats=verified' : '',
       blocks.some((b) => b.type === 'image') ? `images=${blocks.filter((b) => b.type === 'image').length}` : '',
       blocks.some((b) => b.type === 'document') ? `pdfs=${blocks.filter((b) => b.type === 'document').length}` : '',
       blocks.some((b) => b.type === 'text' && b.text.startsWith('Attached file')) ? 'textfile' : '',

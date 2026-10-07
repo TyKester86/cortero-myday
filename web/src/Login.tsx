@@ -188,7 +188,7 @@ export default function Login() {
 const FEATURES: Array<[string, string, string]> = [
   ['✅', 'Chores and homework kids actually do', 'Points, quests and rewards they choose — and a grown-up approves. Nothing hangs over anyone.'],
   ['🌅', 'A calmer day for grown-ups', 'A morning check-in, your three most important tasks, and a two-minute evening close-out.'],
-  ['🍽', 'Meals → groceries in one tap', '233 recipes with pictures from 25 countries. Plan the week and the shopping list builds itself.'],
+  ['🍽', 'Meals → groceries in one tap', '233 recipes with pictures from 25 cuisines. Plan the week and the shopping list builds itself.'],
   ['💪', 'A year of training that fits you', 'Nine evidence-based builds, 52 planned weeks, safe calorie and protein math — and teen-safe by default.'],
   ['🎙', 'Class notes that teach organizing', 'Record a lecture, even offline. Get structured notes, flashcards and the homework that was mentioned.'],
   ['💬', 'Hana, a helper that does things', 'Ask in plain words: add a task, a grocery, move a workout. She always asks before changing anything big.'],

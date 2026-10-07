@@ -23,6 +23,7 @@ import { addDays, localToInstant, today, weekdayToIso } from './dates.js';
 import { logEvent } from './events.js';
 import { HttpError } from './http.js';
 import { listMembers } from './members.js';
+import { hanaStats, statsLine } from './hanaStats.js';
 
 interface ToolDef<S extends z.ZodType> {
   name: string;
@@ -416,6 +417,16 @@ export const HANA_TOOLS = [
     },
   }),
   def({
+    name: 'my_stats',
+    description:
+      "This person's own live numbers from MyDay: today's score (and what it's made of), current and longest streak, XP and level, tasks done/open today. Call it before stating any of these numbers if the conversation has gone on a while.",
+    destructive: false,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, required: [], additionalProperties: false },
+    summary: () => 'Check your numbers',
+    run: async (me) => statsLine(await hanaStats(me)),
+  }),
+  def({
     name: 'kids_overview',
     description: "How the household's kids are doing today: chores done, points, homework open/overdue, reward requests, last sign-in.",
     destructive: false,
@@ -571,6 +582,7 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   }
   if ((x = m.match(/^errand on ([^:]{2,60}):\s*(.{4,})$/i))) return [{ name: 'run_errand', input: { site: x[1], goal: x[2] } }];
   if (/^how are the kids/i.test(m)) return [{ name: 'kids_overview', input: {} }];
+  if (/^what['’]?s my (?:score|streak|xp|level)/i.test(m)) return [{ name: 'my_stats', input: {} }];
   if (/^how['’]?s (?:my|our) money/i.test(m)) return [{ name: 'money_summary', input: {} }];
   if ((x = m.match(/^add homework for (\w+):\s*(.+?)(?: due (\d{4}-\d{2}-\d{2}))?$/i))) {
     return [{ name: 'add_homework', input: { kid_name: x[1], assignment: x[2], subject: '', due: x[3] ?? null } }];

@@ -1689,6 +1689,13 @@ async function careTeam() {
   cr = await ty.post('/api/chat/companion', { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
   ch = cr.data.history;
   eq('Retry → the same message (not a copy) gets its answer', [cr.status, ch.filter((m) => m.text === 'please __stub_fail__ once').length, ch.find((m) => m.clientId === 'e2e-msg-0002').failed, ch.at(-1).who], [200, 1, false, 'hana']);
+  // A message that failed before messages had ids (like the old ones on staging): Retry answers it in place.
+  const tyMe = (await ty.get('/api/me')).data;
+  const [legacy] = await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text, failed) VALUES ($1, $2, 'companion', 'user', 'an old unanswered question', true) RETURNING id", [tyMe.household.id, tyMe.member.id]);
+  cr = await ty.post('/api/chat/companion', { message: 'an old unanswered question', clientId: 'e2e-legacy-0001', retryId: legacy.id });
+  ch = cr.data.history;
+  eq('an old failed message (no id) → Retry answers that same message: no copy, no leftover failure', [cr.status, ch.filter((m) => m.text === 'an old unanswered question').length, ch.find((m) => m.id === legacy.id)?.failed, ch.at(-1).who], [200, 1, false, 'hana']);
+  eq('…someone else can’t claim it', (await kayla.post('/api/chat/companion', { message: 'x', clientId: 'e2e-legacy-0002', retryId: legacy.id })).status === 200 && (await sql('SELECT client_id FROM chat_messages WHERE id = $1', [legacy.id]))[0].client_id, 'e2e-legacy-0001');
   const mineMsg = ch.find((m) => m.clientId === 'e2e-msg-0001');
   eq('nobody else can delete your messages', (await kayla.del(`/api/chat/companion/messages/${mineMsg.id}`)).status, 404);
   ch = (await ty.del(`/api/chat/companion/messages/${mineMsg.id}`)).data.history;
@@ -1841,6 +1848,42 @@ async function careTeam() {
   check('“how are the kids” → a status per kid', /Avery: chores/.test(hr.reply.text) && /Evan: chores/.test(hr.reply.text), hr.reply.text.slice(0, 200));
   hr = await say('how’s my money looking');
   check('“how’s my money” → a read-only money picture', /Accounts:|No bank linked/.test(hr.reply.text), hr.reply.text.slice(0, 200));
+
+  section('Hana never invents your numbers: score, streak, XP and level come from MyDay, and a made-up one is corrected');
+  hr = await say('hello again');
+  check('every message: Hana gets the live numbers (zeros included) and the rule to use only those', /stats=verified/.test(hr.reply.text), hr.reply.text);
+  const real = (await kayla.get('/api/score')).data;
+  hr = await say('what’s my score and streak?');
+  const statsText = hr.reply.text;
+  check(
+    '“what’s my score?” → my_stats reads the real numbers (same as the Score page)',
+    statsText.includes(`today’s score ${real.daily?.total ?? 0}/100`) && statsText.includes(`current streak ${real.streak?.current ?? 0} day`) && statsText.includes(`${real.xp.total} XP — level ${real.xp.level}`),
+    statsText.slice(0, 300),
+  );
+  hr = await say('__stub_fabricate__ how am I doing?');
+  const fixedText = hr.reply.text;
+  check(
+    'a reply that makes up a score, a streak and XP → the made-up numbers never reach the person; the real ones are shown instead',
+    !/score is 99|12-day streak|5000 XP/.test(fixedText) && fixedText.includes(`Your numbers right now: today’s score ${real.daily?.total ?? 0}/100`) && fixedText.includes('Want to plan tomorrow?'),
+    fixedText,
+  );
+  eq('…and the corrected reply is what’s saved in the chat', (await kayla.get('/api/chat/companion')).data.history.at(-1).text, fixedText);
+  const claims = JSON.parse(
+    runNode([
+      '--input-type=module',
+      '-e',
+      `const m = await import('./dist/lib/hanaStats.js');
+       const s = { score: 40, scoreParts: [{ label: 'Check-in', points: 20 }], streak: 0, longestStreak: 3, xp: 120, level: 2, levelTitle: 'Aware', nextLevelAt: 250, tasksDone: 1, tasksOpen: 2 };
+       const t = (x) => m.wrongStats(x, s).map((c) => c.kind + ':' + c.said).join(',');
+       process.stdout.write(JSON.stringify([
+         t('Your score is 60 today.'), t('You scored 40 — nice.'), t('You’re on a 2-day streak!'), t('Your streak is 3 days long.'),
+         t('You have 500 XP.'), t('You’re level 4 now.'), t('Avery’s score is 30.'), t('If you keep a 7-day streak you earn a shield.'),
+         t('Your score is 40 and you have 120 XP.'),
+       ]));
+       process.exit(0);`,
+    ]),
+  );
+  eq('the checker catches made-up numbers in everyday phrasings, and leaves real ones and other people’s alone', claims, ['score:60', '', 'streak:2', '', 'xp:500', 'level:4', '', '', '']);
 
   section('Forward to Hana: a private address; Hana suggests bills, events and tasks; a grown-up adds them');
   eq('kids can’t see the inbox', (await avery.get('/api/inbox')).status, 403);
@@ -2712,10 +2755,59 @@ async function privacyRules() {
   await capC.get(`/dev-login?token=${DEV_TOKEN}&email=cap-user@example.com`);
   await capC.post('/api/households', { householdName: 'Cap House', type: 'solo', yourName: 'Cappy' });
   const capMe = (await capC.get('/api/me')).data;
-  await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text) SELECT $1, $2, 'companion', 'user', 'x' FROM generate_series(1, 1500)", [capMe.household.id, capMe.member.id]);
+  const capHh = capMe.household.id;
+  const fill = (k, when = 'now()') => sql(`INSERT INTO chat_messages (household_id, member_id, mode, who, text, created_at) SELECT $1, $2, 'companion', 'user', 'x', ${when} FROM generate_series(1, $3)`, [capHh, capMe.member.id, k]);
+  eq('a new household is on Family: Hana 50 messages a day, shown on the Billing page', (await capC.get('/api/billing')).data.hanaDailyCap, 50);
+  await fill(49);
+  await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text, failed) VALUES ($1, $2, 'companion', 'user', 'not answered', true)", [capHh, capMe.member.id]);
+  eq('Family: the 50th Hana message of the day goes through (ones Hana couldn’t answer don’t count)', (await capC.post('/api/chat/companion', { message: 'number fifty' })).status, 200);
   const capped = await capC.post('/api/chat/companion', { message: 'one more' });
-  eq('a household’s AI messages are capped per month (1,500 by default) with a friendly reason', [capped.status, capped.data.code], [429, 'monthly_limit']);
+  eq('…the 51st is refused on the server: 50 a day per household, with a friendly reason and an upgrade to Family+', [capped.status, capped.data.code, capped.data.details?.cap, capped.data.details?.upgrade, /switch to Family\+ for unlimited Hana/.test(capped.data.error)], [429, 'hana_daily_limit', 50, 'familyplus', true]);
   eq('…other households aren’t affected', (await ty.post('/api/chat/companion', { message: 'hi' })).status, 200);
+  await sql("UPDATE chat_messages SET created_at = now() - interval '1 day' WHERE household_id = $1", [capHh]);
+  eq('…it resets at midnight (yesterday’s messages don’t count)', (await capC.post('/api/chat/companion', { message: 'a new day' })).status, 200);
+  await fill(60);
+  await sql("UPDATE households SET plan_id = (SELECT id FROM billing_plans WHERE code = 'familyplus-monthly') WHERE id = $1", [capHh]);
+  eq('Family+: unlimited Hana (60 already today, still answered), and the Billing page says so', [(await capC.post('/api/chat/companion', { message: 'plus plan' })).status, (await capC.get('/api/billing')).data.hanaDailyCap], [200, null]);
+  await sql("UPDATE households SET plan_id = (SELECT id FROM billing_plans WHERE code = 'solo-monthly') WHERE id = $1", [capHh]);
+  eq('Solo: 50 a day, like Family', [(await capC.post('/api/chat/companion', { message: 'solo plan' })).data.code, (await capC.get('/api/billing')).data.hanaDailyCap], ['hana_daily_limit', 50]);
+  await sql("UPDATE households SET billing_status = 'comped' WHERE id = $1", [capHh]);
+  eq('a complimentary household isn’t metered', (await capC.post('/api/chat/companion', { message: 'comped' })).status, 200);
+
+  section('one household can never act on another household’s people (chores, curfews, one-on-ones, rewards, homework, kid devices)');
+  const tyHhId = (await ty.get('/api/me')).data.household.id;
+  const [evanRow] = await sql("SELECT id FROM household_members WHERE household_id = $1 AND key = 'evan'", [tyHhId]);
+  const [hwRow] = await sql('SELECT h.id, h.done FROM homework h JOIN household_members m ON m.id = h.member_id WHERE m.household_id = $1 ORDER BY h.id LIMIT 1', [tyHhId]);
+  // A kid sign-in device in Ty's household (for Evan), to try to revoke from the other household.
+  const devClient = new Client('ty-device');
+  devClient.jar = new Map(ty.jar);
+  eq('(set up: a kid device in the first household)', (await devClient.post('/api/household/devices/this', { memberIds: [evanRow.id] })).status, 200);
+  const [devRow] = await sql('SELECT id FROM kid_devices WHERE household_id = $1 AND revoked_at IS NULL ORDER BY id DESC LIMIT 1', [tyHhId]);
+  const curfewBefore = JSON.stringify(await sql('SELECT * FROM curfews WHERE member_id = $1', [evanRow.id]));
+  const counts = async () => (await sql(
+    `SELECT (SELECT COUNT(*)::int FROM chores WHERE member_id = $1) AS chores, (SELECT COUNT(*)::int FROM one_on_ones WHERE child_id = $1) AS ones,
+            (SELECT COUNT(*)::int FROM rewards WHERE member_id = $1) AS rewards, (SELECT COUNT(*)::int FROM kid_device_members WHERE member_id = $1) AS devices`,
+    [evanRow.id],
+  ))[0];
+  const before = await counts();
+  // capC is a grown-up in another household (complimentary now, so nothing else gets in the way).
+  const tries = [
+    await capC.post('/api/chores', { name: 'Intruder chore', memberId: evanRow.id, days: ['Mon'], points: 5 }),
+    await capC.put(`/api/family/curfews/${evanRow.id}`, { curfewWeekday: '23:59' }),
+    await capC.post('/api/family/one-on-ones', { childId: evanRow.id, minutes: 30 }),
+    await capC.post('/api/rewards', { name: 'Intruder reward', cost: 5, memberId: evanRow.id }),
+    await capC.post(`/api/homework/${hwRow.id}/toggle`, { done: !hwRow.done }),
+    await capC.post('/api/household/devices/this', { memberIds: [evanRow.id] }),
+  ].map((r) => r.status);
+  eq('every attempt is refused (their kid, homework and devices don’t exist from another household)', tries.every((st) => st >= 400 && st < 500), true);
+  if (devRow) await capC.del(`/api/household/devices/${devRow.id}`);
+  eq('…and nothing changed: no chore, curfew, one-on-one, reward or device for their kid; homework untouched; device still active', [
+    JSON.stringify(await counts()) === JSON.stringify(before),
+    JSON.stringify(await sql('SELECT * FROM curfews WHERE member_id = $1', [evanRow.id])) === curfewBefore,
+    (await sql('SELECT done FROM homework WHERE id = $1', [hwRow.id]))[0].done === hwRow.done,
+    devRow ? (await sql('SELECT revoked_at FROM kid_devices WHERE id = $1', [devRow.id]))[0].revoked_at === null : true,
+  ], [true, true, true, true]);
+  check('(the test had a kid device to try)', !!devRow);
   const big = await avery.req('POST', `/api/lectures/upload?classId=${(await avery.get('/api/school')).data.classes.find((c) => c.name === 'Biology').id}&durationS=60`, Buffer.alloc(26 * 1024 * 1024, 1), { json: false, headers: { 'Content-Type': 'audio/webm', 'X-MyDay-Upload': '1' } });
   eq('lecture uploads stream to disk and stop at 25 MB', big.status, 413);
 
@@ -2741,12 +2833,14 @@ async function stripeBilling() {
   const { createServer } = await import('node:http');
   const { createHmac } = await import('node:crypto');
   const calls = [];
+  let customers = 0;
   const fake = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       calls.push({ path: req.url, auth: req.headers.authorization, body: new URLSearchParams(body) });
-      const out = req.url === '/v1/customers' ? { id: 'cus_test1' } : req.url === '/v1/checkout/sessions' ? { id: 'cs_1', url: 'https://checkout.stripe.test/cs_1' } : { url: 'https://billing.stripe.test/portal' };
+      // A new customer id each time (like Stripe; the first is cus_test1).
+      const out = req.url === '/v1/customers' ? { id: `cus_test${++customers}` } : req.url === '/v1/checkout/sessions' ? { id: 'cs_1', url: 'https://checkout.stripe.test/cs_1' } : { url: 'https://billing.stripe.test/portal' };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     });
@@ -2789,6 +2883,23 @@ async function stripeBilling() {
     const sess2 = calls.filter((c) => c.path === '/v1/checkout/sessions').at(-1);
     eq('picking Family+ yearly → Stripe checkout for $149/year', [sess2?.body.get('line_items[0][price_data][unit_amount]'), sess2?.body.get('line_items[0][price_data][recurring][interval]'), sess2?.body.get('line_items[0][price_data][product_data][name]')], ['14900', 'year', 'MyDay Family+ (yearly)']);
     eq('…an unknown plan is refused', (await call2(ty, 'POST', '/api/billing/checkout', { planId: 999999 })).status, 400);
+    const tyBill = (await call2(ty, 'GET', '/api/billing')).data;
+    const tierPrices = (list) => list.map((o) => `${o.tier}/${o.interval}/${o.priceCents}`).sort();
+    eq('every tier is on the Billing page: Solo $8.99/mo or $69/yr, Family, Family+', tierPrices(tyBill.catalog).filter((x) => !x.startsWith('family/')), ['familyplus/month/1999', 'familyplus/year/14900', 'solo/month/899', 'solo/year/6900']);
+    eq('…Solo is for one grown-up: a household with two or more can’t pick it', [tyBill.adults >= 2, tyBill.options.some((o) => o.tier === 'solo')], [true, false]);
+    const soloPlan = tyBill.catalog.find((o) => o.tier === 'solo' && o.interval === 'month');
+    eq('…and can’t check out on it either', (await call2(ty, 'POST', '/api/billing/checkout', { planId: soloPlan.planId })).status, 400);
+    const one = new Client('solo-buyer');
+    await one.get(`/dev-login?token=${DEV_TOKEN}&email=solo-buyer@example.com`);
+    await one.post('/api/households', { householdName: 'Just Me', type: 'solo', yourName: 'Sol' });
+    const oneBill = (await call2(one, 'GET', '/api/billing')).data;
+    eq('a one-grown-up household is offered Solo, Family and Family+', [...new Set(oneBill.options.map((o) => o.tier))].sort(), ['family', 'familyplus', 'solo']);
+    for (const [interval, cents] of [['month', '899'], ['year', '6900']]) {
+      const pick = oneBill.options.find((o) => o.tier === 'solo' && o.interval === interval);
+      eq(`Solo ${interval}ly → Stripe checkout for $${Number(cents) / 100}/${interval}`, (await call2(one, 'POST', '/api/billing/checkout', { planId: pick.planId })).status, 200);
+      const sx = calls.filter((c) => c.path === '/v1/checkout/sessions').at(-1);
+      eq(`…charging ${cents} cents per ${interval}`, [sx?.body.get('line_items[0][price_data][unit_amount]'), sx?.body.get('line_items[0][price_data][recurring][interval]'), sx?.body.get('line_items[0][price_data][product_data][name]')], [cents, interval, `MyDay Solo${interval === 'year' ? ' (yearly)' : ''}`]);
+    }
     const hook = async (type, object, secret = 'whsec_fake') => {
       const payload = JSON.stringify({ id: `evt_${type}`, type, data: { object } });
       const t = Math.floor(Date.now() / 1000);
@@ -3206,6 +3317,10 @@ async function uiGate() {
     await lp.getByTestId('apple-signin').waitFor({ timeout: 10000 });
     const fit = await lp.evaluate(() => ({ w: document.documentElement.scrollWidth, vw: innerWidth, recipes: document.body.innerText.includes('233 recipes'), cta: !!document.querySelector('[data-testid="signin-choices"] a, [data-testid="signin-choices"] form') }));
     eq('landing: nothing wider than the phone, current numbers, a clear start button', [fit.w <= fit.vw, fit.recipes, fit.cta], [true, true, true]);
+    const claim = (await lp.evaluate(() => document.body.innerText)).match(/(\d+) recipes with pictures from (\d+) cuisines/);
+    const lib = (await page.request.get(`${BASE}/api/meals`).then((r) => r.json()));
+    eq('landing: the recipe and cuisine counts match the real meal library (every meal pictured)', claim ? [Number(claim[1]), Number(claim[2])] : null, [lib.meals.length, lib.countries.length]);
+    eq('…and every one of those recipes has its own picture', lib.meals.filter((m) => !m.imageUrl || m.imageUrl.endsWith('.svg')).length, 0);
     await lp.getByLabel('Email address').fill('ui-mail@example.com');
     await lp.getByRole('button', { name: /email me a sign-in link/i }).click();
     eq('landing: “Email me a sign-in link” works (for families without Google)', await lp.getByTestId('email-sent').waitFor({ timeout: 10000 }).then(() => true, () => false), true);
@@ -3512,6 +3627,24 @@ async function uiGate() {
     eq('“Hana remembers” (at the top): add a fact, then correct it', tyMemNow.map((m) => m.fact).includes('likes oat milk, not almond'), true);
     for (const m of tyMemNow) await page.request.delete(`${BASE}/api/hana/memory/${m.id}`);
 
+    // Family's 50 a day used up → a grown-up sees why, and the way to unlimited.
+    const [tyBillRow] = await sql('SELECT billing_status, plan_id FROM households WHERE id = $1', [tyRow.household_id]);
+    await sql("UPDATE households SET billing_status = 'trialing', plan_id = (SELECT id FROM billing_plans WHERE code = 'family-monthly') WHERE id = $1", [tyRow.household_id]);
+    await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text) SELECT $1, $2, 'companion', 'user', 'cap filler' FROM generate_series(1, 50)", [tyRow.household_id, tyRow.member_id]);
+    try {
+      await page.reload();
+      await box.fill('one more today?');
+      await sendBtn.click();
+      await page.getByTestId('hana-upgrade').waitFor({ timeout: 10000 });
+      eq('Family household at 50 today → the reason, the message kept in the box, and “See Family+” (→ Billing)', [
+        /used today’s 50 Hana messages/.test(await page.getByTestId('chat-history').innerText()), await box.inputValue(), await page.getByTestId('hana-upgrade').getByRole('link', { name: 'See Family+' }).getAttribute('href'),
+      ], [true, 'one more today?', '/billing']);
+    } finally {
+      await sql("DELETE FROM chat_messages WHERE household_id = $1 AND text = 'cap filler'", [tyRow.household_id]);
+      await sql('UPDATE households SET billing_status = $2, plan_id = $3 WHERE id = $1', [tyRow.household_id, tyBillRow.billing_status, tyBillRow.plan_id]);
+      await box.fill('');
+    }
+
     section('admin with a household of their own can open /admin; the signup screen says what’s missing and has a Back button');
     const ownerCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const op = await ownerCtx.newPage();
@@ -3554,6 +3687,21 @@ async function uiGate() {
     check('yearly prices with the saving', /\$99\.00/.test(await blp.getByTestId('plan-family').innerText()) && /\$149\.00/.test(await blp.getByTestId('plan-familyplus').innerText()) && /save \d+%/.test(await blp.getByTestId('plan-family').innerText()));
     await blp.getByTestId('plan-familyplus').click();
     eq('Family+ picked', await blp.getByTestId('plan-familyplus').getAttribute('aria-pressed'), 'true');
+    check('Solo is on the page for a one-grown-up household: $69/yr', /\$69\.00/.test(await blp.getByTestId('plan-solo').innerText()) && /one grown-up/.test(await blp.getByTestId('plan-solo').innerText()));
+    await blp.getByTestId('plan-solo').click();
+    eq('…and can be picked (Subscribe shows Solo)', [await blp.getByTestId('plan-solo').getAttribute('aria-pressed'), /Solo/.test((await blp.getByTestId('billing-subscribe').count()) ? await blp.getByTestId('billing-subscribe').innerText() : 'Solo')], ['true', true]);
+    await blp.getByRole('button', { name: 'Monthly', exact: true }).click();
+    check('monthly: Solo $8.99, Family+ $19.99', /\$8\.99/.test(await blp.getByTestId('plan-solo').innerText()) && /\$19\.99/.test(await blp.getByTestId('plan-familyplus').innerText()));
+    const pickerHh = (await (await blp.request.get(`${BASE}/api/me`)).json()).household.id;
+    await sql("UPDATE households SET billing_status = 'comped' WHERE id = $1", [pickerHh]);
+    await blp.reload();
+    await blp.getByTestId('plan-picker').waitFor({ timeout: 10000 });
+    eq('a complimentary household still sees every plan and price (read-only), and its Hana allowance', [
+      await blp.getByTestId('plan-picker').getByRole('heading', { name: 'Plans' }).count(),
+      await blp.locator('[data-testid^="plan-"][data-testid$="solo"], [data-testid="plan-family"], [data-testid="plan-familyplus"]').count(),
+      await blp.getByTestId('plan-family').isDisabled(),
+      (await blp.getByTestId('hana-allowance').innerText()).trim(),
+    ], [1, 3, true, 'Hana: unlimited.']);
     await billCtx.close();
 
     section('Meetings in the browser: big record button, a running clock and a clear Stop, notes, Add to tasks');

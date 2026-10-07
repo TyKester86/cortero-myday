@@ -607,6 +607,8 @@ h2 { font-size: 19px; line-height: 1.25; }
 .plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 10px; }
 .plan-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; cursor: pointer; min-width: 0; }
 .plan-opt.on { border: 2px solid var(--text); padding: 11px; }
+.plan-opt:disabled { cursor: default; color: var(--text); }
+.plan-opt.off { opacity: 0.6; }
 .plan-price { font-size: 22px; font-weight: 700; }
 .plan-price small { font-size: 14px; font-weight: 400; }
 /* Create household: say why the button is off, and a way back */
