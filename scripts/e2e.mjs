@@ -161,7 +161,7 @@ const serverEnv = (fakeNow) => ({
   // Local proof only: fake bank data + stubbed AI replies (both refused in production).
   MONEY_PROVIDER: 'fake',
   CHAT_STUB: '1',
-  CHAT_PER_HOUR: '200',
+  CHAT_PER_HOUR: '2000',
   // Big build local proofs (all refused in production): canned lecture transcript,
   // push recorded instead of sent, Google Classroom with 3 sample courses.
   TRANSCRIPTION_STUB: '1',
@@ -3063,6 +3063,50 @@ async function householdJoin() {
 
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
+/**
+ * An iOS-like on-screen keyboard for a page (headless browsers have none): the visual viewport shrinks and
+ * can pan, window.innerHeight shrinks like Safari's, the layout viewport (what position:fixed uses) stays.
+ * Plus a per-frame recorder of where the chat header and composer are against what's visible.
+ */
+function iphoneKeyboard() {
+  const real = window.visualViewport;
+  const st = { h: null, top: 0 };
+  const fake = new EventTarget();
+  const props = { height: () => st.h ?? real.height, width: () => real.width, offsetTop: () => (st.h === null ? 0 : st.top), offsetLeft: () => 0, pageTop: () => 0, pageLeft: () => 0, scale: () => 1 };
+  for (const [k, get] of Object.entries(props)) Object.defineProperty(fake, k, { get });
+  Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => fake });
+  Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => st.h ?? document.documentElement.clientHeight });
+  window.__keyboard = (h, top = 0) => {
+    st.h = h;
+    st.top = top;
+    fake.dispatchEvent(new Event('resize'));
+    fake.dispatchEvent(new Event('scroll'));
+  };
+  window.__frames = [];
+  window.__sampling = false;
+  const sample = () => {
+    if (!window.__sampling) return;
+    const head = document.querySelector('[data-testid=chat-header]');
+    const bar = document.querySelector('[data-testid=chat-bar]');
+    if (head && bar) {
+      const v = window.visualViewport;
+      window.__frames.push({
+        head: Math.round(head.getBoundingClientRect().top) - Math.round(v.offsetTop),
+        bar: Math.round(bar.getBoundingClientRect().bottom) - Math.round(v.offsetTop + v.height),
+        kb: document.documentElement.classList.contains('kb-open') && st.h !== null,
+        sx: window.scrollX,
+        sy: window.scrollY,
+      });
+    }
+    requestAnimationFrame(sample);
+  };
+  window.__startSampling = () => {
+    window.__frames = [];
+    window.__sampling = true;
+    requestAnimationFrame(sample);
+  };
+}
+
 async function uiGate() {
   section('L2. button audit: every control → a handler → a real API route');
   const { audit } = await import(pathToFileURL(path.join(root, 'scripts', 'button-audit.mjs')).href);
@@ -3268,9 +3312,14 @@ async function uiGate() {
     section('Oct 2 staging bugs: Health after menu navigation; Focus timer stays put');
     await page.goto(`${BASE}/hana`);
     await page.waitForLoadState('networkidle');
+    // On a phone, Ask Hana is a full-screen view: out through its Back button, then the menu.
+    await page.getByTestId('chat-back').click();
+    await page.waitForURL(`${BASE}/`, { timeout: 10000 });
+    await page.waitForTimeout(200);
+    eq('leaving Ask Hana lets the rest of the app scroll again', await page.evaluate(() => document.documentElement.classList.contains('chat-screen')), false);
     await page.getByRole('button', { name: 'Menu' }).click();
-    await page.getByRole('link', { name: /Health/ }).click();
-    eq('Ask Hana → menu → Health renders (no blank page)', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    await page.locator('.top .menu').getByRole('link', { name: /Health/ }).click();
+    eq('Ask Hana → Back → menu → Health renders (no blank page)', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('link', { name: /Meals/ }).click();
     await page.getByRole('button', { name: 'Menu' }).click();
@@ -3514,15 +3563,17 @@ async function uiGate() {
         const tabsEl = document.querySelector('nav.tabs');
         const bar = r(document.querySelector('[data-testid=chat-bar]'));
         const last = r([...document.querySelectorAll('[data-testid=msg-hana]')].at(-1));
-        return { barTop: Math.round(bar.top), barBottom: Math.round(bar.bottom), tabsTop: Math.round(r(tabsEl).top), tabsShown: getComputedStyle(tabsEl).display !== 'none', lastBottom: Math.round(last.bottom), h: innerHeight, canScroll: document.documentElement.scrollHeight > innerHeight + 100, kb: document.documentElement.classList.contains('kb-open') };
+        const sc = document.querySelector('[data-testid=chat-scroll]');
+        const head = r(document.querySelector('[data-testid=chat-header]'));
+        return { barTop: Math.round(bar.top), barBottom: Math.round(bar.bottom), headTop: Math.round(head.top), tabsTop: Math.round(r(tabsEl).top), tabsShown: getComputedStyle(tabsEl).display !== 'none', lastBottom: Math.round(last.bottom), h: innerHeight, canScroll: sc.scrollHeight > sc.clientHeight + 100, pageScroll: [scrollX, scrollY], kb: document.documentElement.classList.contains('kb-open') };
       });
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate(() => { document.querySelector('[data-testid=chat-scroll]').scrollTop = 0; });
     await page.waitForTimeout(200);
     const atTop = await layout();
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await page.evaluate(() => { const sc = document.querySelector('[data-testid=chat-scroll]'); sc.scrollTop = sc.scrollHeight; });
     await page.waitForTimeout(200);
     const atEnd = await layout();
-    check('scroll the conversation → the input bar stays put, right above the tab bar', atTop.canScroll && atTop.barTop === atEnd.barTop && Math.abs(atTop.barBottom - atTop.tabsTop) <= 1, JSON.stringify([atTop, atEnd]));
+    check('scroll the conversation → the header and the input bar stay put (bar right above the tab bar); only the messages move', atTop.canScroll && atTop.barTop === atEnd.barTop && atTop.headTop === 0 && atEnd.headTop === 0 && Math.abs(atTop.barBottom - atTop.tabsTop) <= 1 && atEnd.pageScroll.join() === '0,0', JSON.stringify([atTop, atEnd]));
     check('…and the last message is never hidden behind it', atEnd.lastBottom <= atEnd.barTop, JSON.stringify(atEnd));
     await box.focus();
     await page.waitForTimeout(300);
@@ -3605,6 +3656,115 @@ async function uiGate() {
     const closed = await pinned();
     eq('keyboard closed → the tab bar is back and the input sits right above it', [closed.tabsShown, Math.abs(closed.barBottom - closed.tabsTop) <= 1], [true, true]);
     await iosCtx.close();
+
+    section('Hana chat on an iPhone viewport, Chromium + WebKit (Safari’s engine): header pinned, composer docked, zero bounce, never a dead end');
+    const { webkit } = createRequire(path.join(root, 'package.json'))('playwright');
+    for (const [engine, bt] of [['Chromium', chromium], ['WebKit', webkit]]) {
+      const b = engine === 'Chromium' ? browser : await bt.launch();
+      const ic = await b.newContext({ viewport: { width: 393, height: 852 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 });
+      try {
+        await ic.addCookies(await tyCtx.cookies());
+        await ic.addInitScript(iphoneKeyboard);
+        const ip2 = await ic.newPage();
+        const view = () =>
+          ip2.evaluate(() => {
+            const r = (s) => document.querySelector(s)?.getBoundingClientRect() ?? null;
+            const v = window.visualViewport;
+            const tabs = document.querySelector('nav.tabs');
+            const back = r('[data-testid=chat-back]');
+            return {
+              url: location.pathname, head: r('[data-testid=chat-header]')?.top ?? null, barBottom: r('[data-testid=chat-bar]')?.bottom ?? null,
+              back: back ? { top: Math.round(back.top), w: Math.round(back.width), h: Math.round(back.height) } : null,
+              vvTop: v.offsetTop, vvBottom: v.offsetTop + v.height, kb: document.documentElement.classList.contains('kb-open'),
+              tabsShown: !!tabs && getComputedStyle(tabs).display !== 'none', tabsTop: tabs ? Math.round(tabs.getBoundingClientRect().top) : null,
+              page: [scrollX, scrollY].join(),
+            };
+          });
+        // In through the Hana button (so Back has somewhere to go).
+        await ip2.goto(`${BASE}/`);
+        await ip2.getByTestId('hana-fab').click();
+        await ip2.getByTestId('chat-bar').waitFor({ timeout: 10000 });
+        await ip2.waitForTimeout(300);
+        const rest = await view();
+        eq(`${engine}: at rest — header at the top with a Back button (44px), composer right above the tab bar`, [rest.head, rest.back?.w >= 44 && rest.back?.h >= 44, Math.abs(rest.barBottom - rest.tabsTop) <= 1, rest.tabsShown], [0, true, true, true]);
+        // Keyboard slides up frame by frame, iOS pans the visible area, three messages sent, keyboard slides down — recording every frame.
+        await ip2.evaluate(() => window.__startSampling());
+        await ip2.getByLabel('Message Hana').focus();
+        for (const h of [800, 740, 680, 620, 560, 520, 508]) {
+          await ip2.evaluate((x) => window.__keyboard(x), h);
+          await ip2.waitForTimeout(16);
+        }
+        for (const t of [40, 90, 140, 90, 0]) {
+          await ip2.evaluate((x) => window.__keyboard(508, x), t);
+          await ip2.waitForTimeout(16);
+        }
+        const up = await view();
+        for (const q of ['first one', 'second one', 'third one']) {
+          await ip2.keyboard.type(`iphone ${q}`);
+          await ip2.getByTestId('chat-send').click();
+          await ip2.getByTestId('msg-me').filter({ hasText: `iphone ${q}` }).waitFor({ timeout: 10000 });
+          await ip2.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+        }
+        const focused = await ip2.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+        for (const h of [560, 680, 800, null]) {
+          await ip2.evaluate((x) => window.__keyboard(x), h);
+          await ip2.waitForTimeout(16);
+        }
+        await ip2.evaluate(() => document.activeElement?.blur());
+        await ip2.waitForTimeout(300);
+        const down = await view();
+        const fr = await ip2.evaluate(() => {
+          window.__sampling = false;
+          return window.__frames;
+        });
+        const worst = (k, list) => Math.max(0, ...list.map((f) => Math.abs(f[k])));
+        eq(`${engine}: keyboard up → composer sits right on it, tab bar down, header still at the top`, [up.head - up.vvTop, Math.round(up.barBottom - up.vvBottom), up.tabsShown], [0, 0, false]);
+        eq(`${engine}: every frame (${fr.length}) through keyboard up, iOS panning, 3 sends, keyboard down — header never moves, composer never leaves the keyboard, the page never scrolls`, [
+          fr.length > 30, worst('head', fr), worst('bar', fr.filter((f) => f.kb)), worst('sx', fr), worst('sy', fr),
+        ], [true, 0, 0, 0, 0]);
+        eq(`${engine}: …the keyboard stayed up through all three sends`, focused, 'Message Hana');
+        eq(`${engine}: keyboard down → tab bar back, composer right above it, header at the top`, [down.tabsShown, Math.abs(down.barBottom - down.tabsTop) <= 1, down.head], [true, true, 0]);
+        // Sideways swipe on the messages with the keyboard up.
+        await ip2.getByLabel('Message Hana').focus();
+        await ip2.evaluate(() => window.__keyboard(508, 0));
+        if (engine === 'Chromium') {
+          const cdp = await ic.newCDPSession(ip2);
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 340, y: 300 }] });
+          for (let x = 300; x >= 20; x -= 40) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: 304 }] });
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          await ip2.waitForTimeout(300);
+          const sw = await view();
+          eq('Chromium: swipe the messages sideways with the keyboard up → nothing moves (chat, header, composer all in place)', [sw.url, sw.head, Math.round(sw.barBottom - sw.vvBottom), sw.page, await ip2.evaluate(() => document.querySelector('[data-testid=chat-scroll]').scrollLeft)], ['/hana', 0, 0, '0,0', 0]);
+        }
+        eq(`${engine}: the chat only pans up and down (no sideways panning to strand it)`, await ip2.evaluate(() => [getComputedStyle(document.querySelector('[data-testid=chat-scroll]')).touchAction, getComputedStyle(document.querySelector('[data-testid=chat-screen]')).touchAction]), ['pan-y', 'pan-y']);
+        // Leaving with the keyboard up the way iOS's edge swipe does: history back, the field never blurred.
+        await ip2.goBack();
+        await ip2.evaluate(() => window.__keyboard(null));
+        await ip2.waitForTimeout(400);
+        const edge = await view();
+        eq(`${engine}: swipe back with the keyboard up → the previous screen, with the tab bar (never a dead screen)`, [edge.url, edge.tabsShown, edge.kb], ['/', true, false]);
+        // The Back button with the keyboard up (and iOS panned).
+        await ip2.getByTestId('hana-fab').click();
+        await ip2.getByTestId('chat-bar').waitFor({ timeout: 10000 });
+        await ip2.getByLabel('Message Hana').focus();
+        await ip2.evaluate(() => window.__keyboard(508, 120));
+        await ip2.waitForTimeout(100);
+        const kbBack = await view();
+        eq(`${engine}: keyboard up → Back is still right there at the top of the screen`, [kbBack.back !== null && kbBack.back.top >= kbBack.vvTop && kbBack.back.top < kbBack.vvTop + 60, kbBack.kb], [true, true]);
+        await ip2.getByTestId('chat-back').click();
+        await ip2.evaluate(() => window.__keyboard(null));
+        await ip2.waitForTimeout(400);
+        const backed = await view();
+        eq(`${engine}: …tap it → keyboard closes, back where you came from, tab bar there`, [backed.url, backed.tabsShown, backed.kb], ['/', true, false]);
+        await ip2.goto(`${BASE}/hana`);
+        await ip2.getByTestId('chat-back').click();
+        await ip2.waitForURL(`${BASE}/`, { timeout: 10000 });
+        eq(`${engine}: opened straight to the chat (nothing to go back to) → Back goes home`, (await view()).tabsShown, true);
+      } finally {
+        await ic.close();
+        if (b !== browser) await b.close();
+      }
+    }
 
     section('Homework helper on a phone: Hana offers help with what’s due, camera + photo library, the keyboard stays up');
     await avery.patch('/api/me/prefs', { firstRunDone: true });

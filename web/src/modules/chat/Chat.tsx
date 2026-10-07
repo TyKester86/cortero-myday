@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router';
 import type { ChatAttachment, ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import Markdown from '../../components/Markdown';
 import { HanaFace } from '../../components/NavIcon';
+import { keyboardSync } from '../../components/useKeyboard';
 import { useSession } from '../../session';
 import { shrink } from '../health/ProgressPhotos';
 
@@ -80,6 +82,8 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   // B3: /tutor?lecture=ID quizzes from one of the student's own lectures.
   const lectureId = mode === 'tutor' ? new URLSearchParams(window.location.search).get('lecture') : null;
   const end = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
   const bar = useRef<HTMLFormElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const camera = useRef<HTMLInputElement>(null);
@@ -100,23 +104,46 @@ export default function Chat({ mode }: { mode: ChatMode }) {
     el.style.height = `${el.scrollHeight + 2}px`;
   }, [msg, data !== null]);
 
-  // Scroll only when a message is added (not on every refresh), so the page doesn't jump around.
+  // Phones: a full-screen chat view (pinned header, messages scrolling inside, composer docked at the bottom).
+  // The page itself never scrolls, so iOS has nothing to pan or bounce when the keyboard comes and goes.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!document.querySelector('.app.sidebar')) root.classList.add('chat-screen');
+    return () => {
+      root.classList.remove('chat-screen');
+      // The message box may have had focus as the view went away (back button, iOS edge swipe): no blur comes on iOS.
+      keyboardSync();
+    };
+  }, []);
+
+  /** Show the newest message: scroll the message list (never the page); on desktop the page is the list. */
+  const toBottom = (): void => {
+    const sc = scroller.current;
+    if (sc && sc.scrollHeight > sc.clientHeight && getComputedStyle(sc).overflowY !== 'visible') sc.scrollTop = sc.scrollHeight;
+    // Braces matter: newer browsers return a Promise from scrollIntoView, which React would treat as a cleanup.
+    else if (!document.documentElement.classList.contains('chat-screen')) void end.current?.scrollIntoView({ block: 'end' });
+  };
+  // Scroll only when a message is added (not on every refresh), so nothing jumps around.
   const count = (data?.history.length ?? 0) + (pending ? 1 : 0);
   useEffect(() => {
-    // Braces matter: newer browsers return a Promise from scrollIntoView, which React would treat as a cleanup.
-    if (count) void end.current?.scrollIntoView({ block: 'end' });
+    if (count) toBottom();
   }, [count]);
-
-  // The input bar is fixed to the bottom; the conversation leaves room for it (it grows with attachments).
+  // Reading the newest message when the view shrinks (keyboard up) or the composer grows: keep it in view.
+  const atBottom = useRef(true);
   useEffect(() => {
-    const el = bar.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const root = document.documentElement;
-    const ro = new ResizeObserver(() => root.style.setProperty('--send-h', `${el.offsetHeight}px`));
-    ro.observe(el);
+    const sc = scroller.current;
+    if (!sc || typeof ResizeObserver === 'undefined') return;
+    const onScroll = (): void => {
+      atBottom.current = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
+    };
+    const ro = new ResizeObserver(() => {
+      if (atBottom.current) sc.scrollTop = sc.scrollHeight;
+    });
+    ro.observe(sc);
+    sc.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       ro.disconnect();
-      root.style.removeProperty('--send-h');
+      sc.removeEventListener('scroll', onScroll);
     };
   }, [data !== null]);
 
@@ -234,14 +261,27 @@ export default function Chat({ mode }: { mode: ChatMode }) {
 
   // When the keyboard opens, keep the latest message in view above the input.
   const onFocus = (): void => {
-    window.setTimeout(() => void end.current?.scrollIntoView({ block: 'end' }), 350);
+    if (atBottom.current) window.setTimeout(toBottom, 350);
+  };
+
+  // Back: always there (keyboard up or down). Closes the keyboard, then goes back in the app (or home).
+  const goBack = (): void => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    if (idx > 0) void navigate(-1);
+    else void navigate('/');
   };
 
   return (
-    <section className="chat">
-      <div className="chat-head">
+    <section className="chat chat-app" data-testid="chat-screen">
+      <header className="chat-head" data-testid="chat-header">
+        <button type="button" className="chat-back" onMouseDown={(e) => e.preventDefault()} onClick={goBack} aria-label="Back" data-testid="chat-back">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 5l-7 7 7 7" />
+          </svg>
+        </button>
         <h1 className="chat-title">
-          <HanaFace size={44} />
+          <HanaFace size={34} />
           {copy.title}
         </h1>
         {data.history.length > 0 && (
@@ -249,8 +289,9 @@ export default function Chat({ mode }: { mode: ChatMode }) {
             Clear chat
           </button>
         )}
-      </div>
-      <p className="muted small">{copy.intro}</p>
+      </header>
+      <div className="chat-scroll" ref={scroller} data-testid="chat-scroll">
+      <p className="muted small chat-intro">{copy.intro}</p>
       {mode === 'companion' && <HanaKnows refreshKey={data.history.length} />}
       {lectureId && <p className="pill sun">Quiz mode: questions from your lecture</p>}
       {!data.available && <p className="warn">Hana isn’t set up yet — a grown-up needs to add the AI key on the server.</p>}
@@ -372,6 +413,7 @@ export default function Chat({ mode }: { mode: ChatMode }) {
           </div>
         )}
         <div ref={end} className="chat-end" />
+      </div>
       </div>
       <form className="chat-send" onSubmit={send} ref={bar} data-testid="chat-bar">
         <div className="chat-send-in">

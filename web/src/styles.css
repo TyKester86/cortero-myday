@@ -644,20 +644,36 @@ h2 { font-size: 19px; line-height: 1.25; }
 /* ---------- Ask Hana: fixed input bar, keyboard, attachments, formatted replies ---------- */
 /* Phones: while the keyboard is up, the tab bar stays down behind it (never floats above it). */
 html.kb-open nav.tabs, html.kb-open .hana-fab { display: none; }
-.chat { padding-bottom: calc(var(--send-h, 72px) + 8px); }
-.chat-end { scroll-margin-bottom: calc(var(--send-h, 72px) + var(--tabs-h, 0px) + 12px); }
-html.kb-open .chat-end { scroll-margin-bottom: calc(var(--send-h, 72px) + var(--kb-inset, 0px) + 12px); }
-/* The input never scrolls away: pinned above the tab bar... */
-.chat-send { position: fixed; left: 0; right: 0; bottom: var(--tabs-h, 0px); z-index: 30; margin: 0; background: var(--bg); border-top: 1px solid var(--line); }
-/* ...and, while the keyboard is up, sitting directly on top of it: its bottom edge on the visual
-   viewport's bottom edge (iOS doesn't move position:fixed for the keyboard — see useKeyboard.ts). */
-html.kb-open .chat-send { top: var(--vv-bottom, 100%); bottom: auto; transform: translateY(-100%); }
+/*
+ * Phones: Ask Hana / the homework helper is a full-screen chat view fitted exactly to what's visible —
+ * header pinned at the top, the messages scrolling inside, the composer docked at the bottom in the
+ * same column (so header and composer can never drift apart or bounce against each other). The page
+ * itself never scrolls (nothing for iOS to pan or rubber-band), and nothing scrolls sideways.
+ * --vv-top / --vv-h come from the visual viewport (useKeyboard.ts): with the keyboard up the view ends
+ * right on top of it; with it down the view ends on top of the tab bar.
+ */
+html.chat-screen, html.chat-screen body { overflow: hidden; overscroll-behavior: none; }
+.app:not(.sidebar) .chat-app {
+  position: fixed; z-index: 25; left: 0; right: 0; top: 0;
+  height: calc(var(--vv-h, 100dvh) - var(--tabs-h, 0px));
+  transform: translate3d(0, var(--vv-top, 0px), 0);
+  display: flex; flex-direction: column; background: var(--bg);
+  overflow: hidden; overscroll-behavior: none; touch-action: pan-y;
+}
+html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
+.app:not(.sidebar) .chat-app .chat-head { flex: none; padding: calc(env(safe-area-inset-top) + 6px) 12px 6px 4px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.app:not(.sidebar) .chat-app .chat-title { font-size: 22px; margin: 0; }
+.app:not(.sidebar) .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; padding: 4px 16px 12px; }
+.app:not(.sidebar) .chat-app .chat-send { flex: none; }
+.chat-send { margin: 0; background: var(--bg); border-top: 1px solid var(--line); }
+.chat-head .chat-title { flex: 1; min-width: 0; }
+.chat-back { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--text); padding: 0; cursor: pointer; }
+.chat-back:active { background: var(--line); }
 .chat-send-in { max-width: 640px; margin: 0 auto; padding: 8px 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; }
 .chat-send-row { display: flex; gap: 8px; align-items: flex-end; }
 /* Grows with what's typed (up to ~5 lines), so a long message stays readable while typing. 16px: no iOS zoom. */
 .chat-box { flex: 1; width: auto; min-width: 0; min-height: 0; max-height: 140px; resize: none; font: inherit; font-size: 16px; line-height: 1.35; padding: 9px 12px; overflow-y: auto; box-sizing: border-box; }
 .app.sidebar .chat-send { position: sticky; bottom: 0; }
-html.kb-open .app.sidebar .chat-send { position: fixed; left: 250px; right: 0; }
 .app.sidebar .chat-send-in { max-width: none; padding-inline: 0; }
 .attach-btn { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; padding: 0; }
 .attach-btn:disabled { opacity: 0.45; cursor: default; }
