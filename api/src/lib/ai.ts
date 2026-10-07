@@ -180,6 +180,9 @@ class StubModel implements ChatModel {
       system.includes('Their open homework:') ? `ctx=${system.split('Their open homework: ')[1]?.split('.')[0] ?? ''}` : '',
       system.includes('What you can see of their day:') ? 'ctx=day' : '',
       system.includes('QUIZ MODE') ? 'quiz=lecture' : '',
+      system.includes('FROM THE BOOK') ? 'library=book' : '',
+      system.includes('FROM THE MEDICAL REFERENCE') ? 'library=medical' : '',
+      system.includes('No library passages matched') ? 'library=none' : '',
     ].filter(Boolean);
     return `[stub reply] You said: "${last.slice(0, 80)}" (${facts.join(', ')})`;
   }

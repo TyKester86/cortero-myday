@@ -13,7 +13,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -1698,6 +1698,32 @@ async function careTeam() {
     await ty.del('/api/chat/companion');
     return [await chatCount(ty), (await chatCount(kayla)) === before];
   })(), [0, true]);
+
+  section('Hana’s library: the book first, then the medical reference, cited — and “I don’t know” outside it');
+  const libStats = JSON.parse(runNode(['--input-type=module', '-e', "const m = await import('./dist/lib/library.js'); process.stdout.write(JSON.stringify(m.libraryStats())); process.exit(0);"]));
+  check('the book loads: every chapter, the introduction, conclusion and appendices', libStats.chapters >= 28 && libStats.bookPassages > 100, JSON.stringify(libStats));
+  check('the medical reference loads, with a corpus review date', libStats.medicalEntries >= 30 && /^\d{4}-\d{2}-\d{2}$/.test(libStats.lastReviewed ?? ''), JSON.stringify(libStats));
+  const medDir = path.join(root, 'api', 'content', 'medical');
+  const medIssues = [];
+  for (const f of readdirSync(medDir).filter((x) => x.endsWith('.md') && x !== 'README.md')) {
+    for (const blk of readFileSync(path.join(medDir, f), 'utf8').split(/^###\s+/m).slice(1)) {
+      const t = blk.split('\n')[0].trim();
+      const field = (k) => blk.split('\n').find((l) => l.startsWith(`${k}:`))?.slice(k.length + 1).trim() ?? '';
+      if (!field('summary')) medIssues.push(`${f} “${t}”: no summary`);
+      if (!/\b(19|20)\d{2}\b/.test(field('source'))) medIssues.push(`${f} “${t}”: source has no date`);
+      if (!/^https:\/\/(www\.cdc\.gov|www\.nimh\.nih\.gov|www\.nice\.org\.uk|doi\.org)\//.test(field('url'))) medIssues.push(`${f} “${t}”: url isn’t an authoritative source (${field('url')})`);
+    }
+  }
+  eq('every medical entry: a summary, a dated source, and a link to CDC / NIMH / NICE / a DOI', medIssues, []);
+  const bookDir = path.join(root, 'api', 'content', 'book');
+  eq('no copyright boilerplate in the chapter files', readdirSync(bookDir).filter((f) => /All rights reserved|ISBN|Copyright ©/i.test(readFileSync(path.join(bookDir, f), 'utf8'))), []);
+  const askLib = async (message) => (await kayla.post('/api/chat/companion', { message, clientId: `lib-${randomBytes(4).toString('hex')}` })).data.reply.text;
+  check('a question the book answers → Hana gets the book passages', /library=book/.test(await askLib('What is the Men’s Executive Command System?')));
+  const fish = await askLib('Does fish oil help ADHD symptoms?');
+  check('a question the medical reference answers → Hana gets it', /library=medical/.test(fish) && !/library=book/.test(fish), fish.slice(0, 200));
+  const both = await askLib('Is ADHD medication safe, and what does research say about stimulants?');
+  check('a question needing both → book and medical reference together', /library=book/.test(both) && /library=medical/.test(both), both.slice(0, 200));
+  check('outside the library → told nothing matched (so she says what she doesn’t know)', /library=none/.test(await askLib('What is the capital of France?')));
 
   section('Hana’s tool list passes the real API’s rules (the stand-in model can’t catch these)');
   // Oct 2026: a nullable enum and then a 21st strict tool each made EVERY real chat fail with a 400.

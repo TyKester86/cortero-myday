@@ -1,18 +1,15 @@
 /**
  * Trusted Answers, layers 2 and 4: Hana checks a post's claim, and answers
  * questions, grounded in what MyDay can actually point to:
- *   - the Around the Web publisher articles (web_items: ADDitude, CHADD, …),
- *   - the ConquerADHD book, when its chapters are in api/content/book/*.md
- *     (not in the repo yet — drop the files in and they're used),
+ *   1. the book "Conquer ADHD Everyday" (lib/library.ts),
+ *   2. the curated medical reference (CDC, NIMH, AAP, NICE, peer-reviewed),
+ *   3. the Around the Web publisher articles (web_items),
  *   - and established research, named plainly (no made-up links).
  * Sources shown to people are only ones from that list (or a named body like
  * "American Academy of Pediatrics guidance" with no link).
  *
  * Stub (CHAT_STUB, never production): simple rules, so it's testable offline.
  */
-import { readdir, readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
@@ -20,33 +17,20 @@ import type { CheckVerdict, PostCheck, SourceRef, TrustedAnswer } from '@myday/s
 import { config } from '../config.js';
 import { asSystem, pool } from '../db.js';
 import { HttpError } from './http.js';
+import { citeBook, searchLibrary } from './library.js';
 
 interface Source {
   label: string;
   url: string | null;
   text: string;
-  kind: 'publisher' | 'book';
+  kind: 'publisher' | 'book' | 'medical';
 }
 
 const STOP = new Set('about after again also because been before being could does doing every from have having into just like make more most much need only other over really same should some still such than that their them then there these they this those through very want were what when where which while will with would your yours ours mine adhd kids kid child children parent parents'.split(' '));
 const words = (s: string): string[] => [...new Set(s.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [])].filter((w) => !STOP.has(w));
 
-const BOOK_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'content', 'book');
-let book: Array<{ chapter: string; text: string }> | null = null;
-async function bookParagraphs(): Promise<Array<{ chapter: string; text: string }>> {
-  if (book) return book;
-  book = [];
-  const files = await readdir(BOOK_DIR).catch(() => [] as string[]);
-  for (const f of files.filter((x) => x.endsWith('.md')).sort()) {
-    const raw = await readFile(path.join(BOOK_DIR, f), 'utf8');
-    const chapter = raw.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? f.replace(/\.md$/, '');
-    for (const p of raw.split(/\n\s*\n/)) if (p.trim().length > 80) book.push({ chapter, text: p.trim().slice(0, 1200) });
-  }
-  return book;
-}
-
-/** The best few things MyDay can point to for this text (simple word overlap). */
-export async function sourcesFor(text: string, max = 4): Promise<Source[]> {
+/** The best few things MyDay can point to for this text: the book first, then the medical reference, then publishers. */
+export async function sourcesFor(text: string, max = 6): Promise<Source[]> {
   const w = words(text);
   if (!w.length) return [];
   const score = (hay: string): number => {
@@ -64,13 +48,10 @@ export async function sourcesFor(text: string, max = 4): Promise<Source[]> {
     .sort((a, b) => b.s - a.s)
     .slice(0, 3)
     .map((x) => x.src);
-  const books = (await bookParagraphs())
-    .map((p) => ({ s: score(p.text), src: { label: `ConquerADHD — ${p.chapter}`, url: null, text: p.text, kind: 'book' as const } }))
-    .filter((x) => x.s >= 2)
-    .sort((a, b) => b.s - a.s)
-    .slice(0, 2)
-    .map((x) => x.src);
-  return [...books, ...pubs].slice(0, max);
+  const lib = searchLibrary(text, { book: 2, medical: 2 });
+  const books: Source[] = lib.book.map((p) => ({ label: citeBook(p), url: null, text: p.text.slice(0, 1200), kind: 'book' }));
+  const medical: Source[] = lib.medical.map((e) => ({ label: e.source, url: e.url, text: `${e.topic}. ${e.summary}`, kind: 'medical' }));
+  return [...books, ...medical, ...pubs].slice(0, max);
 }
 
 const listSources = (s: Source[]): string => (s.length ? s.map((x, i) => `[${i}] ${x.label}\n${x.text}`).join('\n\n') : '(none found)');

@@ -20,6 +20,7 @@ import { chatModel, type ChatTurn } from '../lib/ai.js';
 import { dailyScore, trackOf } from '../lib/adult.js';
 import { activeDates, computeStreak } from '../lib/streak.js';
 import { isoToWeekday } from '../lib/dates.js';
+import { libraryBrief } from '../lib/library.js';
 import { lectureMaterial } from './lectures.js';
 
 export const chatRouter = Router();
@@ -164,6 +165,27 @@ chatRouter.get('/api/chat/:mode', async (req, res) => {
   res.json(out);
 });
 
+/**
+ * Hana's library rules (Ask Hana): on ADHD/ADD questions she reads the book,
+ * then the medical reference, then her general knowledge — in that order —
+ * cites in plain words, never invents a source, says when she doesn't know,
+ * and never diagnoses or prescribes.
+ */
+export function libraryInstructions(message: string): string {
+  const brief = libraryBrief(message);
+  return (
+    '\n\nHANA’S LIBRARY. For any question about ADHD or ADD (symptoms, diagnosis, medication, treatment, diet, sleep, exercise, school, work, relationships, emotions): ' +
+    'answer from the library passages below in this order — the book "Conquer ADHD Everyday" by T. Hunter first, then the medical reference, and only then your general knowledge to fill a gap (say plainly when you do). ' +
+    'Cite in plain words, e.g. "In Chapter 4 of Conquer ADHD Everyday…" or "Per the CDC’s ADHD treatment guidance (updated June 2026)…". ' +
+    'Only cite a source that appears in the passages below — never invent a book chapter, study, statistic, quote or link. ' +
+    'If the library doesn’t cover it and you aren’t sure, say so plainly ("That isn’t in my library, and I don’t know of solid evidence either way") instead of guessing. ' +
+    'Never diagnose anyone, and never tell anyone to start, stop, skip or change a medication or dose — that’s for their prescriber; you can suggest questions to ask them. ' +
+    'Never contradict the community safety rules. ' +
+    'When an answer touches anything medical (symptoms, diagnosis, medication, supplements, sleep problems, therapy), end it with one short plain line: "I’m not a doctor — please talk with yours about this."' +
+    (brief ? `\n\n${brief}` : '\n\n(No library passages matched this message. If it is an ADHD question, say what you do and don’t know.)')
+  );
+}
+
 chatRouter.post('/api/chat/:mode', async (req, res) => {
   const { me, mode } = await modeFor(req);
   const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown };
@@ -220,6 +242,8 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
         `explain simply when they miss, and never just list the answers. Lecture material: ${material}`;
     }
   }
+  // Hana's library (book → medical reference → general knowledge) for ADHD questions.
+  if (mode === 'companion') system += libraryInstructions(msg);
   const actions: HanaAction[] = [];
   const started = Date.now();
   let text: string;
