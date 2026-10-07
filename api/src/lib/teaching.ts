@@ -97,7 +97,8 @@ export function homeworkLine(list: OpenHomework[]): string {
 export const HOMEWORK_USE =
   'HOMEWORK: you can see their open homework from the MyDay Homework tab (above). When they start without a specific question, offer to ' +
   'help with what’s due soonest. When helping, refer to the actual assignment by name; if a photo or question clearly belongs to one, ' +
-  'say which.';
+  'say which. While they’re working on something, stay on it — don’t bring up their other assignments mid-task (it pulls an ADHD brain ' +
+  'off track); mention what else is due at most once, when they finish or pause.';
 
 /** The whole teaching block for a kid or student. */
 export function teachingRules(age: number | null | 'college', direct: boolean): string {
