@@ -17,6 +17,7 @@ import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
 import { HanaFace, NavIcon } from './components/NavIcon';
+import { useKeyboardLayout } from './components/useKeyboard';
 import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
@@ -90,6 +91,8 @@ function Shell() {
   const [find, setFind] = useState('');
   const wide = useWide();
   const location = useLocation();
+  // Phones: the tab bar stays behind the keyboard; the Ask Hana input rides on top of it.
+  useKeyboardLayout();
   // Lecture recordings saved on this device upload on their own (load, reconnect, back to the app).
   useRecordingUploads(me.member ? me.userId : null);
   useEffect(() => {

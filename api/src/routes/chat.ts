@@ -5,7 +5,8 @@
  * stored server-side and the model sees the last 10 turns.
  */
 import { Router, type Request } from 'express';
-import type { CalRepeat, ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction, HouseholdMember } from '@myday/shared';
+import type { BetaContentBlockParam } from '@anthropic-ai/sdk/resources/beta/messages/messages';
+import type { CalRepeat, ChatAttachment, ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction, HouseholdMember } from '@myday/shared';
 import { pool } from '../db.js';
 import { addDays, today } from '../lib/dates.js';
 import { datesOf } from '../lib/recur.js';
@@ -16,16 +17,17 @@ import { self } from '../lib/members.js';
 import { rateLimiter } from '../lib/pin.js';
 import { checkAiMonthly } from '../lib/limits.js';
 import { requireAiConsent } from './account.js';
-import { chatModel, type ChatTurn } from '../lib/ai.js';
+import { chatModel, turnText, type ChatTurn } from '../lib/ai.js';
 import { dailyScore, trackOf } from '../lib/adult.js';
 import { activeDates, computeStreak } from '../lib/streak.js';
 import { isoToWeekday } from '../lib/dates.js';
 import { libraryBrief } from '../lib/library.js';
+import { attachmentInfo, loadAttachments, type LoadedAttachment } from './chatFiles.js';
 import { lectureMaterial } from './lectures.js';
 
 export const chatRouter = Router();
 
-const chatLimit = rateLimiter(30, 60 * 60_000); // per member per hour
+const chatLimit = rateLimiter(Number(process.env.CHAT_PER_HOUR) || 30, 60 * 60_000); // per member per hour
 
 async function modeFor(req: Request): Promise<{ me: HouseholdMember; mode: ChatMode }> {
   const me = self(req);
@@ -45,16 +47,41 @@ interface MsgRow {
   created_at: Date;
   failed: boolean;
   client_id: string | null;
+  attachment_ids: number[];
 }
 
-const toMsg = (r: MsgRow): ChatMessage => ({ id: r.id, who: r.who, text: r.text, at: r.created_at.toISOString(), failed: r.failed, clientId: r.client_id });
+const MSG_COLS = 'id, who, text, created_at, failed, client_id, attachment_ids';
+const toMsg = (r: MsgRow, files: Map<number, ChatAttachment> = new Map()): ChatMessage => ({
+  id: r.id,
+  who: r.who,
+  text: r.text,
+  at: r.created_at.toISOString(),
+  failed: r.failed,
+  clientId: r.client_id,
+  attachments: r.attachment_ids.map((id) => files.get(id)).filter((a): a is ChatAttachment => !!a),
+});
 
 async function history(memberId: number, mode: ChatMode, limit = 40): Promise<ChatMessage[]> {
-  const { rows } = await pool.query<MsgRow>(
-    `SELECT id, who, text, created_at, failed, client_id FROM chat_messages WHERE member_id = $1 AND mode = $2 ORDER BY id DESC LIMIT $3`,
-    [memberId, mode, limit],
-  );
-  return rows.reverse().map(toMsg);
+  const { rows } = await pool.query<MsgRow>(`SELECT ${MSG_COLS} FROM chat_messages WHERE member_id = $1 AND mode = $2 ORDER BY id DESC LIMIT $3`, [memberId, mode, limit]);
+  const files = await attachmentInfo(memberId, rows.flatMap((r) => r.attachment_ids));
+  return rows.reverse().map((r) => toMsg(r, files));
+}
+
+/** A message with attachments → content blocks Hana can see: images, PDFs, text files, then the words. */
+function withAttachments(text: string, files: LoadedAttachment[]): ChatTurn['content'] {
+  if (!files.length) return text;
+  const blocks: BetaContentBlockParam[] = [];
+  for (const f of files) {
+    if (f.mime.startsWith('image/')) {
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: f.mime as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif', data: f.data.toString('base64') } });
+    } else if (f.mime === 'application/pdf') {
+      blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data.toString('base64') }, title: f.name });
+    } else {
+      blocks.push({ type: 'text', text: `Attached file “${f.name}”:\n${f.data.toString('utf8').slice(0, 60_000)}` });
+    }
+  }
+  blocks.push({ type: 'text', text: text || '(No message — please look at what I attached.)' });
+  return blocks;
 }
 
 /** chatDayContext_: what Hana can see. */
@@ -148,8 +175,12 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     'You are their personal assistant and can act in MyDay with your tools: tasks, groceries, notes, homework, workouts, bills, ' +
     'the shared household calendar (add and read events), push reminders at a time ("remind me at 5 to…"), planning meals from ' +
     'the recipe library, kids’ chores, how the kids are doing, a read-only money picture, sending the grocery list to Instacart or their Kroger cart, searching flights with booking links, and errands on websites in a real browser with their saved logins (run_errand: reorder, check an order, book a table) — anything that spends money waits for their OK, so never say something was bought or booked until the errand says it was. When they ask you to do something, ' +
-    'do it rather than telling them how. When they tell you a lasting preference or fact about themselves or their family ' +
-    '("I’m vegetarian", "soccer is every Tuesday"), save it with remember. Times are the household’s local time. Deleting, ' +
+    'do it rather than telling them how. WORKING MEMORY: whenever they tell you something worth knowing next time — names and ages of ' +
+    'people in their life, preferences, routines, what they’re working on or worried about, ongoing topics, context about their kids or work ' +
+    '("I’m vegetarian", "soccer is every Tuesday", "my boss is Dana", "we’re potty training Evan") — save it right away with remember, ' +
+    'one short fact per call, without asking, and don’t save something you already remember. Use what you remember naturally in later answers. ' +
+    'Never save passwords, card or account numbers, or other secrets. They can see and edit everything you remember on the Ask Hana page. ' +
+    'Times are the household’s local time. Deleting, ' +
     'clearing or forgetting anything only happens after they tap Confirm, so never say it is done until it is.'
   );
 }
@@ -189,8 +220,11 @@ export function libraryInstructions(message: string, earlier: string[] = []): st
 
 chatRouter.post('/api/chat/:mode', async (req, res) => {
   const { me, mode } = await modeFor(req);
-  const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown };
-  const msg = str(body.message, 'message', 2000, true);
+  const body = req.body as { message?: unknown; lectureId?: unknown; clientId?: unknown; attachmentIds?: unknown };
+  const wanted = Array.isArray(body.attachmentIds) ? [...new Set(body.attachmentIds.map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))] : [];
+  if (wanted.length > 4) throw new HttpError(400, 'Up to 4 attachments per message');
+  if (wanted.length && mode !== 'companion') throw new HttpError(400, 'Attachments are for Ask Hana');
+  const msg = str(body.message, 'message', 2000, wanted.length === 0);
   const clientId = typeof body.clientId === 'string' && /^[\w-]{8,64}$/.test(body.clientId) ? body.clientId : null;
   // Under 13: a parent turns the homework helper on first (it sends the child's words to an AI provider).
   if (mode === 'tutor') await requireAiConsent(me);
@@ -212,24 +246,40 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     res.json(out);
     return;
   }
+  let attached: number[];
   if (existing) {
     rowId = existing.id;
     await pool.query('UPDATE chat_messages SET failed = false WHERE id = $1', [rowId]);
+    attached = (await pool.query<{ attachment_ids: number[] }>('SELECT attachment_ids FROM chat_messages WHERE id = $1', [rowId])).rows[0]?.attachment_ids ?? [];
   } else {
+    // Only the person's own attachments, and only ones not already sent with another message.
+    const { rows: own } = wanted.length
+      ? await pool.query<{ id: number }>(
+          `SELECT a.id FROM chat_attachments a WHERE a.member_id = $1 AND a.id = ANY($2::int[])
+             AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.member_id = $1 AND a.id = ANY(m.attachment_ids))`,
+          [me.id, wanted],
+        )
+      : { rows: [] as Array<{ id: number }> };
+    if (own.length !== wanted.length) throw new HttpError(400, 'Attach the file again — that one isn’t available');
+    attached = wanted;
     const ins = await pool.query<{ id: number }>(
-      "INSERT INTO chat_messages (member_id, mode, who, text, client_id) VALUES ($1, $2, 'user', $3, $4) ON CONFLICT DO NOTHING RETURNING id",
-      [me.id, mode, msg, clientId],
+      "INSERT INTO chat_messages (member_id, mode, who, text, client_id, attachment_ids) VALUES ($1, $2, 'user', $3, $4, $5) ON CONFLICT DO NOTHING RETURNING id",
+      [me.id, mode, msg, clientId, attached],
     );
     if (!ins.rows[0]) throw new HttpError(409, 'Hana is still answering that one');
     rowId = ins.rows[0].id;
   }
-  // What Hana sees: the conversation before this message, without ones she couldn't answer.
+  // What Hana sees: the conversation before this message (the last 16), without ones she couldn't answer.
   const { rows: priorRows } = await pool.query<MsgRow>(
-    'SELECT id, who, text, created_at, failed, client_id FROM chat_messages WHERE member_id = $1 AND mode = $2 AND id < $3 AND NOT failed ORDER BY id DESC LIMIT 10',
+    `SELECT ${MSG_COLS} FROM chat_messages WHERE member_id = $1 AND mode = $2 AND id < $3 AND NOT failed ORDER BY id DESC LIMIT 16`,
     [me.id, mode, rowId],
   );
-  const turns: ChatTurn[] = priorRows.reverse().map((m) => ({ role: m.who === 'hana' ? 'assistant' : 'user', content: m.text.slice(0, 1000) }));
-  turns.push({ role: 'user', content: msg });
+  const earlierFiles = await attachmentInfo(me.id, priorRows.flatMap((r) => r.attachment_ids));
+  const turns: ChatTurn[] = priorRows.reverse().map((m) => ({
+    role: m.who === 'hana' ? 'assistant' : 'user',
+    content: `${m.text.slice(0, 1000)}${m.attachment_ids.length ? ` [attached earlier: ${m.attachment_ids.map((id) => earlierFiles.get(id)?.name ?? 'a file').join(', ')}]` : ''}`.trim() || '(attachment)',
+  }));
+  turns.push({ role: 'user', content: withAttachments(msg, await loadAttachments(me.id, attached)) });
   // The API wants the first turn from the user.
   while (turns[0]?.role === 'assistant') turns.shift();
 
@@ -244,7 +294,7 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     }
   }
   // Hana's library (book → medical reference → general knowledge) for ADHD questions.
-  if (mode === 'companion') system += libraryInstructions(msg, turns.filter((t) => t.role === 'user').map((t) => t.content));
+  if (mode === 'companion') system += libraryInstructions(msg, turns.slice(0, -1).filter((t) => t.role === 'user').map(turnText));
   const actions: HanaAction[] = [];
   const started = Date.now();
   let text: string;
@@ -262,7 +312,7 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   console.log(`chat: send ${mode} member=${me.id} model=${model.kind === 'claude' ? process.env.CHAT_MODEL || 'claude-opus-5-5' : 'stub'} ms=${Date.now() - started} ok actions=${actions.length}`);
   await logEvent('hana_asked', { mode, actions: actions.length }, me.id);
   const { rows } = await pool.query<MsgRow>(
-    "INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING id, who, text, created_at, failed, client_id",
+    `INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING ${MSG_COLS}`,
     [me.id, mode, text],
   );
   const reply = rows[0];

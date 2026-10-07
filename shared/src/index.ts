@@ -1176,11 +1176,21 @@ export interface RedAlertDone extends EarnResult {
 
 export type ChatMode = 'companion' | 'tutor';
 
+/** A photo or file attached to an Ask Hana message (only its owner can open it). */
+export interface ChatAttachment {
+  id: number;
+  name: string;
+  mime: string;
+  size: number;
+  url: string;
+}
+
 export interface ChatMessage {
   id: number;
   who: 'user' | 'hana';
   text: string;
   at: string;
+  attachments: ChatAttachment[];
   /** A message of theirs Hana couldn't answer (shows Retry). */
   failed: boolean;
   /** The phone's id for a message it sent (a retry reuses it). */

@@ -9,6 +9,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import type {
+  BetaContentBlockParam,
   BetaMessageParam,
   BetaTool,
   BetaToolResultBlockParam,
@@ -19,8 +20,13 @@ import { HttpError } from './http.js';
 
 export interface ChatTurn {
   role: 'user' | 'assistant';
-  content: string;
+  /** Text, or (for a message with photos/files) content blocks: images, PDFs, text. */
+  content: string | BetaContentBlockParam[];
 }
+
+/** The words of a turn (attachments left out). */
+export const turnText = (t: ChatTurn): string =>
+  typeof t.content === 'string' ? t.content : t.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n').trim();
 
 /** Runs one tool call; the returned text goes back to the model as the tool result. */
 export type ToolExec = (name: string, input: unknown) => Promise<string>;
@@ -165,7 +171,10 @@ class StubModel implements ChatModel {
   readonly kind = 'stub' as const;
 
   async reply(system: string, messages: ChatTurn[], maxTokens: number): Promise<string> {
-    const last = messages[messages.length - 1]?.content ?? '';
+    const lastTurn = messages[messages.length - 1];
+    const last = lastTurn ? turnText(lastTurn) : '';
+    const blocks = lastTurn && typeof lastTurn.content !== 'string' ? lastTurn.content : [];
+    if (last.includes('__stub_markdown__')) return ['Here is a plan:', '', '**Tonight:** lay out clothes.', '', '- Pack the bag', '- Shoes by the door', '', '1. Wake up', '2. *Breakfast*', '', 'That’s it.'].join('\n');
     if (last.includes('__stub_slow__')) await new Promise((r) => setTimeout(r, 1500));
     if (last.includes(STUB_FAIL) && !stubFailedOnce.has(last)) {
       stubFailedOnce.add(last);
@@ -183,12 +192,17 @@ class StubModel implements ChatModel {
       system.includes('FROM THE BOOK') ? 'library=book' : '',
       system.includes('FROM THE MEDICAL REFERENCE') ? 'library=medical' : '',
       system.includes('No library passages matched') ? 'library=none' : '',
+      blocks.some((b) => b.type === 'image') ? `images=${blocks.filter((b) => b.type === 'image').length}` : '',
+      blocks.some((b) => b.type === 'document') ? `pdfs=${blocks.filter((b) => b.type === 'document').length}` : '',
+      blocks.some((b) => b.type === 'text' && b.text.startsWith('Attached file')) ? 'textfile' : '',
+      ((m) => (m ? `remembers=${(m.match(/#\d+/g) ?? []).length}` : ''))(system.match(/Things you remember about [^(]+\(memory ids\): ([^.]*)/)?.[1] ?? ''),
     ].filter(Boolean);
     return `[stub reply] You said: "${last.slice(0, 80)}" (${facts.join(', ')})`;
   }
 
   async act(system: string, messages: ChatTurn[], kit: ToolKit, maxTokens: number): Promise<string> {
-    const last = messages[messages.length - 1]?.content ?? '';
+    const lastTurn = messages[messages.length - 1];
+    const last = lastTurn ? turnText(lastTurn) : '';
     const calls = kit.stubPlan(last);
     if (!calls.length) return this.reply(system, messages, maxTokens);
     const out: string[] = [];

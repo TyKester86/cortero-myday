@@ -161,6 +161,7 @@ const serverEnv = (fakeNow) => ({
   // Local proof only: fake bank data + stubbed AI replies (both refused in production).
   MONEY_PROVIDER: 'fake',
   CHAT_STUB: '1',
+  CHAT_PER_HOUR: '200',
   // Big build local proofs (all refused in production): canned lecture transcript,
   // push recorded instead of sent, Google Classroom with 3 sample courses.
   TRANSCRIPTION_STUB: '1',
@@ -1698,6 +1699,54 @@ async function careTeam() {
     await ty.del('/api/chat/companion');
     return [await chatCount(ty), (await chatCount(kayla)) === before];
   })(), [0, true]);
+
+  section('Ask Hana attachments: photos, PDFs and text files go to Hana with the message; private to their owner');
+  const attach = (who, body, type, name = 'file', headers = {}) =>
+    who.req('POST', `/api/chat/attachments?name=${encodeURIComponent(name)}`, body, { json: false, headers: { 'Content-Type': type, 'X-MyDay-Upload': '1', ...headers } });
+  const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(400, 7), Buffer.from([0xff, 0xd9])]);
+  const pdf = Buffer.from('%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n');
+  let ua = await attach(ty, photo, 'image/jpeg', 'fridge.jpg');
+  eq('a photo is attached (stored, with a private link)', [ua.status, ua.data.mime, ua.data.name, ua.data.url], [201, 'image/jpeg', 'fridge.jpg', `/api/chat/attachments/${ua.data.id}`]);
+  const photoId = ua.data.id;
+  const pdfId = (await attach(ty, pdf, 'application/pdf', 'lease.pdf')).data.id;
+  const txtId = (await attach(ty, Buffer.from('Milk\nEggs\nBread\n'), 'text/plain', 'list.txt')).data.id;
+  eq('without the upload header → 400 (no cross-site uploads)', (await attach(ty, photo, 'image/jpeg', 'x.jpg', { 'X-MyDay-Upload': '0' })).status, 400);
+  eq('a file that isn’t a photo, PDF or text → 415', (await attach(ty, Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff]), 'application/octet-stream', 'setup.exe')).status, 415);
+  eq('a photo that claims to be a PDF is checked by its bytes', (await attach(ty, Buffer.from('not really a pdf at all'), 'application/pdf', 'fake.pdf')).status, 415);
+  eq('kids can’t attach files to Hana', (await attach(avery, photo, 'image/jpeg', 'k.jpg')).status, 403);
+  const own = await ty.req('GET', `/api/chat/attachments/${photoId}`, undefined, { json: false });
+  eq('the owner opens their photo (never cached)', [own.status, own.headers.get('content-type'), own.headers.get('cache-control')], [200, 'image/jpeg', 'private, no-store']);
+  eq('another grown-up in the house can’t open it', (await kayla.get(`/api/chat/attachments/${photoId}`)).status, 404);
+  eq('…or send it as theirs', (await kayla.post('/api/chat/companion', { message: 'look', attachmentIds: [photoId] })).status, 400);
+  cr = await ty.post('/api/chat/companion', { message: 'what can I make with this?', clientId: 'e2e-att-0001', attachmentIds: [photoId, pdfId, txtId] });
+  check('Hana gets the photo, the PDF and the text file with the message', cr.status === 200 && /images=1/.test(cr.data.reply.text) && /pdfs=1/.test(cr.data.reply.text) && /textfile/.test(cr.data.reply.text), cr.data.reply?.text ?? JSON.stringify(cr.data));
+  const sentMsg = cr.data.history.find((m) => m.clientId === 'e2e-att-0001');
+  eq('the message shows its attachments', sentMsg.attachments.map((a) => a.name), ['fridge.jpg', 'lease.pdf', 'list.txt']);
+  eq('an attachment goes with one message only', (await ty.post('/api/chat/companion', { message: 'again', attachmentIds: [photoId] })).status, 400);
+  const onlyPhoto = (await attach(ty, photo, 'image/jpeg', 'shelf.jpg')).data.id;
+  cr = await ty.post('/api/chat/companion', { clientId: 'e2e-att-0002', attachmentIds: [onlyPhoto] });
+  check('a photo with no words is fine — Hana is asked to look at it', cr.status === 200 && /images=1/.test(cr.data.reply.text), JSON.stringify(cr.data).slice(0, 200));
+  eq('more than 4 at once → 400', (await ty.post('/api/chat/companion', { message: 'many', attachmentIds: [1, 2, 3, 4, 5] })).status, 400);
+  cr = await ty.post('/api/chat/companion', { message: 'and what about dessert?' });
+  check('a later message: Hana is told what was attached earlier (no re-sending the bytes)', cr.status === 200 && !/images=/.test(cr.data.reply.text), cr.data.reply.text);
+
+  section('Hana remembers: facts kept across conversations, visible and correctable');
+  const tyMem = async () => (await ty.get('/api/hana/memory')).data.memories;
+  const m0 = (await tyMem()).length;
+  cr = await ty.post('/api/chat/companion', { message: 'always remember: my son’s teacher is Ms Park' });
+  eq('“always remember …” → kept', (await tyMem()).some((m) => m.fact === 'my son’s teacher is Ms Park'), true);
+  cr = await ty.post('/api/chat/companion', { message: 'who is the teacher again?' });
+  check('a later message: Hana has it in mind', new RegExp(`remembers=${m0 + 1}\\b`).test(cr.data.reply.text), cr.data.reply.text);
+  await ty.del('/api/chat/companion');
+  cr = await ty.post('/api/chat/companion', { message: 'new conversation — who is the teacher?' });
+  check('…even after the conversation is cleared (a new session)', new RegExp(`remembers=${m0 + 1}\\b`).test(cr.data.reply.text), cr.data.reply.text);
+  eq('add a memory yourself', (await ty.post('/api/hana/memory', { fact: 'allergic to peanuts' })).status, 201);
+  const pea = (await tyMem()).find((m) => m.fact === 'allergic to peanuts');
+  eq('correct one', [(await ty.patch(`/api/hana/memory/${pea.id}`, { fact: 'allergic to tree nuts, not peanuts' })).status, (await tyMem()).find((m) => m.id === pea.id).fact], [200, 'allergic to tree nuts, not peanuts']);
+  eq('nobody else can change your memories', [(await kayla.patch(`/api/hana/memory/${pea.id}`, { fact: 'hacked' })).status, (await tyMem()).find((m) => m.id === pea.id).fact], [404, 'allergic to tree nuts, not peanuts']);
+  eq('an empty memory is refused', (await ty.post('/api/hana/memory', { fact: '   ' })).status, 400);
+  for (const m of await tyMem()) await ty.del(`/api/hana/memory/${m.id}`);
+  await ty.del('/api/chat/companion');
 
   section('Hana’s library: the book first, then the medical reference, cited — and “I don’t know” outside it');
   const libStats = JSON.parse(runNode(['--input-type=module', '-e', "const m = await import('./dist/lib/library.js'); process.stdout.write(JSON.stringify(m.libraryStats())); process.exit(0);"]));
@@ -3305,6 +3354,89 @@ async function uiGate() {
     await page.getByTestId('msg-delete').click();
     await page.waitForTimeout(500);
     eq('tap a message → Delete removes it', await page.getByTestId('msg-me').filter({ hasText: 'supercalifragilistic' }).count(), 0);
+
+    section('Ask Hana on a phone: the input stays put, the keyboard hides the tab bar, photos, formatted replies, “Hana remembers”');
+    // A long conversation to scroll (written straight to the database: no AI calls).
+    const [tyRow] = await sql("SELECT member_id, household_id FROM chat_messages WHERE text = 'slow one __stub_slow__' LIMIT 1");
+    for (let i = 0; i < 6; i++) {
+      for (const who of ['user', 'hana']) {
+        await sql("INSERT INTO chat_messages (member_id, household_id, mode, who, text) VALUES ($1, $2, 'companion', $3, $4)", [tyRow.member_id, tyRow.household_id, who, `filler ${who} ${i} ${'so the conversation is long enough to scroll. '.repeat(3)}`]);
+      }
+    }
+    await page.reload();
+    await page.getByTestId('chat-bar').waitFor();
+    const layout = () =>
+      page.evaluate(() => {
+        const r = (el) => (el ? el.getBoundingClientRect() : null);
+        const tabsEl = document.querySelector('nav.tabs');
+        const bar = r(document.querySelector('[data-testid=chat-bar]'));
+        const last = r([...document.querySelectorAll('[data-testid=msg-hana]')].at(-1));
+        return { barTop: Math.round(bar.top), barBottom: Math.round(bar.bottom), tabsTop: Math.round(r(tabsEl).top), tabsShown: getComputedStyle(tabsEl).display !== 'none', lastBottom: Math.round(last.bottom), h: innerHeight, canScroll: document.documentElement.scrollHeight > innerHeight + 100, kb: document.documentElement.classList.contains('kb-open') };
+      });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(200);
+    const atTop = await layout();
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await page.waitForTimeout(200);
+    const atEnd = await layout();
+    check('scroll the conversation → the input bar stays put, right above the tab bar', atTop.canScroll && atTop.barTop === atEnd.barTop && Math.abs(atTop.barBottom - atTop.tabsTop) <= 1, JSON.stringify([atTop, atEnd]));
+    check('…and the last message is never hidden behind it', atEnd.lastBottom <= atEnd.barTop, JSON.stringify(atEnd));
+    await box.focus();
+    await page.waitForTimeout(300);
+    const kbUp = await layout();
+    eq('tap the input → the tab bar stays down (never floats above the keyboard)', [kbUp.kb, kbUp.tabsShown], [true, false]);
+    // Headless has no on-screen keyboard: stand in for one covering 300px of the screen.
+    await page.evaluate(() => document.documentElement.style.setProperty('--kb-inset', '300px'));
+    const riding = await layout();
+    eq('…and the input bar rides up on top of the keyboard', riding.barBottom, riding.h - 300);
+    await box.blur();
+    await page.waitForTimeout(400);
+    const kbDown = await layout();
+    eq('keyboard closed → the tab bar is back and the bar sits above it', [kbDown.kb, kbDown.tabsShown, Math.abs(kbDown.barBottom - kbDown.tabsTop) <= 1], [false, true, true]);
+
+    const png = await page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 64;
+      c.height = 48;
+      const x = c.getContext('2d');
+      x.fillStyle = '#d33';
+      x.fillRect(0, 0, 64, 48);
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    eq('the input bar has an attach button (camera, photo library, files)', await page.getByTestId('chat-attach').isVisible(), true);
+    eq('…that takes photos, PDFs and text files', await page.getByTestId('chat-file').getAttribute('accept'), 'image/*,application/pdf,text/plain,text/csv,text/markdown,.txt,.csv,.md,.pdf');
+    await page.getByTestId('chat-file').setInputFiles({ name: 'fridge.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    await page.getByTestId('chat-draft').waitFor({ timeout: 10000 });
+    await page.waitForFunction(() => !document.querySelector('[data-testid=chat-draft]')?.textContent.includes('Attaching'), null, { timeout: 10000 });
+    eq('attach a photo → a preview by the input, ready to send', [await page.getByTestId('chat-draft').count(), await page.getByTestId('chat-draft').locator('img').count(), (await page.getByTestId('chat-draft').innerText()).replace('×', '').trim()], [1, 1, 'fridge.png']);
+    await box.fill('what is in this photo?');
+    await sendBtn.click();
+    await page.getByTestId('msg-me').filter({ hasText: 'what is in this photo?' }).waitFor({ timeout: 10000 });
+    await page.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+    const sentPhoto = page.getByTestId('msg-me').last().getByTestId('msg-photo');
+    const photoW = await sentPhoto.evaluate((img) => (img.complete && img.naturalWidth ? img.naturalWidth : new Promise((ok) => { img.onload = () => ok(img.naturalWidth); img.onerror = () => ok(0); })));
+    check('sent → the photo shows in your message (loaded from your account)', photoW > 0, String(photoW));
+    check('…and Hana sees it', /images=1/.test(await page.getByTestId('msg-hana').last().innerText()), await page.getByTestId('msg-hana').last().innerText());
+    eq('…and the preview is cleared from the input', await page.getByTestId('chat-draft').count(), 0);
+
+    await box.fill('format test __stub_markdown__');
+    await sendBtn.click();
+    await page.getByTestId('hana-thinking').waitFor({ state: 'detached', timeout: 10000 });
+    const md = page.getByTestId('msg-hana').last();
+    eq('Hana’s replies are formatted — bold, bullets, numbered steps, line breaks — never raw markup', [await md.locator('strong').first().innerText(), await md.locator('ul li').count(), await md.locator('ol li').count(), await md.locator('em').count(), await md.locator('p').count() >= 3, /\*\*|^\s*[-*] /m.test(await md.innerText())], ['Tonight:', 2, 2, 1, true, false]);
+
+    await page.getByTestId('hana-knows').locator('summary').click();
+    await page.getByLabel('Tell Hana something to remember').fill('likes oat milk');
+    await page.getByTestId('hana-memory-add').click();
+    const oat = page.getByTestId('hana-memory').filter({ hasText: 'likes oat milk' });
+    await oat.waitFor({ timeout: 10000 });
+    await oat.getByTestId('hana-memory-edit').click();
+    await page.getByLabel('What Hana remembers').fill('likes oat milk, not almond');
+    await page.getByTestId('hana-memory-save').click();
+    await page.getByTestId('hana-memory').filter({ hasText: 'not almond' }).waitFor({ timeout: 10000 });
+    const tyMemNow = (await (await page.request.get(`${BASE}/api/hana/memory`)).json()).memories;
+    eq('“Hana remembers” (at the top): add a fact, then correct it', tyMemNow.map((m) => m.fact).includes('likes oat milk, not almond'), true);
+    for (const m of tyMemNow) await page.request.delete(`${BASE}/api/hana/memory/${m.id}`);
 
     section('admin with a household of their own can open /admin; the signup screen says what’s missing and has a Back button');
     const ownerCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });

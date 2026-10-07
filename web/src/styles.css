@@ -638,3 +638,43 @@ h2 { font-size: 19px; line-height: 1.25; }
 .meeting-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .title-input { font-family: var(--display); font-size: 26px; text-transform: uppercase; border: 0; border-bottom: 2px dashed var(--line); background: transparent; padding: 4px 0; width: 100%; min-width: 0; flex: 1 1 220px; }
 .transcript { white-space: pre-wrap; line-height: 1.6; overflow-wrap: anywhere; }
+
+/* ---------- Ask Hana: fixed input bar, keyboard, attachments, formatted replies ---------- */
+/* Phones: while the keyboard is up, the tab bar stays down behind it (never floats above it). */
+html.kb-open nav.tabs, html.kb-open .hana-fab { display: none; }
+.chat { padding-bottom: calc(var(--send-h, 72px) + 8px); }
+.chat-end { scroll-margin-bottom: calc(var(--send-h, 72px) + var(--tabs-h, 0px) + 12px); }
+html.kb-open .chat-end { scroll-margin-bottom: calc(var(--send-h, 72px) + 12px); }
+/* The input never scrolls away: pinned above the tab bar, and riding on top of the keyboard. */
+.chat-send { position: fixed; left: 0; right: 0; bottom: var(--tabs-h, 0px); z-index: 30; margin: 0; background: var(--bg); border-top: 1px solid var(--line); }
+html.kb-open .chat-send { bottom: var(--kb-inset, 0px); }
+.chat-send-in { max-width: 640px; margin: 0 auto; padding: 8px 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; }
+.chat-send-row { display: flex; gap: 8px; align-items: center; }
+.chat-send-row input:not([type='file']) { flex: 1; min-width: 0; }
+.app.sidebar .chat-send { position: sticky; bottom: 0; }
+.app.sidebar .chat-send-in { max-width: none; padding-inline: 0; }
+.attach-btn { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; padding: 0; }
+.attach-btn:disabled { opacity: 0.45; cursor: default; }
+.draft-files { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.draft-file { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 200px; padding: 4px 4px 4px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 13px; }
+.draft-file img { width: 32px; height: 32px; object-fit: cover; border-radius: 6px; }
+.draft-file.bad { border-color: var(--danger, #b91c1c); color: var(--danger, #b91c1c); }
+.draft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.draft-x { border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 6px; cursor: pointer; }
+.msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.msg.me .msg-files { justify-content: flex-end; }
+.msg-photo { display: block; width: 160px; max-width: 100%; max-height: 220px; object-fit: cover; border-radius: 14px; border: 1px solid var(--line); }
+.file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); font-size: 14px; text-decoration: none; max-width: 100%; overflow-wrap: anywhere; }
+.hana-knows summary { cursor: pointer; }
+.hana-knows .rows li { gap: 8px; }
+.mem-tools { display: inline-flex; gap: 10px; flex: none; }
+.mem-edit { flex: 1; margin: 0; }
+.mem-edit input { flex: 1; min-width: 0; }
+/* Hana's replies: markdown rendered (never raw **). */
+.bubble.hana { white-space: normal; }
+.md > * { margin: 0; }
+.md > * + * { margin-top: 8px; }
+.md ul, .md ol { padding-left: 20px; }
+.md li + li { margin-top: 2px; }
+.md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: var(--line); border-radius: 4px; padding: 0 4px; }
+.md hr { border: 0; border-top: 1px solid var(--line); }

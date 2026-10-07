@@ -6,7 +6,7 @@
  */
 import { Router } from 'express';
 import { asSystem, inHousehold, pool } from '../db.js';
-import { HttpError, idParam } from '../lib/http.js';
+import { HttpError, idParam, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
 import { CopyPolicyError, pushConfigured, sendTo } from '../lib/push.js';
 import { registerJob } from '../lib/schedulers.js';
@@ -35,6 +35,25 @@ assistantRouter.get('/api/hana/memory', async (req, res) => {
     memories: mem.map((m): HanaMemory => ({ id: m.id, fact: m.fact, at: m.created_at.toISOString() })),
     reminders: rem.map((r): HanaReminder => ({ id: r.id, text: r.text, at: r.remind_at.toISOString() })),
   });
+});
+
+/** Tell Hana something to remember (or she saves it herself in chat). */
+assistantRouter.post('/api/hana/memory', async (req, res) => {
+  const me = self(req);
+  const fact = str((req.body as { fact?: unknown }).fact, 'fact', 300, true);
+  const { rows: n } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM hana_memories WHERE member_id = $1', [me.id]);
+  if ((n[0]?.n ?? 0) >= 200) throw new HttpError(409, 'Hana is holding a lot already — forget a few first');
+  await pool.query('INSERT INTO hana_memories (member_id, fact) VALUES ($1, $2)', [me.id, fact]);
+  res.status(201).json({ ok: true });
+});
+
+/** Correct something Hana remembers. */
+assistantRouter.patch('/api/hana/memory/:id', async (req, res) => {
+  const me = self(req);
+  const fact = str((req.body as { fact?: unknown }).fact, 'fact', 300, true);
+  const { rowCount } = await pool.query('UPDATE hana_memories SET fact = $3 WHERE id = $1 AND member_id = $2', [idParam(req.params.id), me.id, fact]);
+  if (!rowCount) throw new HttpError(404, 'Not found');
+  res.json({ ok: true });
 });
 
 assistantRouter.delete('/api/hana/memory/:id', async (req, res) => {
