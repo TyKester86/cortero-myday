@@ -40,7 +40,12 @@ export function inline(text: string, keyBase = 'i'): ReactNode[] {
   return out;
 }
 
-type Block = { kind: 'p'; lines: string[] } | { kind: 'list'; ordered: boolean; items: string[]; start: number } | { kind: 'h'; text: string } | { kind: 'hr' };
+type Block =
+  | { kind: 'p'; lines: string[] }
+  | { kind: 'quote'; lines: string[] }
+  | { kind: 'list'; ordered: boolean; items: string[]; start: number }
+  | { kind: 'h'; text: string }
+  | { kind: 'hr' };
 
 export function blocks(src: string): Block[] {
   const out: Block[] = [];
@@ -54,7 +59,11 @@ export function blocks(src: string): Block[] {
       out.push({ kind: 'p', lines: [] }); // a blank line ends the current block
       continue;
     }
-    if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) out.push({ kind: 'hr' });
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      if (prev?.kind === 'quote') prev.lines.push(quote[1] ?? '');
+      else out.push({ kind: 'quote', lines: [quote[1] ?? ''] });
+    } else if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) out.push({ kind: 'hr' });
     else if (/^#{1,6}\s+/.test(line)) out.push({ kind: 'h', text: line.replace(/^#{1,6}\s+/, '') });
     else if (bullet) {
       if (prev?.kind === 'list' && !prev.ordered) prev.items.push(bullet[1] ?? '');
@@ -78,6 +87,7 @@ export default function Markdown({ text }: { text: string }) {
         const k = `b${i}`;
         if (b.kind === 'hr') return <hr key={k} />;
         if (b.kind === 'h') return <p key={k} className="md-h"><strong>{inline(b.text, k)}</strong></p>;
+        if (b.kind === 'quote') return <blockquote key={k}>{inline(b.lines.join(' '), k)}</blockquote>;
         if (b.kind === 'list') {
           const items = b.items.map((it, j) => <li key={j}>{inline(it, `${k}-${j}`)}</li>);
           return b.ordered ? <ol key={k} start={b.start}>{items}</ol> : <ul key={k}>{items}</ul>;

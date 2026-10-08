@@ -45,6 +45,7 @@ const P: Record<string, string> = {
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 2.8v3.6M16 2.8v3.6"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01"/>',
   village: '<path d="M3.5 5.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3a2 2 0 0 1-2-2z"/><path d="M18 8.5h.5a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2v3l-3.5-3h-4a2 2 0 0 1-1.9-1.4"/>',
   feed: '<rect x="4" y="3.5" width="16" height="17" rx="2.5"/><circle cx="8.5" cy="8.3" r="1.6"/><path d="M11.5 7.5h5M11.5 9.5h3M7.5 13.5h9M7.5 16.5h6"/>',
+  library: '<path d="M4 4.5h3.2v15H4z"/><path d="M8.6 4.5h3.2v15H8.6z"/><path d="m13.6 5.6 3-.8 3.6 13.9-3 .8z"/><path d="M4 8h3.2M8.6 8h3.2M4 16h3.2M8.6 16h3.2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/><circle cx="12" cy="12" r="6.3"/>',
 };
 

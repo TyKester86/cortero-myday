@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
+import { count } from '../../format';
 
 const PRESETS = [10, 15, 20, 25];
 
@@ -66,7 +67,7 @@ export default function Focus() {
         <div className="overlay" onClick={() => setDone(false)}>
           <div className="celebrate">
             <div className="big">FOCUS COMPLETE</div>
-            <p>{minutes} minutes of real focus. That's a win.</p>
+            <p>{count(minutes, 'minute')} of real focus. That's a win.</p>
             <button className="btn" onClick={() => setDone(false)}>
               Nice
             </button>

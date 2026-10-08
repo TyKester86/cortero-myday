@@ -6,6 +6,7 @@ import QuickNote from '../../components/QuickNote';
 import { day as fmtDay, due as fmtDue } from '../../dates';
 import { useSession } from '../../session';
 import { TodayOnCalendar } from '../calendar/Calendar';
+import { count } from '../../format';
 
 const greeting = (h: number): string => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
 
@@ -200,7 +201,7 @@ export default function Today() {
               ) : health.data.session ? (
                 <p className="small">
                   {health.data.dayCompleted ? '✓ Done today: ' : 'Today: '}
-                  <b>{health.data.session.dayName}</b> · {health.data.session.exercises.length} exercises · <Link to="/health">Open →</Link>
+                  <b>{health.data.session.dayName}</b> · {count(health.data.session.exercises.length, 'exercise')} · <Link to="/health">Open →</Link>
                 </p>
               ) : (
                 <p className="small">

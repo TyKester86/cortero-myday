@@ -17,6 +17,7 @@ import type {
 import { api, useLoad, withMember } from '../../api';
 import { useSession } from '../../session';
 import { openGroceryPopout } from './GroceryPopout';
+import { count } from '../../format';
 
 /** One household grocery list — one family, one grocery run. */
 export default function Grocery() {
@@ -42,8 +43,8 @@ export default function Grocery() {
     const r = await api<GroceryFromWeekResult>(withMember('/api/grocery/from-week', viewing?.key ?? null), 'POST');
     setData(r.grocery);
     setMsg(
-      `${r.meals} meals → ${r.added} added, ${r.merged} updated, ${r.skipped} already there, ` +
-        `${r.removed} no longer needed, ${r.staples} staples`,
+      `${count(r.meals, 'meal')} → ${r.added} added, ${r.merged} updated, ${r.skipped} already there, ` +
+        `${r.removed} no longer needed, ${count(r.staples, 'staple')}`,
     );
   };
 

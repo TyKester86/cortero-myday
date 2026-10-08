@@ -7,6 +7,7 @@ import { useSession } from '../../session';
 import { QuestsCard, useEngagement } from '../engagement/Wins';
 import { due } from '../../dates';
 import { TodayOnCalendar } from '../calendar/Calendar';
+import { count } from '../../format';
 
 /** Today's checklist for one person. Checking a chore pays out instantly. */
 export default function HomeChores() {
@@ -31,7 +32,7 @@ export default function HomeChores() {
       setData(r.today);
       setTotal(r.totalPoints);
       const pts = r.today.chores.find((c) => c.id === id)?.points ?? 0;
-      if (done) setToast(r.leveledUp ? `Level up! Lv ${r.xp.level} · ${r.xp.title} 🎉` : `+${pts} points`);
+      if (done) setToast(r.leveledUp ? `Level up! Lv ${r.xp.level} · ${r.xp.title} 🎉` : `+${count(pts, 'point')}`);
       if (r.perfectWeek?.awarded) setPerfect(r.perfectWeek);
       else if (r.perfectWeek?.clean) setToast('Perfect week so far.');
     } catch (e) {

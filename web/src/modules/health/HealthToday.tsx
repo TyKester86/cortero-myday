@@ -17,6 +17,7 @@ import { useSession } from '../../session';
 import { BuildPicker, ProgramCard } from './Program';
 import { ProgressPhotos } from './ProgressPhotos';
 import { day } from '../../dates';
+import { count } from '../../format';
 
 function LogRow({ ex, onLog }: { ex: WorkoutExercise; onLog: (r: LogExerciseRequest) => Promise<void> }) {
   const [weight, setWeight] = useState('');
@@ -257,7 +258,7 @@ export default function HealthToday() {
         </div>
       )}
       <p className="small" data-testid="week-progress">
-        This week: {data.week.done} of {data.week.planned} sessions
+        {`This week: ${data.week.done} of ${count(data.week.planned, 'session')}`}
         {data.week.minimumMet ? ' · minimum week done ✓ — two sessions counts as a win' : ' · two sessions counts as a win'}
       </p>
       {data.runCap && (

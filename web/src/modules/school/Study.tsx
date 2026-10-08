@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router';
 import type { Flashcard, StudyView } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { day } from '../../dates';
+import { count } from '../../format';
 
 /** Per-class study library: every lecture (kept forever), flashcards in Leitner boxes, quiz history. */
 export default function Study() {
@@ -30,7 +31,7 @@ export default function Study() {
       </p>
       <h1>{data.cls.name}</h1>
       <p className="muted small">
-        {data.lectures.length} lectures · {data.cards.length} flashcards
+        {`${count(data.lectures.length, 'lecture')} · ${count(data.cards.length, 'flashcard')}`}
         {data.accuracy !== null && ` · ${data.accuracy}% right lately`}
       </p>
       <div className="row">

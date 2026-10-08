@@ -5,6 +5,7 @@ import { api, useLoad, withMember } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 import { due } from '../../dates';
+import { count } from '../../format';
 
 type WithEarn = EarnResult & { school: SchoolResponse };
 
@@ -54,7 +55,7 @@ function ClassRow({ c, onArchive }: { c: ClassInfo; onArchive: () => void }) {
         </Link>{' '}
         <small className="muted">
           {[c.teacher, c.room, c.days.join(' '), c.startTime, c.source === 'classroom' ? 'Classroom' : ''].filter(Boolean).join(' · ')}
-          {` · ${c.lectureCount} lecture${c.lectureCount === 1 ? '' : 's'} · ${c.cardCount} cards`}
+          {` · ${c.lectureCount} lecture${c.lectureCount === 1 ? '' : 's'} · ${count(c.cardCount, 'card')}`}
         </small>
       </span>
       <span className="row">
@@ -229,7 +230,7 @@ export default function School() {
               {data.exams.map((x) => (
                 <li key={x.id}>
                   <span>
-                    {x.name} <small className="muted">{[x.course, x.date, x.daysLeft !== null && `${x.daysLeft} days`, `${x.prepCount} prep`].filter(Boolean).join(' · ')}</small>
+                    {x.name} <small className="muted">{[x.course, x.date, x.daysLeft !== null && count(x.daysLeft, 'day'), `${x.prepCount} prep`].filter(Boolean).join(' · ')}</small>
                   </span>
                   <span className="row">
                     <button className="btn small" onClick={() => void run(api<WithEarn>(path(`/api/school/exams/${x.id}/prep`), 'POST'), 'Prep logged ✓')}>
@@ -262,7 +263,7 @@ export default function School() {
               {data.campus.map((c) => (
                 <li key={c.id}>
                   <span>
-                    <b>{c.name}</b> <small className="muted">{[c.kind, c.phone, c.email, `${c.visits} visits`].filter(Boolean).join(' · ')}</small>
+                    <b>{c.name}</b> <small className="muted">{[c.kind, c.phone, c.email, count(c.visits, 'visit')].filter(Boolean).join(' · ')}</small>
                   </span>
                   <span className="row">
                     <button className="btn small" onClick={() => void run(api<SchoolResponse | WithEarn>(path(`/api/school/campus/${c.id}/visit`), 'POST'), 'Visit logged ✓')}>

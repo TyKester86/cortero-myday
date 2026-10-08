@@ -17,6 +17,8 @@ const CONTENT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..',
 
 export interface BookPassage {
   kind: 'book';
+  /** The chapter file (e.g. 07-the-mens-executive-command-system), for linking to it in the Library. */
+  slug: string;
   /** "Chapter 4: Medication — What the Research Actually Says" */
   chapter: string;
   /** The section heading inside the chapter, when there is one. */
@@ -66,7 +68,7 @@ function loadBook(): BookPassage[] {
     let buf: string[] = [];
     const flush = (): void => {
       const t = buf.join(' ').trim();
-      if (t.split(/\s+/).length >= 25) out.push({ kind: 'book', chapter, section, text: t });
+      if (t.split(/\s+/).length >= 25) out.push({ kind: 'book', slug: file.replace(/\.md$/, ''), chapter, section, text: t });
       buf = [];
     };
     for (const block of text.split(/\n\s*\n/)) {
@@ -146,7 +148,7 @@ export function libraryStats(): { bookPassages: number; chapters: number; medica
   return { bookPassages: l.book.length, chapters: new Set(l.book.map((x) => x.item.chapter)).size, medicalEntries: l.medical.length, lastReviewed: l.lastReviewed };
 }
 
-function rank<T extends LibraryItem>(pool: Array<Indexed<T>>, q: string[], idf: Map<string, number>, max: number, minScore: number): Array<{ item: T; score: number }> {
+function rank<T extends LibraryItem>(pool: Array<Indexed<T>>, q: string[], idf: Map<string, number>, max: number, minScore: number, minHits = 2): Array<{ item: T; score: number }> {
   const uniq = [...new Set(q)];
   return pool
     .map(({ item, tf }) => {
@@ -160,7 +162,7 @@ function rank<T extends LibraryItem>(pool: Array<Indexed<T>>, q: string[], idf: 
         }
       }
       // Reward covering more of the question, not one word repeated.
-      return { item, score: hits >= 2 ? score * (hits / uniq.length + 0.5) : 0 };
+      return { item, score: hits >= Math.min(minHits, uniq.length) ? score * (hits / uniq.length + 0.5) : 0 };
     })
     .filter((x) => x.score >= minScore)
     .sort((a, b) => b.score - a.score)
@@ -168,13 +170,16 @@ function rank<T extends LibraryItem>(pool: Array<Indexed<T>>, q: string[], idf: 
 }
 
 /** The most relevant book passages and medical entries for a question (book first). */
-export function searchLibrary(question: string, o: { book?: number; medical?: number } = {}): { book: BookPassage[]; medical: MedicalEntry[] } {
+export function searchLibrary(question: string, o: { book?: number; medical?: number; loose?: boolean } = {}): { book: BookPassage[]; medical: MedicalEntry[] } {
   const l = library();
   const q = terms(question);
   if (!q.length) return { book: [], medical: [] };
+  // Hana's prompt: only passages that clearly match (2+ of the question's words). A person searching the
+  // Library ("sleep"): anything that matches, best first.
+  const [min, hits] = o.loose ? [1, 1] : [4, 2];
   return {
-    book: rank(l.book, q, l.idf, o.book ?? 3, 4).map((x) => x.item),
-    medical: rank(l.medical, q, l.idf, o.medical ?? 3, 4).map((x) => x.item),
+    book: rank(l.book, q, l.idf, o.book ?? 3, min, hits).map((x) => x.item),
+    medical: rank(l.medical, q, l.idf, o.medical ?? 3, min, hits).map((x) => x.item),
   };
 }
 
@@ -212,4 +217,65 @@ export function libraryBrief(question: string, earlier: string[] = []): string {
     );
   }
   return parts.join('\n\n');
+}
+
+/* ---------- the Library page: the book and the medical reference, to read directly ---------- */
+
+export interface ChapterInfo {
+  slug: string;
+  title: string;
+  sections: string[];
+  minutes: number;
+}
+
+let contents: ChapterInfo[] | null = null;
+const chapterFiles = (): Array<{ file: string; text: string }> => readDir(path.join(CONTENT, 'book'));
+const titleOf = (file: string, text: string): string => text.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? file.replace(/\.md$/, '');
+
+/** The book's table of contents, in reading order (the bibliography last). */
+export function bookContents(): ChapterInfo[] {
+  if (contents) return contents;
+  const files = chapterFiles();
+  const order = [...files.filter((f) => !f.file.startsWith('bibliography')), ...files.filter((f) => f.file.startsWith('bibliography'))];
+  contents = order.map(({ file, text }) => ({
+    slug: file.replace(/\.md$/, ''),
+    title: titleOf(file, text),
+    sections: [...text.matchAll(/^##\s+(.+)$/gm)].map((m) => (m[1] ?? '').trim()),
+    // ~230 words a minute
+    minutes: Math.max(1, Math.round(text.split(/\s+/).length / 230)),
+  }));
+  return contents;
+}
+
+/** One chapter's text (markdown, without its title line), with its neighbours for next/previous. */
+export function bookChapter(slug: string): { slug: string; title: string; markdown: string; prev: ChapterInfo | null; next: ChapterInfo | null } | null {
+  const list = bookContents();
+  const i = list.findIndex((c) => c.slug === slug);
+  const c = list[i];
+  if (!c) return null;
+  const text = chapterFiles().find((f) => f.file === `${slug}.md`)?.text ?? '';
+  return { slug, title: c.title, markdown: text.replace(/^#\s+.+$/m, '').trim(), prev: list[i - 1] ?? null, next: list[i + 1] ?? null };
+}
+
+export interface MedicalTopic {
+  slug: string;
+  title: string;
+  entries: MedicalEntry[];
+}
+
+/** The medical reference by topic file, with its review dates. */
+export function medicalReference(): { lastReviewed: string | null; nextReviewDue: string | null; topics: MedicalTopic[] } {
+  const { entries, lastReviewed } = loadMedical();
+  let nextReviewDue: string | null = null;
+  try {
+    nextReviewDue = readFileSync(path.join(CONTENT, 'medical', 'README.md'), 'utf8').match(/next_review_due:\s*(\d{4}-\d{2}-\d{2})/)?.[1] ?? null;
+  } catch {
+    /* no README */
+  }
+  const topics = readDir(path.join(CONTENT, 'medical')).map(({ file, text }) => ({
+    slug: file.replace(/\.md$/, ''),
+    title: titleOf(file, text),
+    entries: entries.filter((e) => e.file === file),
+  }));
+  return { lastReviewed, nextReviewDue, topics: topics.filter((t) => t.entries.length) };
 }

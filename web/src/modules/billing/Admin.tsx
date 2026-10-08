@@ -3,6 +3,7 @@ import { HOUSEHOLD_TYPE_INFO, type AdminDashboard, type BillingPlan } from '@myd
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { money } from './Billing';
+import { count } from '../../format';
 
 function PlanRow({ p, onSave }: { p: BillingPlan; onSave: (patch: Record<string, unknown>) => void }) {
   const [price, setPrice] = useState(p.priceCents === null ? '' : (p.priceCents / 100).toFixed(2));
@@ -107,9 +108,10 @@ export default function Admin() {
           {shown.map((h) => (
             <li key={h.id}>
               <span className="grow">
-                <b>{h.name}</b>{' '}
+                {/* The name on its own line: a household named "J" next to "Just me" read as "JJust me". */}
+                <b className="admin-hh-name">{h.name}</b>{' '}
                 <small className="muted">
-                  {HOUSEHOLD_TYPE_INFO[h.type]?.label ?? h.type} · {h.members} people · since {h.createdAt.slice(0, 10)} · {h.plan ?? 'no plan'} ·{' '}
+                  {`${HOUSEHOLD_TYPE_INFO[h.type]?.label ?? h.type} · ${count(h.members, 'person', 'people')} · since ${h.createdAt.slice(0, 10)} · ${h.plan ?? 'no plan'} · `}
                   <b>{h.status.replace('_', ' ')}</b>
                   {h.status === 'trialing' && h.trialEndsAt && ` until ${h.trialEndsAt.slice(0, 10)}`}
                 </small>

@@ -3,6 +3,7 @@ import { ASSET_CLASSES, INVEST_KIND_LABEL, INVEST_KINDS, type Allocation, type I
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
+import { count } from '../../format';
 
 const usd = (n: number): string => n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const LABEL: Record<(typeof ASSET_CLASSES)[number], string> = { stocks: 'Stocks', bonds: 'Bonds', cash: 'Cash', other: 'Other' };
@@ -163,7 +164,7 @@ export default function Invest() {
       <div className="card" data-testid="invest-projection">
         <h2>Where this could go</h2>
         <p className="small">
-          In {data.plan.yearsToRetire} years at {data.plan.expectedReturnPct}%/yr: <b>{usd(data.atRetirement.nominal)}</b> (about <b>{usd(data.atRetirement.real)}</b> in today’s money) — roughly{' '}
+          In {count(data.plan.yearsToRetire, 'year')} at {data.plan.expectedReturnPct}%/yr: <b>{usd(data.atRetirement.nominal)}</b> (about <b>{usd(data.atRetirement.real)}</b> in today’s money) — roughly{' '}
           <b>{usd(data.atRetirement.yearlyIncomeReal)}/yr</b> at a {data.plan.withdrawalPct}% withdrawal.
         </p>
         <div className="spark" style={{ height: 90 }} aria-label="Projected balance by year">

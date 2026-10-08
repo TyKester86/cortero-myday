@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import type { EarnResult } from '@myday/shared';
+import { count } from '../format';
 
 interface Toast {
   toast: ReactElement | null;
@@ -22,7 +23,7 @@ export function useToast(): Toast {
   const earned = useCallback(
     (e: EarnResult, pts: number) => {
       if (e.leveledUp) show(`Level up! Lv ${e.xp.level} · ${e.xp.title} 🎉`);
-      else if (pts > 0) show(`+${pts} points`);
+      else if (pts > 0) show(`+${count(pts, 'point')}`);
     },
     [show],
   );

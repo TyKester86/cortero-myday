@@ -17,6 +17,7 @@ import {
 } from '@myday/shared';
 import { api, ApiFail, useLoad, withMember } from '../../api';
 import { useConfirm } from '../../components/Confirm';
+import { count } from '../../format';
 
 /** What each build trains, in teen mode (a training focus, never a body target). */
 const TEEN_FOCUS: Record<BuildKey, string> = {
@@ -462,7 +463,7 @@ export function ProgramCard({ program, onChange, memberKey, onUpdate }: { progra
             Maintenance ≈ {p.energy.maintenance} cal{p.energy.adjust ? ` (fine-tuned ${p.energy.adjust > 0 ? '+' : ''}${p.energy.adjust} from your weigh-ins)` : ''}
             {p.energy.capped && ' · deficit capped at a safe 500 cal/day'}
             {p.energy.floored && ' · raised to the safe minimum'}
-            {p.perMeal && ` · about ${p.perMeal.grams}g protein per meal across ${p.perMeal.meals} meals`}
+            {p.perMeal && ` · about ${p.perMeal.grams}g protein per meal across ${count(p.perMeal.meals, 'meal')}`}
           </p>
         </>
       ) : (

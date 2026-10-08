@@ -1,6 +1,9 @@
 import { lazy, type ReactNode } from 'react';
 import HomeChores from './chores/HomeChores';
 const ManageChores = lazy(() => import('./chores/ManageChores'));
+const Library = lazy(() => import('./library/Library'));
+const LibraryChapterPage = lazy(() => import('./library/Library').then((m) => ({ default: m.LibraryChapterPage })));
+const LibraryTopicPage = lazy(() => import('./library/Library').then((m) => ({ default: m.LibraryTopicPage })));
 const Homework = lazy(() => import('./homework/Homework'));
 const Rewards = lazy(() => import('./rewards/Rewards'));
 const Score = lazy(() => import('./score/Score'));
@@ -116,6 +119,10 @@ export const MODULES: ModuleRoute[] = [
   { path: '/meetings', element: <Meetings />, audience: 'adult', nav: { label: 'Meetings', icon: 'meetings', group: 'me' } },
   { path: '/meetings/:id', element: <MeetingPage />, audience: 'adult' },
   { path: '/hana', element: <Chat mode="companion" />, audience: 'adult', module: 'hana', nav: { label: 'Ask Hana', icon: 'hana', group: 'connect' } },
+  // The book + the ADHD medical reference, readable directly (the same library Hana answers from).
+  { path: '/library', element: <Library />, audience: 'adult', nav: { label: 'Library', icon: 'library', group: 'connect' } },
+  { path: '/library/book/:slug', element: <LibraryChapterPage />, audience: 'adult' },
+  { path: '/library/medical/:slug', element: <LibraryTopicPage />, audience: 'adult' },
   { path: '/health', element: <HealthToday />, audience: 'all', module: 'health', nav: { label: 'Health', icon: 'health', group: 'me' } },
   { path: '/health/plan', element: <HealthPlan />, audience: 'all', module: 'health' },
   { path: '/meals', element: <Meals />, audience: 'all', module: 'meals', nav: { label: 'Meals', icon: 'meals', group: 'home' } },

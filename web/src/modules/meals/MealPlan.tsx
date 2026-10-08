@@ -78,7 +78,7 @@ export default function MealPlan() {
             <div className="day-head">
               <b>
                 {d.day} <span className="muted">{shortDay(d.date)}</span>
-                {d.isToday && <span className="tag">TODAY</span>}
+                {d.isToday && <> <span className="tag">TODAY</span></>}
               </b>
               {d.meals.length > 0 && (
                 <small className="muted">

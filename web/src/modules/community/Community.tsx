@@ -28,6 +28,7 @@ import { useConfirm } from '../../components/Confirm';
 import { HanaFace } from '../../components/NavIcon';
 import { ago } from '../../dates';
 import { shrink } from '../health/ProgressPhotos';
+import { count } from '../../format';
 
 /* ---------- shared pieces ---------- */
 
@@ -624,7 +625,7 @@ function CaughtUp({ days }: { days: number }) {
         ✓
       </span>
       <b>You’re caught up</b>
-      <p className="small">That’s everything from the last {days} days. Go do something kind for yourself — the desk will be here.</p>
+      <p className="small">That’s everything from the last {count(days, 'day')}. Go do something kind for yourself — the desk will be here.</p>
     </div>
   );
 }
@@ -1003,7 +1004,7 @@ export function CommunityModeration() {
           <div className="row">
             <b className="grow">
               {i.priority >= 2 && '⚠ '}
-              {i.kind === 'village' ? 'Village' : i.kind === 'feed' ? 'Feed' : i.kind === 'image' ? 'Photo' : 'Profile'} · {i.author.displayName} ({i.author.email}) · {i.author.strikes} strikes
+              {i.kind === 'village' ? 'Village' : i.kind === 'feed' ? 'Feed' : i.kind === 'image' ? 'Photo' : 'Profile'} · {i.author.displayName} ({i.author.email}) · {count(i.author.strikes, 'strike')}
             </b>
             <span className="pill">{i.status}</span>
           </div>

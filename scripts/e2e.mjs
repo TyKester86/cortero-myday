@@ -1782,6 +1782,20 @@ async function careTeam() {
   for (const m of await tyMem()) await ty.del(`/api/hana/memory/${m.id}`);
   await ty.del('/api/chat/companion');
 
+  section('The Library: the book and the ADHD medical reference, readable directly (no chat needed)');
+  const libc = (await ty.get('/api/library')).data;
+  check('the book’s contents: every chapter, the appendices, and the bibliography last', libc.bookTitle === 'Conquer ADHD Everyday' && libc.chapters.length >= 29 && libc.chapters.at(-1).slug === 'bibliography' && libc.chapters.every((c) => c.title && c.minutes >= 1), JSON.stringify(libc.chapters.map((c) => c.slug)));
+  const medN = libc.medical.topics.reduce((n, t) => n + t.entries, 0);
+  check('the medical reference by topic, with how many entries each and when it was last reviewed', libc.medical.topics.length >= 8 && medN >= 30 && /^\d{4}-\d{2}-\d{2}$/.test(libc.medical.lastReviewed ?? ''), JSON.stringify(libc.medical));
+  const libCh = (await ty.get('/api/library/book/07-the-mens-executive-command-system')).data;
+  check('open a chapter → its whole text, with the chapters before and after', /## The 4-Pillar Command Structure/.test(libCh.markdown) && libCh.prev?.slug === '06-how-adhd-manifests-differently-in-men' && libCh.next?.slug === '08-relationships-fatherhood-and-adhd', libCh.title);
+  const libTp = (await ty.get('/api/library/medical/03-medication')).data;
+  check('open a topic → every entry with its summary, a dated source and the link', libTp.entries.length > 0 && libTp.entries.every((e) => e.summary && /\b(19|20)\d{2}\b/.test(e.source) && /^https:\/\//.test(e.url)), JSON.stringify(libTp.entries[0]));
+  const libS = (await ty.get('/api/library/search?q=sleep routines')).data;
+  check('search finds the book and the reference, each result cited', libS.book.length > 0 && libS.medical.length > 0 && libS.book.every((b) => b.citation.startsWith('Conquer ADHD Everyday') && b.slug) && libS.medical.every((m) => m.url.startsWith('https://') && m.topicSlug), JSON.stringify(libS).slice(0, 300));
+  eq('a made-up chapter or topic → 404', [(await ty.get('/api/library/book/99-not-a-chapter')).status, (await ty.get('/api/library/medical/nope')).status, (await ty.get('/api/library/book/..%2F..%2Fetc')).status], [404, 404, 404]);
+  check('signed out → no library', [401, 403].includes((await new Client('anon-library').get('/api/library')).status));
+
   section('Hana’s library: the book first, then the medical reference, cited — and “I don’t know” outside it');
   const libStats = JSON.parse(runNode(['--input-type=module', '-e', "const m = await import('./dist/lib/library.js'); process.stdout.write(JSON.stringify(m.libraryStats())); process.exit(0);"]));
   check('the book loads: every chapter, the introduction, conclusion and appendices', libStats.chapters >= 28 && libStats.bookPassages > 100, JSON.stringify(libStats));
@@ -3064,6 +3078,19 @@ async function householdJoin() {
 /* ======================= UI gate (Playwright, real browser) ======================= */
 
 /**
+ * Copy glitches in what a page shows: a number glued to a word ("100founding", "1members"), a word glued to a
+ * year ("since2026"), or a doubled first letter ("JJust"). Units and ordinals ("10am", "20min", "2nd") are fine.
+ */
+function copyGlitches(text) {
+  const out = [];
+  const ok = new Set(['min', 'mins', 'sec', 'secs', 'hrs', 'yrs', 'kcal', 'cal', 'lbs', 'mph', 'kph', 'mos', 'wks', 'px']);
+  for (const m of text.matchAll(/(?<![\w.#/:-])\d+(?:st|nd|rd|th)?([a-zA-Z]{3,})\b/g)) if (!ok.has(m[1].toLowerCase())) out.push(m[0]);
+  for (const m of text.matchAll(/\b[a-zA-Z]{3,}(?:19|20)\d{2}\b/g)) out.push(m[0]);
+  for (const m of text.matchAll(/\b([A-Z])\1[a-z]{2,}/g)) out.push(m[0]);
+  return out;
+}
+
+/**
  * An iOS-like on-screen keyboard for a page (headless browsers have none): the visual viewport shrinks and
  * can pan, window.innerHeight shrinks like Safari's, the layout viewport (what position:fixed uses) stays.
  * Plus a per-frame recorder of where the chat header and composer are against what's visible.
@@ -3897,6 +3924,10 @@ async function uiGate() {
     await op.goto(`${BASE}/admin`);
     await op.getByTestId('admin-totals').waitFor({ timeout: 15000 });
     eq('an admin who has a household opens /admin (the dashboard renders)', await op.getByRole('heading', { name: 'Admin' }).count(), 1);
+    const ownerRow = await op.getByTestId('admin-households').locator('li', { hasText: 'Owner House' }).first().innerText();
+    check('admin households: the name on its own line, then “<type> · 1 person · since …” (singular, spaced)', /^Owner House\n[A-Z][A-Za-z ]+ · 1 person · since \d{4}-\d{2}-\d{2} · /.test(ownerRow), ownerRow.slice(0, 160));
+    eq('…and even read without layout (as copy/paste or a text tool does), the name and details don’t run together', await op.getByTestId('admin-households').locator('li', { hasText: 'Owner House' }).first().evaluate((el) => /Owner House\s+\S/.test(el.textContent)), true);
+    eq('…and no copy glitches anywhere on the admin dashboard', copyGlitches(await op.evaluate(() => document.body.innerText)), []);
     await ownerCtx.close();
     const backCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const bp = await backCtx.newPage();
@@ -4085,9 +4116,10 @@ async function uiGate() {
     await tyHealth.close();
 
     section('every page renders for a grown-up (no crashes, no “not found”)');
-    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed', '/errands', '/inbox', '/calendar', '/meetings'];
+    const pages = ['/', '/chores', '/day', '/family', '/money', '/hana', '/homework', '/rewards', '/score', '/health', '/health/plan', '/meals', '/meals/plan', '/meals/grocery', '/meals/1', '/weekly', '/dump', '/battles', '/red-alert', '/chores/manage', '/household', '/school', '/record', '/classroom-mode', '/wins', '/my-money', '/bills', '/identity', '/records', '/command', '/setup', '/settings', '/billing', '/invest', '/circles', '/circles/moderation', '/care', '/pro', '/lectures', '/focus', '/village', '/feed', '/errands', '/inbox', '/calendar', '/meetings', '/library', '/library/book/07-the-mens-executive-command-system', '/library/medical/03-medication'];
     const notFound = [];
     const tooWide = [];
+    const glitched = [];
     // Wider than the phone = the page slides (shakes) sideways under your thumb and boxes run off the edge.
     const wider = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     for (const p of pages) {
@@ -4097,8 +4129,31 @@ async function uiGate() {
       else if (await page.getByText('Page not found.').count()) notFound.push(p);
       const over = await wider();
       if (over > 0) tooWide.push(`${p} +${over}px`);
+      for (const g of copyGlitches(await page.evaluate(() => document.body.innerText))) glitched.push(`${p}: “${g}”`);
     }
     eq(`${pages.length} pages render`, notFound, []);
+    eq('no copy glitches on any page (a number glued to a word, a word glued to a year, a doubled first letter)', glitched, []);
+
+    section('Library in the nav: the book and the ADHD medical reference, no chat needed');
+    await page.goto(`${BASE}/`);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.locator('.top .menu').getByRole('link', { name: 'Library' }).click();
+    await page.getByTestId('library').waitFor({ timeout: 10000 });
+    eq('tap Library in the menu → the book’s chapters and the medical reference topics', [await page.getByTestId('library-chapter').count() >= 29, await page.getByTestId('library-topic').count() >= 8], [true, true]);
+    await page.getByTestId('library-chapter').filter({ hasText: 'Executive Command' }).click();
+    await page.getByTestId('library-chapter-page').waitFor({ timeout: 10000 });
+    check('a chapter reads as a page: section headings, the text, and a link to the next chapter', (await page.locator('.lib-text').innerText()).includes('The 4-Pillar Command Structure') && (await page.locator('.lib-text .md-h').count()) >= 3 && (await page.getByTestId('library-next').isVisible()));
+    await page.goto(`${BASE}/library`);
+    await page.getByTestId('library-topic').filter({ hasText: /Medication/i }).first().click();
+    await page.getByTestId('library-topic-page').waitFor({ timeout: 10000 });
+    const src = page.getByTestId('library-source').first();
+    eq('a reference topic: entries with their dated source, opening safely in a new tab', [await page.getByTestId('library-entry').count() > 0, /\b(19|20)\d{2}\b/.test(await src.innerText()), await src.getAttribute('target'), await src.getAttribute('rel')], [true, true, '_blank', 'noopener noreferrer']);
+    await page.goto(`${BASE}/library`);
+    await page.getByLabel('Search the library').fill('sleep');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await page.getByTestId('library-results').waitFor({ timeout: 10000 });
+    eq('search “sleep” → passages from the book and the reference, each cited', [await page.getByTestId('library-hit-book').count() > 0, await page.getByTestId('library-hit-medical').count() > 0, /Conquer ADHD Everyday/.test(await page.getByTestId('library-results').innerText())], [true, true, true]);
+    eq('the glitch check itself catches the reported ones (and passes clean copy)', [copyGlitches('100founding spotsleft · 1members · JJust me·1people·since2026-10-03'), copyGlitches('100 founding spots left · 1 member · Just me · 1 person · since 2026-10-03 · 10am · 20min · 2nd')], [['100founding', '1members', '1people', 'since2026', 'JJust'], []]);
     eq('no page is wider than a 390px phone (nothing shakes sideways or runs off the edge)', tooWide, []);
     await page.setViewportSize({ width: 360, height: 780 });
     const tooWide360 = [];

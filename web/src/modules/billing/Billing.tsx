@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { BillingOption, BillingResponse } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
+import { count } from '../../format';
 
 export function money(cents: number | null, currency = 'usd'): string {
   if (cents === null) return 'not set yet';
@@ -239,7 +240,7 @@ function PlanPicker(p: {
       </div>
       {p.foundingLeft !== null && p.options.some((o) => o.founding) && (
         <p className="small muted">
-          {p.foundingLeft} founding spot{p.foundingLeft === 1 ? '' : 's'} left at the founding price.
+          {`${count(p.foundingLeft, 'founding spot')} left at the founding price.`}
         </p>
       )}
     </div>

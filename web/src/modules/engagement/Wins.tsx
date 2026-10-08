@@ -3,6 +3,7 @@ import type { EngagementResponse, Quest } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
 import { day } from '../../dates';
+import { count } from '../../format';
 
 /** Rotating weekly quests (kids). Claiming pays points. */
 export function QuestsCard({ quests, onClaim }: { quests: Quest[]; onClaim: (q: Quest) => void }) {
@@ -43,7 +44,7 @@ export function useEngagement(): {
   const claim = async (q: Quest): Promise<string> => {
     try {
       setData(await api<EngagementResponse>(`/api/quests/${q.id}/claim`, 'POST'));
-      return `Quest complete! +${q.reward} points 🎉`;
+      return `Quest complete! +${count(q.reward, 'point')} 🎉`;
     } catch (e) {
       return e instanceof Error ? e.message : 'Could not claim';
     }
@@ -85,7 +86,7 @@ export default function Wins() {
             <ul className="plain small">
               {sunday.weekPoints.map((p) => (
                 <li key={p.name}>
-                  {p.name}: {p.points} points this week
+                  {`${p.name}: ${count(p.points, 'point')} this week`}
                 </li>
               ))}
             </ul>

@@ -2568,3 +2568,46 @@ export interface CalendarResponse {
 export interface CalendarFeedLink {
   url: string;
 }
+
+/* ---------- Library: the book + the curated ADHD medical reference ---------- */
+
+export interface LibraryContents {
+  bookTitle: string;
+  chapters: Array<{ slug: string; title: string; sections: number; minutes: number }>;
+  medical: {
+    lastReviewed: string | null;
+    nextReviewDue: string | null;
+    topics: Array<{ slug: string; title: string; entries: number }>;
+  };
+}
+
+export interface LibraryChapter {
+  bookTitle: string;
+  slug: string;
+  title: string;
+  /** The chapter text (markdown: ## section headings, paragraphs, lists). */
+  markdown: string;
+  prev: { slug: string; title: string } | null;
+  next: { slug: string; title: string } | null;
+}
+
+export interface LibraryEntry {
+  topic: string;
+  summary: string;
+  /** Who said it, and when (e.g. "CDC — About ADHD (last updated June 1, 2026)"). */
+  source: string;
+  url: string;
+}
+
+export interface LibraryTopic {
+  slug: string;
+  title: string;
+  lastReviewed: string | null;
+  entries: LibraryEntry[];
+}
+
+export interface LibrarySearchResult {
+  q: string;
+  book: Array<{ slug: string; chapter: string; section: string; excerpt: string; citation: string }>;
+  medical: Array<LibraryEntry & { topicSlug: string; citation: string }>;
+}

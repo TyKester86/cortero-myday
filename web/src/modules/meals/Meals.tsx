@@ -13,6 +13,7 @@ import {
 import { api, useLoad, withMember } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useSession } from '../../session';
+import { count as plural } from '../../format';
 
 /** Cards shown at a time (233 at once made a 32,000 px phone page). */
 const PAGE = 24;
@@ -85,7 +86,7 @@ export default function Meals() {
         <Link to="/meals/grocery">Grocery list →</Link>
       </p>
 
-      <h2>Meal library {library.data && <span className="muted small">· {matches.length} meals</span>}</h2>
+      <h2>Meal library {library.data && <span className="muted small">{`· ${plural(matches.length, 'meal')}`}</span>}</h2>
       <div className="chips" data-testid="phase-filter">
         {PHASES.filter((p) => p.key !== 'mine' || library.data?.phase).map((p) => (
           <button key={p.key} className={phase === p.key ? 'chip on' : 'chip'} onClick={() => setPhase(p.key)}>

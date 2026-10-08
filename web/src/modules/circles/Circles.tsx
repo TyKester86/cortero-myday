@@ -5,6 +5,7 @@ import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 import { ago } from '../../dates';
+import { count } from '../../format';
 
 const SAFETY = 'No direct messages, ever. Kids under 13 can’t join; teens appear as “Teen member” and a parent approves what they post.';
 
@@ -38,7 +39,7 @@ export default function Circles() {
             </div>
             <p className="small">{c.description}</p>
             <div className="row">
-              <small className="muted grow">{c.members} members</small>
+              <small className="muted grow">{count(c.members, 'member')}</small>
               {c.joined ? (
                 <Link className="btn small" to={`/circles/${c.id}`}>
                   Open
