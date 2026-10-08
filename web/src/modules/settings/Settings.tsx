@@ -88,7 +88,7 @@ export default function Settings() {
         <div className="chips">
           {(['system', 'light', 'dark'] as const).map((t) => (
             <button key={t} className={theme === t ? 'chip on' : 'chip'} onClick={() => void look(t, accent)}>
-              {t === 'system' ? 'Match my phone' : t === 'light' ? 'Light' : 'Dark'}
+              {t === 'system' ? 'Default (dark)' : t === 'light' ? 'Light' : 'Dark'}
             </button>
           ))}
         </div>

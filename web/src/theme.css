@@ -1,0 +1,402 @@
+/* =====================================================================================
+   MyDay HYBRID theme (locked, Oct 2026): dark premium.
+   Near-black warm background, elegant serif headlines in warm white, sage-green
+   accent cards, terracotta-amber accents, dark charcoal floating cards with subtle
+   borders, small-caps muted sage labels, a dark tab bar with amber line icons
+   (active = glowing amber). Loaded last: a reskin only — the tokens the whole app
+   already uses are retuned, and the components get the hybrid shapes.
+   It is the look for everyone; choosing "Light" in Settings gives the same theme
+   on warm cream instead of near-black.
+   ===================================================================================== */
+
+@font-face {
+  font-family: 'Playfair Display';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/playfair-display-latin.woff2') format('woff2');
+}
+
+:root,
+:root[data-theme='dark'] {
+  --hy-bg: #12100e;
+  --hy-bg-glow: #2b1d13;
+  --hy-card: #1c1916;
+  --hy-card-2: #24201b;
+  --hy-field: #171411;
+  --hy-line: #362f28;
+  --hy-text: #f3e9dc;
+  --hy-muted: #a89c8e;
+  --hy-sage: #a9bb9c;
+  --hy-sage-2: #b8c8ab;
+  --hy-sage-ink: #1d2418;
+  --hy-sage-label: #9db09a;
+  --hy-terra: #c9683f;
+  --hy-amber: #e9a35d;
+  --hy-amber-ink: #2a1a0d;
+  --hy-glow: rgba(233, 163, 93, 0.55);
+  --hy-shadow: 0 14px 34px -20px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 240, 220, 0.03) inset;
+
+  /* The app's existing tokens, retuned (every screen follows). */
+  --ink: #0e0c0a;
+  --paper: var(--hy-text);
+  --navy: #0e0c0a;
+  --navy-2: var(--hy-amber);
+  --accent: var(--hy-terra);
+  --sun: var(--hy-amber);
+  --bg: var(--hy-bg);
+  --card: var(--hy-card);
+  --card-alt: var(--hy-card-2);
+  --text: var(--hy-text);
+  --muted: var(--hy-muted);
+  --line: var(--hy-line);
+  --good: #9dc48a;
+  --warn: #e9a35d;
+  --danger: #e2735a;
+  --serif: 'Playfair Display', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --display: var(--serif);
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+:root[data-theme='light'] {
+  --hy-bg: #f3ece1;
+  --hy-bg-glow: #ead9c3;
+  --hy-card: #fffbf5;
+  --hy-card-2: #f6efe4;
+  --hy-field: #fffdf9;
+  --hy-line: #dccfbe;
+  --hy-text: #221c17;
+  --hy-muted: #6e6358;
+  --hy-sage-label: #5f7a5c;
+  --hy-terra: #b5562f;
+  --hy-amber: #b8691f;
+  --hy-glow: rgba(184, 105, 31, 0.35);
+  --hy-shadow: 0 12px 28px -20px rgba(60, 40, 20, 0.45);
+  --ink: #221c17;
+  --navy: #fffbf5;
+  --good: #3d7a2c;
+  --warn: #9a5512;
+  --danger: #b13a22;
+  color-scheme: light;
+}
+/* Override the old per-OS dark tokens: the hybrid look doesn't follow the phone's light/dark setting. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --navy: #0e0c0a;
+    --navy-2: var(--hy-amber);
+    --accent: var(--hy-terra);
+    --bg: var(--hy-bg);
+    --card: var(--hy-card);
+    --card-alt: var(--hy-card-2);
+    --text: var(--hy-text);
+    --muted: var(--hy-muted);
+    --line: var(--hy-line);
+    --good: #9dc48a;
+    --warn: #e9a35d;
+    --danger: #e2735a;
+  }
+}
+/* Accent picks in Settings still tint links and highlights, in hybrid-friendly tones. */
+:root[data-accent='teal'] { --navy-2: #6fc2b4; }
+:root[data-accent='purple'] { --navy-2: #b9a3f0; }
+:root[data-accent='rose'] { --navy-2: #e79ab8; }
+:root[data-accent='orange'] { --navy-2: var(--hy-amber); }
+:root[data-accent='green'] { --navy-2: var(--hy-sage-2); }
+
+/* ---------- page ---------- */
+html { background: var(--hy-bg); }
+body {
+  background: radial-gradient(120% 60% at 85% -10%, var(--hy-bg-glow) 0%, transparent 55%), var(--hy-bg);
+  background-attachment: fixed;
+  color: var(--hy-text);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--navy-2); }
+::selection { background: rgba(233, 163, 93, 0.35); }
+
+/* ---------- type: serif headlines, small-caps sage labels ---------- */
+h1 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(40px, 12vw, 60px);
+  line-height: 1;
+  letter-spacing: -0.015em;
+  text-transform: none;
+  color: var(--hy-text);
+  margin: 14px 0 16px;
+}
+h2 {
+  font-family: inherit;
+  font-weight: 650;
+  font-size: 19px;
+  line-height: 1.25;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--hy-text);
+}
+/* Section labels on a page (not inside a card): small caps, muted sage, a short amber rule. */
+main > h2,
+main > section > h2,
+main > div > section > h2,
+.hubgroup h2,
+h3,
+.ing-head,
+.navgroup-label,
+.label {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hy-sage-label);
+}
+main > h2::after,
+main > section > h2::after,
+main > div > section > h2::after {
+  content: '';
+  display: block;
+  width: 36px;
+  height: 2px;
+  margin-top: 8px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--hy-terra), var(--hy-amber));
+}
+.muted { color: var(--hy-muted); }
+
+/* ---------- the header + the tab bar ---------- */
+.top {
+  background: color-mix(in srgb, var(--hy-bg) 88%, transparent);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+  backdrop-filter: saturate(140%) blur(14px);
+  color: var(--hy-text);
+  border-bottom: 1px solid var(--hy-line);
+}
+.top a, .top button.link, .top .who { color: var(--hy-text); }
+.top .mark { background: #ffffff; border-radius: 7px; padding: 3px; box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25); }
+.top .menu, .menu { background: var(--hy-card); border: 1px solid var(--hy-line); border-radius: 16px; box-shadow: var(--hy-shadow); }
+.top .menu a { color: var(--hy-text); border-radius: 10px; }
+.top .menu a:hover, .top .menu a.active { background: var(--hy-card-2); }
+
+.tabs {
+  background: color-mix(in srgb, #0d0b09 92%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(233, 163, 93, 0.22);
+}
+:root[data-theme='light'] .tabs { background: color-mix(in srgb, var(--hy-card) 94%, transparent); border-top-color: var(--hy-line); }
+.tabs a { color: #8e8478; position: relative; font-weight: 500; }
+:root[data-theme='light'] .tabs a { color: var(--hy-muted); }
+.tabs a .navicon { color: inherit; }
+.tabs a.active,
+:root[data-theme='dark'] .tabs a.active {
+  color: var(--hy-amber);
+  font-weight: 650;
+}
+@media (prefers-color-scheme: dark) { .tabs a.active { color: var(--hy-amber); } }
+.tabs a.active .navicon { filter: drop-shadow(0 0 6px var(--hy-glow)); }
+.tabs a.active small { text-shadow: 0 0 10px var(--hy-glow); }
+.tabs a.active::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 28%;
+  right: 28%;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--hy-amber);
+  box-shadow: 0 0 10px var(--hy-glow);
+}
+.tabs small { font-family: inherit; text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+
+/* Desktop sidebar + section tabs */
+.side { background: var(--hy-card); border-right: 1px solid var(--hy-line); }
+.side a { color: var(--hy-text); }
+.side a.active, .side a:hover { background: var(--hy-card-2); color: var(--hy-amber); }
+.subtabs a { background: var(--hy-card); border-color: var(--hy-line); color: var(--hy-text); border-radius: 999px; }
+.subtabs a.active { background: var(--hy-amber); color: var(--hy-amber-ink); border-color: var(--hy-amber); }
+
+/* ---------- cards: dark charcoal, floating, subtle border ---------- */
+.card,
+.stat,
+.mealcard,
+.wk,
+.buildopt,
+.firstrun,
+.confirm,
+.celebrate,
+.habit,
+.hubtile,
+.plan-opt,
+.lib-entry,
+.desk-grid .card {
+  background: var(--hy-card);
+  color: var(--hy-text);
+  border: 1px solid var(--hy-line);
+  border-radius: 18px;
+  box-shadow: var(--hy-shadow);
+}
+.card { border-top: 1px solid var(--hy-line); padding: 16px 18px; }
+.card + .card { margin-top: 14px; }
+.stat { border-top: 1px solid var(--hy-line); }
+.hubtile { color: var(--hy-text); }
+.hubtile .navicon { color: var(--hy-amber); }
+
+/* Sage accent cards: the day's highlights. */
+.bigscore,
+.now,
+.card.current,
+.day.today,
+.plan-opt.on,
+.landing .hero {
+  background: linear-gradient(160deg, var(--hy-sage-2), var(--hy-sage));
+  color: var(--hy-sage-ink);
+  border: 0;
+  border-radius: 20px;
+  box-shadow: 0 18px 40px -22px rgba(0, 0, 0, 0.95);
+}
+.bigscore b, .now-name, .card.current h2, .day.today b, .plan-opt.on b { color: var(--hy-sage-ink); }
+.bigscore .muted, .now .muted, .now small, .card.current .muted, .day.today .muted, .plan-opt.on .muted, .plan-opt.on small { color: #3c4a33; }
+.bigscore b { font-family: var(--serif); font-weight: 500; }
+.now { border-left: 0; }
+.now small { letter-spacing: 0.14em; }
+.now-name { font-family: var(--serif); text-transform: none; font-weight: 500; }
+.day.today .tag { background: var(--hy-terra); color: #fff7ee; }
+.plan-opt.on { padding: 12px; }
+.plan-opt.on .pill { background: rgba(29, 36, 24, 0.12); color: var(--hy-sage-ink); }
+
+/* Points, streaks: terracotta-amber. */
+.pts, .plan-price, .stat b { color: var(--hy-amber); }
+.stat b { font-family: var(--serif); font-weight: 500; }
+.xpfill, .bar i { background: linear-gradient(90deg, var(--hy-terra), var(--hy-amber)); }
+.bar { background: var(--hy-card-2); }
+
+/* ---------- lists, rows ---------- */
+.rows li, .checklist li { border-bottom-color: var(--hy-line); }
+.checklist input[type='checkbox'], .habit input { accent-color: var(--hy-terra); }
+.lib-list li, .lib-hit { border-bottom-color: var(--hy-line); }
+
+/* ---------- buttons, chips, pills ---------- */
+.btn {
+  font-family: inherit;
+  background: linear-gradient(135deg, var(--hy-terra), #d9824c);
+  color: #fff7ee;
+  border: 0;
+  border-radius: 14px;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-weight: 650;
+  box-shadow: 0 8px 20px -12px rgba(201, 104, 63, 0.9);
+}
+.btn:disabled { opacity: 0.45; box-shadow: none; }
+.btn.ghost { background: transparent; color: var(--hy-amber); border: 1px solid var(--hy-amber); box-shadow: none; }
+.btn.danger { background: #b9472f; color: #fff7ee; }
+.btn.small { border-radius: 12px; }
+button.link, .link { color: var(--navy-2); }
+.link.danger, button.link.danger { color: var(--danger); }
+.chip, .pill, .tag {
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  border-radius: 999px;
+  font-size: 13px;
+}
+.chip { background: var(--hy-card); color: var(--hy-text); border: 1px solid var(--hy-line); }
+.chip.on { background: var(--hy-amber); color: var(--hy-amber-ink); border-color: var(--hy-amber); }
+.pill { background: transparent; color: var(--hy-sage-label); border: 1px solid color-mix(in srgb, var(--hy-sage) 55%, transparent); }
+.pill.sun, .tag { background: var(--hy-amber); color: var(--hy-amber-ink); border: 0; }
+.pill.good { background: var(--good); color: #10170c; border: 0; }
+
+/* ---------- fields ---------- */
+input, select, textarea {
+  background: var(--hy-field);
+  color: var(--hy-text);
+  border: 1px solid var(--hy-line);
+  border-radius: 12px;
+}
+input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--hy-muted) 80%, transparent); }
+input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--hy-amber) 70%, transparent); outline-offset: 1px; border-color: transparent; }
+input[type='checkbox'], input[type='radio'], input[type='range'] { accent-color: var(--hy-terra); }
+
+/* ---------- Ask Hana ---------- */
+.hana-fab { background: var(--hy-card); border: 2px solid var(--hy-amber); box-shadow: 0 10px 24px -10px rgba(0, 0, 0, 0.9), 0 0 0 4px rgba(233, 163, 93, 0.12); }
+.chat-title { font-family: var(--serif); font-weight: 500; }
+.app:not(.sidebar) .chat-app .chat-title { font-size: 26px; }
+.chat-title .hana-face { border-color: var(--hy-amber); }
+.chat-head { color: var(--hy-text); }
+.app:not(.sidebar) .chat-app, .chat-send, .app:not(.sidebar) .chat-app .chat-head { background: var(--hy-bg); }
+.chat-send, .app:not(.sidebar) .chat-app .chat-head { border-color: var(--hy-line); }
+.bubble.me, .msg-body .bubble.me { background: linear-gradient(135deg, var(--hy-terra), #d9824c); color: #fff7ee; }
+.bubble.hana, .msg-body .bubble.hana { background: var(--hy-card); border: 1px solid var(--hy-line); color: var(--hy-text); }
+.bubble.thinking i { background: var(--hy-amber); }
+.attach-btn { background: var(--hy-card); border-color: var(--hy-line); color: var(--hy-amber); }
+.draft-file, .file-chip { background: var(--hy-card); border-color: var(--hy-line); color: var(--hy-text); }
+.md code { background: var(--hy-card-2); }
+.md blockquote, .lib-text blockquote { border-left-color: var(--hy-amber); }
+
+/* ---------- misc surfaces ---------- */
+.offline { background: var(--hy-terra); color: #fff7ee; }
+.confirm-backdrop, .modal-backdrop { background: rgba(8, 6, 4, 0.72); }
+.toast { background: var(--hy-card-2); color: var(--hy-text); border: 1px solid var(--hy-line); }
+.exdemo { border-radius: 14px; border-color: var(--hy-line); }
+kbd { background: var(--hy-card-2); border-color: var(--hy-line); }
+small.next { color: var(--hy-amber); }
+/* Role line-drawings are black on white: inverted on the dark theme. */
+:root:not([data-theme='light']) .role-art { filter: invert(1) brightness(0.92) sepia(0.2); mix-blend-mode: screen; }
+:root[data-theme='light'] .role-art { filter: brightness(1.05) contrast(1.1); mix-blend-mode: multiply; }
+
+/* ---------- signed-out landing, onboarding ---------- */
+.lp { background: var(--hy-bg); color: var(--hy-text); }
+.lp h1, .landing h1, .login h1 { font-family: var(--serif); text-transform: none; }
+.login { background: var(--hy-bg); color: var(--hy-text); }
+.login .muted { color: var(--hy-muted); }
+
+/* ---------- the Feed + Village: dark charcoal slips on near-black ---------- */
+.feed-page,
+:root[data-theme='dark'] .feed-page {
+  --desk: var(--hy-bg);
+  --desk-grain: rgba(255, 240, 220, 0.02);
+  --slip: var(--hy-card);
+  --slip-edge: var(--hy-line);
+  --slip-shadow: var(--hy-shadow);
+  --slip-lift: 0 18px 38px -18px rgba(0, 0, 0, 1);
+  --stamp-ink: var(--hy-amber);
+  --tape: rgba(233, 163, 93, 0.3);
+  --rule: rgba(169, 187, 156, 0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .feed-page {
+    --desk: var(--hy-bg);
+    --slip: var(--hy-card);
+    --slip-edge: var(--hy-line);
+    --slip-shadow: var(--hy-shadow);
+    --stamp-ink: var(--hy-amber);
+    --tape: rgba(233, 163, 93, 0.3);
+  }
+}
+:root[data-theme='light'] .feed-page {
+  --desk: var(--hy-bg);
+  --slip: var(--hy-card);
+  --slip-edge: var(--hy-line);
+  --slip-shadow: var(--hy-shadow);
+  --stamp-ink: var(--hy-terra);
+}
+/* Straight, rounded slips (the references) instead of the hand-laid tilt. */
+.feed-page .slip, .feed-page .post, .feed-page article { transform: none !important; border-radius: 18px; }
+
+/* The MyDay mark always sits on white (logo lockups). */
+.mark-tile { background: #ffffff; border-radius: 7px; padding: 3px; box-sizing: content-box; vertical-align: middle; }
+
+/* Card titles sit at the top of their card. */
+.card > h2:first-child, .card > :first-child > h2:first-child { margin-top: 0; }
+
+/* Feed tabs: a segmented pill control (the references), amber under the active one. */
+.feed-page { --display: inherit; }
+.desk-tabs { background: var(--hy-card); border: 1px solid var(--hy-line); border-radius: 16px; padding: 4px; gap: 4px; transform: none; margin: 8px 0 12px; }
+.desk-tab {
+  font-family: inherit; text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 15px;
+  border: 0; border-radius: 12px; background: transparent; color: var(--hy-muted); padding: 9px 14px; flex: 1 0 auto; transform: none; box-shadow: none;
+}
+.desk-tab.on { color: var(--hy-amber); background: var(--hy-card-2); box-shadow: inset 0 -2px 0 var(--hy-amber); transform: none; }
+.desk-tab:not(.on):hover { transform: none; color: var(--hy-text); }
+.publisher-label { background: var(--hy-card-2); color: var(--hy-sage-label); border-radius: 999px; }
+.polaroid img, .polaroid-blank { background: var(--hy-card-2); color: var(--hy-amber); }

@@ -1440,7 +1440,11 @@ async function bigBuild() {
   const ati = await fetch(`${BASE}/apple-touch-icon.png`);
   const atiBuf = Buffer.from(await ati.arrayBuffer());
   eq('apple-touch-icon.png at the root, 180×180 PNG', [ati.status, atiBuf.readUInt32BE(16), atiBuf.readUInt32BE(20)], [200, 180, 180]);
-  check('index.html links it and keeps the M Peaks logo', html.includes('apple-touch-icon') && html.includes('myday-mark.svg'));
+  check('index.html links it and keeps the M Peaks logo (the SVG favicon is the same mark, on white)', html.includes('apple-touch-icon') && html.includes('myday-favicon.svg'));
+  const markSvg = readFileSync(path.join(root, 'web', 'public', 'icons', 'myday-mark.svg'), 'utf8');
+  const favSvg = readFileSync(path.join(root, 'web', 'public', 'icons', 'myday-favicon.svg'), 'utf8');
+  const markPath = markSvg.match(/<path d="([^"]+)"/)?.[1];
+  eq('the logo mark itself is unchanged (navy M peaks + amber sun); every surface puts it on white', [!!markPath && favSvg.includes(markPath), markSvg.includes('#2E4B8F') && markSvg.includes('#F2A41E'), /<rect[^>]*fill="#FFFFFF"/.test(favSvg), JSON.parse(readFileSync(path.join(root, 'web', 'public', 'manifest.webmanifest'), 'utf8')).background_color], [true, true, true, '#FFFFFF']);
   eq('shared map: empty nesters and retired share the couple art; solo is the traveler', [shared.HOUSEHOLD_TYPE_ICON.empty_nesters, shared.HOUSEHOLD_TYPE_ICON.retired, shared.HOUSEHOLD_TYPE_ICON.solo], ['/roles/couple.png', '/roles/couple.png', '/roles/solo.png']);
   await ret.get(`/dev-login?token=${DEV_TOKEN}&email=retired@example.com`);
   eq('Retired is a distinct signup life-stage', (await ret.post('/api/households', { householdName: 'Second act', type: 'retired', yourName: 'Pat' })).status, 201);
@@ -3280,7 +3284,7 @@ async function uiGate() {
     eq('Plan section tabs on Meals: Week · Calendar · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Calendar', 'Meals', 'This week’s menu', 'Grocery list']);
     await page.goto(`${BASE}/meals/1`);
     await page.getByTestId('meal-tips').waitFor({ timeout: 10000 });
-    eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allInnerTexts(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls'], 4]);
+    eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allTextContents(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls'], 4]);
     check('meal page: step lead-ins in bold (“Mise en place…:”)', (await page.locator('ol.steps li b').first().innerText()).startsWith('Mise en place'));
     await page.goto(`${BASE}/feed`);
     await page.getByTestId('composer').waitFor({ timeout: 10000 });
@@ -3355,7 +3359,7 @@ async function uiGate() {
     await dp.waitForURL('**/meals');
     check('“g m” goes to Meals', dp.url().endsWith('/meals'));
     await dp.waitForSelector('.mealcard img');
-    eq('the library shows 24 at a time (not a 32,000 px page), with “show more”', [await dp.locator('.mealcard').count(), await dp.getByTestId('meals-more').innerText()], [24, 'SHOW 24 MORE']);
+    eq('the library shows 24 at a time (not a 32,000 px page), with “show more”', [await dp.locator('.mealcard').count(), await dp.getByTestId('meals-more').textContent()], [24, 'Show 24 more']);
     await dp.getByRole('button', { name: 'Show all 233' }).click();
     check('meal cards show pictures (all 233 on request)', (await dp.locator('.mealcard img').count()) === 233);
     await dp.getByLabel('Search meals').fill('gumbo');
@@ -3458,6 +3462,24 @@ async function uiGate() {
     await lp.getByTestId('apple-signin').waitFor({ timeout: 10000 });
     const fit = await lp.evaluate(() => ({ w: document.documentElement.scrollWidth, vw: innerWidth, recipes: document.body.innerText.includes('233 recipes'), cta: !!document.querySelector('[data-testid="signin-choices"] a, [data-testid="signin-choices"] form') }));
     eq('landing: nothing wider than the phone, current numbers, a clear start button', [fit.w <= fit.vw, fit.recipes, fit.cta], [true, true, true]);
+    const iconPixels = await lp.evaluate(async () => {
+      const at = async (src, x, y) => {
+        const img = new Image();
+        img.src = src;
+        await img.decode();
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0);
+        return [...g.getImageData(x, y, 1, 1).data].join(',');
+      };
+      return [
+        await at('/icons/myday-icon-512.png', 60, 256), await at('/icons/myday-icon-192.png', 24, 96), await at('/icons/myday-maskable-512.png', 4, 4),
+        await at('/icons/apple-touch-icon.png', 4, 4), await at('/apple-touch-icon.png', 4, 4), await at('/icons/favicon-32.png', 4, 16), await at('/icons/splash-1170x2532.png', 20, 20),
+      ];
+    });
+    eq('every logo surface: the mark on white (app icons, maskable, Apple touch, favicon, splash) — no navy tiles', iconPixels.every((p) => p === '255,255,255,255'), true);
     const claim = (await lp.evaluate(() => document.body.innerText)).match(/(\d+) recipes with pictures from (\d+) cuisines/);
     const lib = (await page.request.get(`${BASE}/api/meals`).then((r) => r.json()));
     eq('landing: the recipe and cuisine counts match the real meal library (every meal pictured)', claim ? [Number(claim[1]), Number(claim[2])] : null, [lib.meals.length, lib.countries.length]);
@@ -4406,11 +4428,25 @@ ${para}`]), para);
     check('Settings → Invite a grown-up gives a link + QR (14 days)', (await page.getByTestId('invite-made').innerText()).includes('/join/') && (await page.locator('[data-testid=invite-made] .qr svg').count()) === 1);
 
     if (process.env.E2E_SHOTS) {
-      for (const [ctx, pg, name, url] of [[tyCtx, page, 'ty-today', '/'], [tyCtx, page, 'ty-health', '/health'], [tyCtx, page, 'ty-household', '/household'], [kid, kp, 'avery-today', '/']]) {
-        void ctx;
-        await pg.goto(BASE + url);
-        await pg.waitForLoadState('networkidle');
-        await pg.screenshot({ path: path.join(process.env.E2E_SHOTS, `${name}.png`) });
+      const shots = [
+        ['ty-today', '/'], ['ty-plan', '/weekly'], ['ty-family', '/family'], ['ty-money', '/money'], ['ty-me', '/me'], ['ty-chores-manage', '/chores/manage'],
+        ['ty-hana', '/hana'], ['ty-settings', '/settings'], ['ty-feed', '/feed'], ['ty-village', '/village'], ['ty-billing', '/billing'], ['ty-meals', '/meals'],
+        ['ty-health', '/health'], ['ty-household', '/household'], ['ty-library', '/library'], ['ty-calendar', '/calendar'],
+      ];
+      for (const [name, url] of shots) {
+        await page.goto(BASE + url);
+        await page.waitForLoadState('networkidle');
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: path.join(process.env.E2E_SHOTS, `${name}.png`) });
+        await page.screenshot({ path: path.join(process.env.E2E_SHOTS, `${name}-full.png`), fullPage: true });
+      }
+      await kp.goto(`${BASE}/`);
+      await kp.waitForLoadState('networkidle');
+      await kp.screenshot({ path: path.join(process.env.E2E_SHOTS, 'avery-today.png') });
+      // Every logo surface: white behind the mark.
+      for (const icon of ['myday-icon-512.png', 'myday-maskable-512.png', 'apple-touch-icon.png', 'favicon-32.png', 'myday-favicon.svg', 'splash-1170x2532.png']) {
+        await page.goto(`${BASE}/icons/${icon}`);
+        await page.screenshot({ path: path.join(process.env.E2E_SHOTS, `icon-${icon.replace(/\.\w+$/, '')}.png`) });
       }
       const sp = await (await browser.newContext(phone)).newPage();
       await sp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=shots@example.com`);

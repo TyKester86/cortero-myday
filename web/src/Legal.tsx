@@ -13,7 +13,7 @@ function Page({ title, children }: { title: string; children: React.ReactNode })
     <div className="legal">
       <header className="lp-top">
         <a className="lp-brand" href="/">
-          <img src="/icons/myday-mark.svg" alt="" width={28} height={28} />
+          <img src="/icons/myday-mark.svg" alt="" width={28} height={28} className="mark-tile" />
           MyDay
         </a>
       </header>

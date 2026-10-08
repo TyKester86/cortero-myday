@@ -210,7 +210,7 @@ function Landing({ err, onKid }: { err: string | null; onKid: () => void }) {
     <div className="lp" data-testid="landing" id="top">
       <header className="lp-top">
         <span className="lp-brand">
-          <img src="/icons/myday-mark.svg" alt="" width={28} height={28} />
+          <img src="/icons/myday-mark.svg" alt="" width={28} height={28} className="mark-tile" />
           MyDay
         </span>
         <a className="lp-signin" href="/api/auth/google">
