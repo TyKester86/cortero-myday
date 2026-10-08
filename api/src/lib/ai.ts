@@ -76,8 +76,12 @@ export function cleanReply(blocks: string[]): string {
   return text;
 }
 
+/** The answer when the tools ran but the model ended without words: exactly what happened, from the tools themselves. */
+const finished = (outcomes: string[]): string => `Here’s what I did:\n${outcomes.map((o) => `- ${o.replace(/\n+/g, ' ')}`).join('\n')}`;
+
 const REFUSAL = "I can't help with that one. Want to try asking a different way, or ask a grown-up?";
-const MAX_TOOL_ROUNDS = 5;
+/** Tool rounds per message (a long pasted chore list goes in one add_chores call, but a request can need several steps). */
+const MAX_TOOL_ROUNDS = 12;
 
 function apiError(e: unknown): never {
   if (e instanceof HttpError) throw e;
@@ -128,6 +132,8 @@ class ClaudeModel implements ChatModel {
   /** Manual tool loop: Claude calls MyDay tools until it has a final answer. */
   async act(system: string, messages: ChatTurn[], kit: ToolKit, maxTokens: number): Promise<string> {
     const msgs: BetaMessageParam[] = messages.map((m) => ({ role: m.role, content: m.content }));
+    // What the tools actually did this turn (the honest fallback answer if the model ends without words).
+    const outcomes: string[] = [];
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const res = await this.client.beta.messages.create({
@@ -143,24 +149,31 @@ class ClaudeModel implements ChatModel {
         if (res.stop_reason === 'refusal') return REFUSAL;
         const text = cleanReply(res.content.map((b) => (b.type === 'text' ? b.text : '')));
         const uses = res.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use');
-        if (res.stop_reason !== 'tool_use' || uses.length === 0) {
-          if (!text) throw new HttpError(502, 'Hana had nothing to say — try again');
-          return text;
+        // A reply cut off by the length cap (max_tokens) while calling tools still runs the calls it finished, then
+        // goes on — a long list must never be dropped silently (or end the turn with an empty answer).
+        if (uses.length === 0 || (res.stop_reason !== 'tool_use' && res.stop_reason !== 'max_tokens')) {
+          if (text) return text;
+          if (outcomes.length) return finished(outcomes);
+          throw new HttpError(502, 'Hana had nothing to say — try again');
         }
+        if (res.stop_reason === 'max_tokens') console.warn(`chat: reply hit max_tokens with ${uses.length} tool call(s); continuing`);
         msgs.push({ role: 'assistant', content: res.content });
         const results: BetaToolResultBlockParam[] = [];
         for (const u of uses) {
           try {
-            results.push({ type: 'tool_result', tool_use_id: u.id, content: await kit.exec(u.name, u.input) });
+            const out = await kit.exec(u.name, u.input);
+            outcomes.push(out);
+            results.push({ type: 'tool_result', tool_use_id: u.id, content: out });
           } catch (e) {
             const msg = e instanceof HttpError ? e.message : 'That action failed';
             if (!(e instanceof HttpError)) console.error('hana tool failed', u.name, e);
+            outcomes.push(`Not done: ${msg}`);
             results.push({ type: 'tool_result', tool_use_id: u.id, content: msg, is_error: true });
           }
         }
         msgs.push({ role: 'user', content: results });
       }
-      return 'I took care of what I could — check the actions below.';
+      return finished(outcomes);
     } catch (e) {
       return apiError(e);
     }
@@ -181,6 +194,7 @@ class StubModel implements ChatModel {
     const blocks = lastTurn && typeof lastTurn.content !== 'string' ? lastTurn.content : [];
     // Tests: a model that makes up the person's numbers, and (rewrite pass) fails to fix them.
     if (system.startsWith('You correct one message')) return last;
+    if (last.includes('__stub_roster_lie__')) return 'Sure! Kayla isn’t in your household, so I can’t give her chores. There are 5 people in your household and you have 5 chores. Anything else?';
     if (last.includes('__stub_fabricate__')) return 'Great work today! Your score is 99 and you’re on a 12-day streak. You have 5000 XP. Want to plan tomorrow?';
     if (last.includes('__stub_markdown__')) return ['Here is a plan:', '', '**Tonight:** lay out clothes.', '', '- Pack the bag', '- Shoes by the door', '', '1. Wake up', '2. *Breakfast*', '', 'That’s it.'].join('\n');
     if (last.includes('__stub_slow__')) await new Promise((r) => setTimeout(r, 1500));
@@ -206,6 +220,7 @@ class StubModel implements ChatModel {
       system.includes('FROM THE MEDICAL REFERENCE') ? 'library=medical' : '',
       system.includes('No library passages matched') ? 'library=none' : '',
       system.includes('VERIFIED STATS (live from MyDay') && system.includes('PERSONAL NUMBERS:') ? 'stats=verified' : '',
+      ((m) => (m ? `roster=${m[1]}` : ''))(system.match(/HOUSEHOLD \(complete roster, live\): \d+ people? in the household: ([^.]*)\./)),
       blocks.some((b) => b.type === 'image') ? `images=${blocks.filter((b) => b.type === 'image').length}` : '',
       blocks.some((b) => b.type === 'document') ? `pdfs=${blocks.filter((b) => b.type === 'document').length}` : '',
       blocks.some((b) => b.type === 'text' && b.text.startsWith('Attached file')) ? 'textfile' : '',

@@ -46,6 +46,26 @@ async function ownTask(me: HouseholdMember, id: number): Promise<string> {
   return t.task;
 }
 
+/** One recurring chore for anyone in the household (kids and grown-ups alike). */
+async function addChore(i: { person: string; chore: string; days: readonly string[]; points: number }): Promise<string> {
+  const members = await listMembers();
+  const who = members.find((m) => m.name.toLowerCase() === i.person.trim().toLowerCase());
+  if (!who) throw new HttpError(404, `There’s no household member named ${i.person} (the household is ${members.map((m) => m.name).join(', ')})`);
+  try {
+    await pool.query('INSERT INTO chores (name, member_id, days, points, created_on) VALUES ($1, $2, $3, $4, $5)', [
+      i.chore,
+      who.id,
+      [...new Set(i.days)].map((d) => weekdayToIso(d as Weekday)),
+      i.points,
+      today(),
+    ]);
+  } catch (e) {
+    if ((e as { code?: unknown }).code === '23505') throw new HttpError(409, `${who.name} already has a chore called ${i.chore}`);
+    throw e;
+  }
+  return `${who.name} now has “${i.chore}” on ${i.days.join(' ')} for ${i.points} points.`;
+}
+
 export const HANA_TOOLS = [
   def({
     name: 'add_task',
@@ -387,33 +407,69 @@ export const HANA_TOOLS = [
   }),
   def({
     name: 'add_chore',
-    description: 'Give one of the household kids a recurring chore: kid first name, chore name, days (Mon..Sun), points (0–100).',
+    description:
+      'Give anyone in the household — a kid or a grown-up — one recurring chore: their first name, chore name, days (Mon..Sun), points (0–100). For more than one chore, use add_chores.',
     destructive: false,
-    schema: z.object({ kid_name: z.string().min(1).max(40), chore: z.string().min(1).max(80), days: z.array(z.enum(WEEKDAYS)).min(1).max(7), points: z.number().int().min(0).max(100) }),
+    schema: z.object({ person: z.string().min(1).max(40), chore: z.string().min(1).max(80), days: z.array(z.enum(WEEKDAYS)).min(1).max(7), points: z.number().int().min(0).max(100) }),
     json: {
       type: 'object',
-      properties: { kid_name: { type: 'string' }, chore: { type: 'string' }, days: { type: 'array', items: { type: 'string', enum: [...WEEKDAYS] } }, points: { type: 'integer' } },
-      required: ['kid_name', 'chore', 'days', 'points'],
+      properties: { person: { type: 'string' }, chore: { type: 'string' }, days: { type: 'array', items: { type: 'string', enum: [...WEEKDAYS] } }, points: { type: 'integer' } },
+      required: ['person', 'chore', 'days', 'points'],
       additionalProperties: false,
     },
-    summary: (i) => `Give ${i.kid_name} the chore “${i.chore}” (${i.days.join(' ')})`,
+    summary: (i) => `Give ${i.person} the chore “${i.chore}” (${i.days.join(' ')})`,
     run: async (me, i) => {
       if (me.kind !== 'adult') throw new HttpError(403, 'Only grown-ups assign chores');
-      const kid = (await listMembers()).find((m) => m.kind === 'kid' && m.name.toLowerCase() === i.kid_name.trim().toLowerCase());
-      if (!kid) throw new HttpError(404, `There's no kid named ${i.kid_name} in this household`);
-      try {
-        await pool.query('INSERT INTO chores (name, member_id, days, points, created_on) VALUES ($1, $2, $3, $4, $5)', [
-          i.chore,
-          kid.id,
-          [...new Set(i.days)].map((d) => weekdayToIso(d as Weekday)),
-          i.points,
-          today(),
-        ]);
-      } catch (e) {
-        if ((e as { code?: unknown }).code === '23505') throw new HttpError(409, `${kid.name} already has a chore called ${i.chore}`);
-        throw e;
+      return addChore(i);
+    },
+  }),
+  def({
+    name: 'add_chores',
+    description:
+      'Add many recurring chores in one go (a pasted chore list, “add them all”): each with the person’s first name (anyone in the household, kid or grown-up), chore name, days (Mon..Sun) and points (0–100). Every item is added on its own; the result says exactly which were added and which weren’t, and why.',
+    destructive: false,
+    schema: z.object({
+      chores: z
+        .array(z.object({ person: z.string().min(1).max(40), chore: z.string().min(1).max(80), days: z.array(z.enum(WEEKDAYS)).min(1).max(7), points: z.number().int().min(0).max(100) }))
+        .min(1)
+        .max(80),
+    }),
+    json: {
+      type: 'object',
+      properties: {
+        chores: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { person: { type: 'string' }, chore: { type: 'string' }, days: { type: 'array', items: { type: 'string', enum: [...WEEKDAYS] } }, points: { type: 'integer' } },
+            required: ['person', 'chore', 'days', 'points'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['chores'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Add ${i.chores.length} chore${i.chores.length === 1 ? '' : 's'}`,
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'Only grown-ups assign chores');
+      const added: string[] = [];
+      const notAdded: string[] = [];
+      for (const c of i.chores) {
+        try {
+          await addChore(c);
+          added.push(`${c.person}: ${c.chore}`);
+        } catch (e) {
+          notAdded.push(`${c.person}: ${c.chore} — ${e instanceof HttpError ? e.message : 'failed'}`);
+        }
       }
-      return `${kid.name} now has “${i.chore}” on ${i.days.join(' ')} for ${i.points} points.`;
+      return [
+        `Added ${added.length} of ${i.chores.length} chores.`,
+        added.length ? `Added: ${added.join('; ')}.` : '',
+        notAdded.length ? `Not added (${notAdded.length}): ${notAdded.join('; ')}.` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
     },
   }),
   def({
@@ -599,7 +655,17 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if ((x = m.match(/^forget memory #?(\d+)/i))) return [{ name: 'forget', input: { memory_id: Number(x[1]) } }];
   if ((x = m.match(/^plan (.+?)(?: on (Mon|Tue|Wed|Thu|Fri|Sat|Sun))?$/i))) return [{ name: 'plan_meal', input: { meal: x[1], day: x[2] ? x[2].slice(0, 1).toUpperCase() + x[2].slice(1, 3).toLowerCase() : null } }];
   if ((x = m.match(/^give (\w+) the chore (.+?) on ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[ ,]+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)(?: for (\d+) points)?$/i))) {
-    return [{ name: 'add_chore', input: { kid_name: x[1], chore: x[2], days: (x[3] ?? '').split(/[ ,]+/).map((d) => d.slice(0, 1).toUpperCase() + d.slice(1, 3).toLowerCase()), points: Number(x[4] ?? 10) } }];
+    return [{ name: 'add_chore', input: { person: x[1], chore: x[2], days: (x[3] ?? '').split(/[ ,]+/).map((d) => d.slice(0, 1).toUpperCase() + d.slice(1, 3).toLowerCase()), points: Number(x[4] ?? 10) } }];
+  }
+  // "add them all:" then one chore per line: "Name: chore (Mon Wed, 10)"
+  if (/^add them all:?\s*\n/i.test(m)) {
+    const chores = m
+      .split('\n')
+      .slice(1)
+      .map((l) => l.match(/^\s*(\w+):\s*(.+?)\s*\(((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[ ,]+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*),\s*(\d+)\)\s*$/i))
+      .filter((y): y is RegExpMatchArray => !!y)
+      .map((y) => ({ person: y[1], chore: y[2], days: (y[3] ?? '').split(/[ ,]+/).map((d) => d.slice(0, 1).toUpperCase() + d.slice(1, 3).toLowerCase()), points: Number(y[4]) }));
+    if (chores.length) return [{ name: 'add_chores', input: { chores } }];
   }
   if ((x = m.match(/^(?:order|send) the groceries(?: (?:to|from|on) (instacart|kroger))?/i))) return [{ name: 'send_groceries', input: { to: (x[1] ?? 'instacart').toLowerCase() } }];
   if ((x = m.match(/^find flights from ([a-z]{3}) to ([a-z]{3}) on (\d{4}-\d{2}-\d{2})(?: returning (\d{4}-\d{2}-\d{2}))?(?: for (\d) adults?)?/i))) {

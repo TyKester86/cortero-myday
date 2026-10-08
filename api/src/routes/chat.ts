@@ -103,8 +103,6 @@ async function dayContext(me: HouseholdMember, mode: ChatMode, stats: HanaStats 
   if (open.length) bits.push(`Open tasks today: ${open.map((r) => `#${r.id} ${r.task}`).join('; ')}`);
   const { rows: bills } = await pool.query<{ id: number; name: string; amount: string }>('SELECT id, name, amount FROM bills WHERE member_id = $1 ORDER BY id LIMIT 20', [me.id]);
   if (bills.length) bits.push(`Tracked bills: ${bills.map((b) => `#${b.id} ${b.name} $${Number(b.amount)}`).join('; ')}`);
-  const kids = (await pool.query<{ name: string }>("SELECT name FROM household_members WHERE kind = 'kid' AND archived_at IS NULL ORDER BY sort_order")).rows;
-  if (kids.length) bits.push(`Kids in the household: ${kids.map((k) => k.name).join(', ')}`);
   // The shared grocery list + this week's meals, so anyone can ask about them.
   const { rows: groc } = await pool.query<{ item: string }>('SELECT item FROM grocery_items WHERE NOT done ORDER BY id LIMIT 12');
   if (groc.length) bits.push(`Shared grocery list still to get: ${groc.map((g) => g.item).join('; ')}`);
@@ -297,7 +295,7 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   try {
     text =
       mode === 'companion'
-        ? await model.act(system, turns, hanaKit(me, actions), 600)
+        ? await model.act(system, turns, hanaKit(me, actions), 4000)
         : await model.reply(system, turns, 1000, { effort: 'medium' });
   } catch (e) {
     // Kept, marked: the screen shows it with Retry (and a retry reuses this row).
@@ -313,7 +311,7 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     if (bad.length) {
       console.warn(`chat: corrected unverified stats member=${me.id} ${bad.map((b) => b.kind).join(',')}`);
       const now = snaps[snaps.length - 1] as HanaStats;
-      const fixed = await model.reply(REWRITE_SYSTEM(now), [{ role: 'user', content: text }], 700).catch(() => '');
+      const fixed = await model.reply(REWRITE_SYSTEM(now, stats), [{ role: 'user', content: text }], 700).catch(() => '');
       text = fixed && !wrongStats(fixed, snaps).length ? fixed : stripWrongStats(text, now, snaps);
     }
   }

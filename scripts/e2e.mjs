@@ -1880,6 +1880,45 @@ async function careTeam() {
   check('“plan <meal> on Thu” → it’s on her week', kplan.days.find((d) => d.day === 'Thu').meals.some((m) => m.title === 'Shrimp fried rice'), hr.reply.text.slice(0, 160));
   hr = await say('give Evan the chore Water the plants on Mon Thu for 5 points');
   check('“give Evan the chore …” → a real chore', (await ty.get('/api/chores')).data.chores.some((c) => c.name === 'Water the plants' && c.points === 5), hr.reply.text.slice(0, 160));
+
+  section('Hana: chores for anyone in the household (grown-ups too), whole lists at once, and the real roster');
+  const choreRows = async () => sql("SELECT m.name, c.name AS chore FROM chores c JOIN household_members m ON m.id = c.member_id WHERE c.active AND m.household_id = $1", [(await ty.get('/api/me')).data.household.id]);
+  hr = await say('give Kayla the chore Take out recycling on Tue for 5 points');
+  check('a chore for a grown-up (Kayla) → added to her chart', (await choreRows()).some((r) => r.name === 'Kayla' && r.chore === 'Take out recycling'), hr.reply.text.slice(0, 160));
+  hr = await say('give Zed the chore Fly a kite on Mon for 5 points');
+  check('someone who isn’t in the household → says so, naming who is', /no household member named Zed \(the household is [^)]*Kayla[^)]*\)/.test(hr.reply.text), hr.reply.text.slice(0, 200));
+  const rosterNames = (await sql('SELECT name FROM household_members WHERE household_id = $1 AND archived_at IS NULL', [(await ty.get('/api/me')).data.household.id])).map((r) => r.name);
+  const people = ['Ty', 'Kayla', 'Avery', 'Evan'];
+  const longList = Array.from({ length: 32 }, (_, i) => `${people[i % 4]}: Chore number ${i + 1} (${['Mon', 'Tue Thu', 'Wed', 'Fri Sat'][i % 4]}, ${5 + (i % 3) * 5})`);
+  const beforeBatch = (await choreRows()).length;
+  hr = await say(`add them all:\n${longList.join('\n')}`);
+  const batchRows = await choreRows();
+  eq('a pasted list of 32 chores, “add them all” → every one lands (kids and grown-ups), none dropped', [batchRows.length - beforeBatch, people.every((p) => batchRows.filter((r) => r.name === p && /^Chore number \d+$/.test(r.chore)).length === 8)], [32, true]);
+  check('…and Hana says exactly how many were added', /Added 32 of 32 chores/.test(hr.reply.text), hr.reply.text.slice(0, 200));
+  eq('…with no failed message', (await kayla.get('/api/chat/companion')).data.history.filter((m) => m.failed).length, 0);
+  hr = await say('who is in my household?');
+  check('“who is in my household?” → Hana is given the complete, real roster', rosterNames.every((n) => new RegExp(`roster=[^)]*\\b${n}\\b`).test(hr.reply.text.replace(/\)/g, ' '))), hr.reply.text.slice(0, 300));
+  hr = await say('__stub_roster_lie__ can Kayla have chores?');
+  check('a reply that makes up the roster or chore counts → never reaches the person; the real household is shown instead', !/isn’t in your household|5 people|you have 5 chores/.test(hr.reply.text) && /people in the household: .*Kayla \(grown-up/.test(hr.reply.text) && /Anything else\?/.test(hr.reply.text), hr.reply.text);
+  const facts = JSON.parse(
+    runNode([
+      '--input-type=module',
+      '-e',
+      `const m = await import('./dist/lib/hanaStats.js');
+       const base = { score: 0, scoreParts: [], streak: 0, longestStreak: 0, xp: 0, level: 1, levelTitle: 'x', nextLevelAt: 100, tasksDone: 0, tasksOpen: 0, me: 'Ty',
+         members: [{ name: 'Ty', kind: 'adult', age: null }, { name: 'Kayla', kind: 'adult', age: null }, { name: 'Avery', kind: 'kid', age: 15 }, { name: 'Evan', kind: 'kid', age: 11 }] };
+       const before = { ...base, chores: { total: 2, byMember: { Ty: 0, Kayla: 0, Avery: 1, Evan: 1 } } };
+       const after = { ...base, chores: { total: 32, byMember: { Ty: 8, Kayla: 7, Avery: 9, Evan: 8 } } };
+       const t = (x) => m.wrongStats(x, [before, after]).map((c) => c.kind + ':' + c.said).join(',');
+       process.stdout.write(JSON.stringify([
+         t('Kayla isn’t in your household.'), t('There’s no Evan in your household.'), t('I don’t see Avery in your household.'), t('No one named Zed lives here — no household member named Zed.'),
+         t('There are 5 people in your household.'), t('There are 4 people in your household.'), t('You have three kids.'), t('You have two kids.'),
+         t('I added 5 chores.'), t('I added all 30 chores.'), t('Avery has 3 chores.'), t('Avery has 9 chores.'), t('There are 32 chores in total.'),
+       ]));
+       process.exit(0);`,
+    ]),
+  );
+  eq('the checker catches made-up membership, people, kid and chore counts (and leaves true ones alone)', facts, ['notMember:Kayla', 'notMember:Evan', 'notMember:Avery', '', 'members:5', '', 'kids:3', '', 'choresAdded:5', '', 'choresOf:Avery 3', '', '']);
   hr = await say('how are the kids doing');
   check('“how are the kids” → a status per kid', /Avery: chores/.test(hr.reply.text) && /Evan: chores/.test(hr.reply.text), hr.reply.text.slice(0, 200));
   hr = await say('how’s my money looking');
@@ -1909,7 +1948,7 @@ async function careTeam() {
       '--input-type=module',
       '-e',
       `const m = await import('./dist/lib/hanaStats.js');
-       const s = { score: 40, scoreParts: [{ label: 'Check-in', points: 20 }], streak: 0, longestStreak: 3, xp: 120, level: 2, levelTitle: 'Aware', nextLevelAt: 250, tasksDone: 1, tasksOpen: 2 };
+       const s = { score: 40, scoreParts: [{ label: 'Check-in', points: 20 }], streak: 0, longestStreak: 3, xp: 120, level: 2, levelTitle: 'Aware', nextLevelAt: 250, tasksDone: 1, tasksOpen: 2, me: 'Kay', members: [{ name: 'Kay', kind: 'adult', age: null }], chores: { total: 0, byMember: { Kay: 0 } } };
        const t = (x) => m.wrongStats(x, s).map((c) => c.kind + ':' + c.said).join(',');
        process.stdout.write(JSON.stringify([
          t('Your score is 60 today.'), t('You scored 40 — nice.'), t('You’re on a 2-day streak!'), t('Your streak is 3 days long.'),
