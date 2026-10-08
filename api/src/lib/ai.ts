@@ -220,6 +220,7 @@ class StubModel implements ChatModel {
       system.includes('FROM THE MEDICAL REFERENCE') ? 'library=medical' : '',
       system.includes('No library passages matched') ? 'library=none' : '',
       system.includes('VERIFIED STATS (live from MyDay') && system.includes('PERSONAL NUMBERS:') ? 'stats=verified' : '',
+      messages.some((m) => m.role === 'assistant' && turnText(m).includes('[What my tools did in this reply:')) ? 'toolnotes=yes' : '',
       ((m) => (m ? `roster=${m[1]}` : ''))(system.match(/HOUSEHOLD \(complete roster, live\): \d+ people? in the household: ([^.]*)\./)),
       blocks.some((b) => b.type === 'image') ? `images=${blocks.filter((b) => b.type === 'image').length}` : '',
       blocks.some((b) => b.type === 'document') ? `pdfs=${blocks.filter((b) => b.type === 'document').length}` : '',

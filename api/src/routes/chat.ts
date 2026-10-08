@@ -267,9 +267,18 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     [me.id, mode, rowId],
   );
   const earlierFiles = await attachmentInfo(me.id, priorRows.flatMap((r) => r.attachment_ids));
+  const { rows: notes } = priorRows.length
+    ? await pool.query<{ id: number; tool_notes: string | null }>('SELECT id, tool_notes FROM chat_messages WHERE id = ANY($1::int[])', [priorRows.map((r) => r.id)])
+    : { rows: [] as Array<{ id: number; tool_notes: string | null }> };
+  const noteOf = new Map(notes.map((n) => [n.id, n.tool_notes]));
   const turns: ChatTurn[] = priorRows.reverse().map((m) => ({
     role: m.who === 'hana' ? 'assistant' : 'user',
-    content: `${m.text.slice(0, 1000)}${m.attachment_ids.length ? ` [attached earlier: ${m.attachment_ids.map((id) => earlierFiles.get(id)?.name ?? 'a file').join(', ')}]` : ''}`.trim() || '(attachment)',
+    // Whole messages (a pasted list is up to 2000 characters), and what Hana's tools actually did in her earlier
+    // replies — so she knows what she already did instead of second-guessing it.
+    content:
+      `${m.text.slice(0, 2000)}${m.attachment_ids.length ? ` [attached earlier: ${m.attachment_ids.map((id) => earlierFiles.get(id)?.name ?? 'a file').join(', ')}]` : ''}${
+        m.who === 'hana' && noteOf.get(m.id) ? `\n\n[What my tools did in this reply: ${noteOf.get(m.id)}]` : ''
+      }`.trim() || '(attachment)',
   }));
   turns.push({ role: 'user', content: withAttachments(msg, await loadAttachments(me.id, attached)) });
   // The API wants the first turn from the user.
@@ -316,9 +325,11 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     }
   }
   await logEvent('hana_asked', { mode, actions: actions.length }, me.id);
+  // What the tools did, kept with the reply for later turns (not shown in the chat).
+  const toolNotes = actions.length ? actions.map((a) => `${a.summary} → ${a.status}${a.result ? `: ${a.result.replace(/\s+/g, ' ').slice(0, 600)}` : ''}`).join(' | ').slice(0, 4000) : null;
   const { rows } = await pool.query<MsgRow>(
-    `INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, $2, 'hana', $3) RETURNING ${MSG_COLS}`,
-    [me.id, mode, text],
+    `INSERT INTO chat_messages (member_id, mode, who, text, tool_notes) VALUES ($1, $2, 'hana', $3, $4) RETURNING ${MSG_COLS}`,
+    [me.id, mode, text, toolNotes],
   );
   const reply = rows[0];
   if (!reply) throw new Error('reply insert returned nothing');

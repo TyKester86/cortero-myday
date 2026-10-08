@@ -32,7 +32,7 @@ export interface HanaStats {
   /** The whole household (from the roster — complete). */
   members: Array<{ name: string; kind: 'adult' | 'kid'; age: number | null }>;
   /** Active chores on the chart: in total and per person (everyone listed, zeros included). */
-  chores: { total: number; byMember: Record<string, number> };
+  chores: { total: number; byMember: Record<string, number>; names: Record<string, string[]> };
 }
 
 export async function hanaStats(me: HouseholdMember): Promise<HanaStats> {
@@ -46,9 +46,13 @@ export async function hanaStats(me: HouseholdMember): Promise<HanaStats> {
     [me.id, t],
   );
   const roster = await listMembers();
-  const { rows: ch } = await pool.query<{ member_id: number; n: number }>('SELECT member_id, COUNT(*)::int AS n FROM chores WHERE active GROUP BY member_id');
+  const { rows: ch } = await pool.query<{ member_id: number; name: string }>('SELECT member_id, name FROM chores WHERE active ORDER BY member_id, id');
   const byMember: Record<string, number> = {};
-  for (const m of roster) byMember[m.name] = ch.find((c) => c.member_id === m.id)?.n ?? 0;
+  const names: Record<string, string[]> = {};
+  for (const m of roster) {
+    names[m.name] = ch.filter((c) => c.member_id === m.id).map((c) => c.name);
+    byMember[m.name] = names[m.name]?.length ?? 0;
+  }
   return {
     score: score.total,
     scoreParts: score.labels.map((label, i) => ({ label, points: score.parts[i] ?? 0 })),
@@ -62,7 +66,7 @@ export async function hanaStats(me: HouseholdMember): Promise<HanaStats> {
     tasksOpen: rows[0]?.open ?? 0,
     me: me.name,
     members: roster.map((m) => ({ name: m.name, kind: m.kind === 'kid' ? 'kid' : 'adult', age: m.age })),
-    chores: { total: Object.values(byMember).reduce((a, b) => a + b, 0), byMember },
+    chores: { total: Object.values(byMember).reduce((a, b) => a + b, 0), byMember, names },
   };
 }
 
@@ -89,7 +93,8 @@ export function statsLine(s: HanaStats): string {
   const parts = s.scoreParts.filter((p) => p.points > 0).map((p) => `${p.label} ${p.points}`).join(', ');
   return (
     `VERIFIED STATS (live from MyDay, just now): ${statsSummary(s)}${parts ? `; today’s score is made of: ${parts}` : ''}. ` +
-    `HOUSEHOLD (complete roster, live): ${householdSummary(s)}`
+    `HOUSEHOLD (complete roster, live): ${householdSummary(s)}. ` +
+    `Chores by person: ${s.members.map((m) => `${m.name}: ${(s.chores.names?.[m.name] ?? []).slice(0, 40).join(', ') || 'none'}`).join('; ')}`
   );
 }
 
@@ -97,7 +102,8 @@ export const STATS_RULE =
   'PERSONAL NUMBERS: the only personal numbers you may state — score, streak, XP, level, points, counts — are the ones in VERIFIED STATS ' +
   'or returned by a tool in this conversation. Never estimate, guess, round, or reuse a number from earlier in the chat (it may have ' +
   'changed: call my_stats). If a number isn’t there, say plainly that you don’t have it and where in MyDay they can see it. ' +
-  'If you said a wrong number earlier, correct it plainly. HOUSEHOLD FACTS: the HOUSEHOLD roster above is complete and current — ' +
+  'Correct something you said earlier only when VERIFIED STATS or a tool result shows it was wrong — your earlier replies come with ' +
+  '“What my tools did” notes; trust them, and never take back something they confirm. HOUSEHOLD FACTS: the HOUSEHOLD roster above is complete and current — ' +
   'everyone listed IS in the household, and no one else is. Never invent or guess people, membership, or counts of people or chores; ' +
   'never say someone isn’t in the household if they’re listed. Chores can be given to anyone listed, kids or grown-ups. When you add ' +
   'chores, say how many were actually added from the tool result. If you can’t see something, say so and ask — never fill the blank.';

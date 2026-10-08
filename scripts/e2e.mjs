@@ -1896,6 +1896,9 @@ async function careTeam() {
   eq('a pasted list of 32 chores, “add them all” → every one lands (kids and grown-ups), none dropped', [batchRows.length - beforeBatch, people.every((p) => batchRows.filter((r) => r.name === p && /^Chore number \d+$/.test(r.chore)).length === 8)], [32, true]);
   check('…and Hana says exactly how many were added', /Added 32 of 32 chores/.test(hr.reply.text), hr.reply.text.slice(0, 200));
   eq('…with no failed message', (await kayla.get('/api/chat/companion')).data.history.filter((m) => m.failed).length, 0);
+  hr = await say('thanks, all good?');
+  check('next message: Hana is given what her tools did earlier (so she never second-guesses it)', /toolnotes=yes/.test(hr.reply.text), hr.reply.text.slice(0, 300));
+  eq('…kept with her reply, not shown in the chat', (await sql("SELECT tool_notes FROM chat_messages WHERE who = 'hana' AND tool_notes LIKE '%Added 32 of 32 chores%'")).length, 1);
   hr = await say('who is in my household?');
   check('“who is in my household?” → Hana is given the complete, real roster', rosterNames.every((n) => new RegExp(`roster=[^)]*\\b${n}\\b`).test(hr.reply.text.replace(/\)/g, ' '))), hr.reply.text.slice(0, 300));
   hr = await say('__stub_roster_lie__ can Kayla have chores?');
