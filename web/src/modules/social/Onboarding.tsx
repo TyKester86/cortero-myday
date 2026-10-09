@@ -29,7 +29,14 @@ export function FeedOnboarding({ onDone }: { onDone: () => void }) {
       await api('/api/feed/onboarding', 'PUT', { interests: [...picked] });
       // The villages these interests point to (fresh, not the list from before they were picked) start ticked.
       const fresh = await api<Onboarding>('/api/feed/onboarding');
-      setJoined(new Set(fresh.villages.filter((v) => v.joined || v.suggested).map((v) => v.slug)));
+      // Plus the village a friend's invite pointed to.
+      let invitedTo: string | null = null;
+      try {
+        invitedTo = sessionStorage.getItem('feed.village');
+      } catch {
+        /* none */
+      }
+      setJoined(new Set(fresh.villages.filter((v) => v.joined || v.suggested || v.slug === invitedTo).map((v) => v.slug)));
       reload();
       setStep('villages');
     } else if (step === 'villages' && data) {
@@ -53,7 +60,8 @@ export function FeedOnboarding({ onDone }: { onDone: () => void }) {
     else s.add(p.userId);
     setFollowed(s);
   };
-  const link = `${window.location.origin}/?join=1`;
+  const invite = useLoad<{ link: string }>('/api/feed/invite');
+  const link = invite.data?.link ?? `${window.location.origin}/?join=1`;
   const share = async (): Promise<void> => {
     const text = 'I’m on The Feed — a calm community for ADHD adults. Come find me:';
     if (navigator.share) {

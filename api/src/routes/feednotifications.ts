@@ -13,7 +13,7 @@ import { logEvent } from '../lib/events.js';
 
 export const feedNotificationsRouter = Router();
 
-const PREF_KEYS = ['push', 'likes', 'comments', 'replies', 'follows', 'mentions', 'dms', 'villages', 'milestones'] as const;
+const PREF_KEYS = ['push', 'likes', 'comments', 'replies', 'follows', 'mentions', 'dms', 'villages', 'milestones', 'digests'] as const;
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 feedNotificationsRouter.get('/api/feed/notifications', async (req, res) => {
@@ -44,6 +44,7 @@ async function prefsOf(userId: number): Promise<Record<string, boolean | string>
   const r = rows[0];
   const out: Record<string, boolean | string> = {};
   for (const k of PREF_KEYS) out[k] = r ? (r[k] as boolean) : true;
+  out.digestEmail = r ? (r.digest_email as boolean) : true;
   out.quietStart = (r?.quiet_start as string) ?? '22:00';
   out.quietEnd = (r?.quiet_end as string) ?? '08:00';
   return out;
@@ -60,6 +61,7 @@ feedNotificationsRouter.put('/api/feed/notifications/prefs', async (req, res) =>
   const b = req.body as Record<string, unknown>;
   const cur = await prefsOf(m.userId);
   for (const k of PREF_KEYS) if (typeof b[k] === 'boolean') cur[k] = b[k];
+  if (typeof b.digestEmail === 'boolean') cur.digestEmail = b.digestEmail;
   for (const [k, col] of [['quietStart', 'quiet_start'], ['quietEnd', 'quiet_end']] as const) {
     if (b[k] === undefined) continue;
     if (typeof b[k] !== 'string' || !HHMM.test(b[k])) throw new HttpError(400, 'Quiet hours are a time, like 22:00');
@@ -68,11 +70,11 @@ feedNotificationsRouter.put('/api/feed/notifications/prefs', async (req, res) =>
   }
   await asSystem(() =>
     pool.query(
-      `INSERT INTO feed_notification_prefs (user_id, push, likes, comments, replies, follows, mentions, dms, villages, milestones, quiet_start, quiet_end, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+      `INSERT INTO feed_notification_prefs (user_id, push, likes, comments, replies, follows, mentions, dms, villages, milestones, digests, quiet_start, quiet_end, digest_email, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
        ON CONFLICT (user_id) DO UPDATE SET push = $2, likes = $3, comments = $4, replies = $5, follows = $6, mentions = $7, dms = $8, villages = $9,
-         milestones = $10, quiet_start = $11, quiet_end = $12, updated_at = now()`,
-      [m.userId, ...PREF_KEYS.map((k) => cur[k]), cur.quietStart, cur.quietEnd],
+         milestones = $10, digests = $11, quiet_start = $12, quiet_end = $13, digest_email = $14, updated_at = now()`,
+      [m.userId, ...PREF_KEYS.map((k) => cur[k]), cur.quietStart, cur.quietEnd, cur.digestEmail],
     ),
   );
   res.json(await prefsOf(m.userId));

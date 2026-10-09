@@ -24,7 +24,7 @@ interface Item {
   followsBack: boolean;
 }
 
-type Prefs = Record<'push' | 'likes' | 'comments' | 'replies' | 'follows' | 'mentions' | 'dms' | 'villages' | 'milestones', boolean> & {
+type Prefs = Record<'push' | 'likes' | 'comments' | 'replies' | 'follows' | 'mentions' | 'dms' | 'villages' | 'milestones' | 'digests' | 'digestEmail', boolean> & {
   quietStart: string;
   quietEnd: string;
   devices: number;
@@ -109,6 +109,26 @@ function Inbox() {
   );
 }
 
+/** Contacts matching: whether people who have your email can find you. */
+function Findable() {
+  const { data, setData } = useLoad<{ findableByEmail: boolean }>('/api/feed/privacy');
+  if (!data) return null;
+  return (
+    <label className="inline-label">
+      <input
+        type="checkbox"
+        checked={data.findableByEmail}
+        onChange={(e) => {
+          setData({ findableByEmail: e.target.checked });
+          void api('/api/feed/privacy', 'PUT', { findableByEmail: e.target.checked });
+        }}
+        data-testid="pref-findable"
+      />{' '}
+      Let people who have my email find me
+    </label>
+  );
+}
+
 function NotificationSettings() {
   const { data: loaded, reload } = useLoad<Prefs>('/api/feed/notifications/prefs');
   const [local, setLocal] = useState<Partial<Prefs>>({});
@@ -162,6 +182,16 @@ function NotificationSettings() {
         <input type="time" value={data.quietEnd} onChange={(e) => save({ quietEnd: e.target.value })} aria-label="Quiet until" data-testid="quiet-end" />
       </p>
       <p className="small muted">Pings wait until your quiet hours end. Likes and new followers arrive together, a little later, instead of one by one.</p>
+      <fieldset className="notif-kinds">
+        <legend className="small muted">When you’ve been away a couple of days</legend>
+        <label className="inline-label">
+          <input type="checkbox" checked={data.digests} onChange={(e) => save({ digests: e.target.checked })} data-testid="pref-digests" /> A “what you missed” ping
+        </label>
+        <label className="inline-label">
+          <input type="checkbox" checked={data.digestEmail} onChange={(e) => save({ digestEmail: e.target.checked })} data-testid="pref-digest-email" /> …and email
+        </label>
+      </fieldset>
+      <Findable />
     </details>
   );
 }

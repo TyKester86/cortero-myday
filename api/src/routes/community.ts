@@ -121,6 +121,7 @@ export interface ProfileRow {
   username: string | null;
   interests: string[];
   onboarded_at: Date | null;
+  findable_by_email: boolean;
 }
 
 /** Where MonetizeMe storefronts live (a creator's shop is <base>/creator/?slug=<slug>). */
@@ -538,9 +539,14 @@ communityRouter.delete('/api/villages/:slug/members', async (req, res) => {
 
 /** People to follow: shared interests and villages first, then whoever the Feed loves; never blocked or banned. */
 async function suggestions(userId: number, limit: number): Promise<FeedSuggestion[]> {
-  const { rows } = await pool.query<{ user_id: number; display_name: string; username: string | null; avatar_id: number | null; followers: number; shared: string[]; villages: string[]; provider: boolean }>(
+  const { rows } = await pool.query<{ user_id: number; display_name: string; username: string | null; avatar_id: number | null; followers: number; shared: string[]; villages: string[]; provider: boolean; mutual: string[]; mutual_n: number }>(
     `WITH me AS (SELECT interests FROM social_profiles WHERE user_id = $1)
      SELECT p.user_id, p.display_name, p.username,
+            -- People you follow who follow them (people you may know).
+            ARRAY(SELECT a.display_name FROM social_follows f1 JOIN social_follows f2 ON f2.follower_user_id = f1.followed_user_id AND f2.followed_user_id = p.user_id
+                    JOIN social_profiles a ON a.user_id = f1.followed_user_id WHERE f1.follower_user_id = $1 ORDER BY a.display_name LIMIT 3) AS mutual,
+            (SELECT COUNT(*)::int FROM social_follows f1 JOIN social_follows f2 ON f2.follower_user_id = f1.followed_user_id AND f2.followed_user_id = p.user_id
+              WHERE f1.follower_user_id = $1) AS mutual_n,
             (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar_id,
             (SELECT COUNT(*)::int FROM social_follows f WHERE f.followed_user_id = p.user_id) AS followers,
             ARRAY(SELECT unnest(p.interests) INTERSECT SELECT unnest((SELECT interests FROM me))) AS shared,
@@ -551,7 +557,9 @@ async function suggestions(userId: number, limit: number): Promise<FeedSuggestio
       WHERE p.user_id <> $1 AND p.banned_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id)
         AND NOT EXISTS (SELECT 1 FROM social_blocks b WHERE (b.blocker_user_id = $1 AND b.blocked_user_id = p.user_id) OR (b.blocker_user_id = p.user_id AND b.blocked_user_id = $1))
-      ORDER BY cardinality(ARRAY(SELECT unnest(p.interests) INTERSECT SELECT unnest((SELECT interests FROM me)))) * 3
+      ORDER BY (SELECT COUNT(*) FROM social_follows f1 JOIN social_follows f2 ON f2.follower_user_id = f1.followed_user_id AND f2.followed_user_id = p.user_id
+                 WHERE f1.follower_user_id = $1) * 4
+             + cardinality(ARRAY(SELECT unnest(p.interests) INTERSECT SELECT unnest((SELECT interests FROM me)))) * 3
              + (SELECT COUNT(*) FROM village_members a JOIN village_members b ON b.village_id = a.village_id AND b.user_id = $1 WHERE a.user_id = p.user_id) * 2
              + ln(1 + (SELECT COUNT(*) FROM social_follows f WHERE f.followed_user_id = p.user_id)) DESC,
                p.created_at DESC
@@ -566,7 +574,17 @@ async function suggestions(userId: number, limit: number): Promise<FeedSuggestio
     avatarUrl: imageUrl(r.avatar_id),
     followers: r.followers,
     provider: r.provider,
-    reason: r.shared[0] ? `Also into ${label(r.shared[0])}` : r.villages[0] ? `In ${r.villages[0]} with you` : r.provider ? 'Verified provider' : 'Popular in the Feed',
+    reason: r.mutual[0]
+      ? r.mutual_n > 1
+        ? `Followed by ${r.mutual[0]} and ${r.mutual_n - 1} other${r.mutual_n === 2 ? '' : 's'} you follow`
+        : `Followed by ${r.mutual[0]}`
+      : r.shared[0]
+        ? `Also into ${label(r.shared[0])}`
+        : r.villages[0]
+          ? `In ${r.villages[0]} with you`
+          : r.provider
+            ? 'Verified provider'
+            : 'Popular in the Feed',
   }));
 }
 

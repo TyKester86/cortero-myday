@@ -64,9 +64,12 @@ signinRouter.post('/api/auth/email', async (req, res) => {
   const invite = typeof (req.body as { invite?: unknown }).invite === 'string' ? String((req.body as { invite: string }).invite).slice(0, 200) : null;
   // From the Feed's sign-up: the checked date of birth rides along with the link (a new Feed account needs it).
   const birth = verifyAgeToken((req.body as { age?: unknown }).age);
+  // From someone's invite link: who invited them (a username).
+  const refRaw = (req.body as { ref?: unknown }).ref;
+  const ref = typeof refRaw === 'string' && /^[a-z0-9_.]{3,20}$/.test(refRaw) ? refRaw : null;
   const token = randomBytes(32).toString('base64url');
   await asSystem(() =>
-    pool.query("INSERT INTO email_logins (email, token_hash, invite, expires_at, birth_date) VALUES ($1, $2, $3, now() + interval '15 minutes', $4)", [email, hashToken(token), invite, birth]),
+    pool.query("INSERT INTO email_logins (email, token_hash, invite, expires_at, birth_date, ref) VALUES ($1, $2, $3, now() + interval '15 minutes', $4, $5)", [email, hashToken(token), invite, birth, ref]),
   );
   // Back to the domain that asked: the Feed app (its own domain) or MyDay.
   const link = `${originFor(req)}/api/auth/email/callback?token=${token}`;
@@ -83,8 +86,8 @@ signinRouter.post('/api/auth/email', async (req, res) => {
 signinRouter.get('/api/auth/email/callback', async (req, res) => {
   const token = typeof req.query.token === 'string' ? req.query.token : '';
   const row = await asSystem(async () => {
-    const { rows } = await pool.query<{ id: number; email: string; invite: string | null; birth_date: string | null }>(
-      'UPDATE email_logins SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING id, email, invite, birth_date::text AS birth_date',
+    const { rows } = await pool.query<{ id: number; email: string; invite: string | null; birth_date: string | null; ref: string | null }>(
+      'UPDATE email_logins SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING id, email, invite, birth_date::text AS birth_date, ref',
       [hashToken(token)],
     );
     return rows[0] ?? null;
@@ -94,7 +97,7 @@ signinRouter.get('/api/auth/email/callback', async (req, res) => {
     return;
   }
   try {
-    const { userId, pendingInvite } = await upsertUser({ sub: `email:${row.email}`, email: row.email, email_verified: true, name: '' }, row.invite ?? undefined, 'email', onFeedApp(req) ? 'feed' : 'myday', row.birth_date);
+    const { userId, pendingInvite } = await upsertUser({ sub: `email:${row.email}`, email: row.email, email_verified: true, name: '' }, row.invite ?? undefined, 'email', onFeedApp(req) ? 'feed' : 'myday', row.birth_date, row.ref);
     await startSession(req, userId);
     if (pendingInvite) req.session.pendingInvite = pendingInvite;
   } catch (e) {

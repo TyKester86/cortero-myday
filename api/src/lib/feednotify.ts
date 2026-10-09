@@ -14,9 +14,9 @@ import { asSystem, pool } from '../db.js';
 import { inQuietHours, localTime, realPush, stubbed } from './push.js';
 import { registerJob } from './schedulers.js';
 
-export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone';
+export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined';
 
-const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone']);
+const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined']);
 const BATCH_MINUTES = 15;
 const REPING_HOURS = 2;
 const DAILY_CAP = 8;
@@ -30,6 +30,8 @@ const PREF_OF: Record<FeedNoticeKind, string> = {
   request: 'dms',
   village: 'villages',
   milestone: 'milestones',
+  invite: 'villages',
+  joined: 'follows',
 };
 
 export interface Notice {
@@ -115,6 +117,10 @@ function words(kind: FeedNoticeKind, names: string[], count: number, snippet: st
       return `New in your village${quote}`;
     case 'milestone':
       return snippet ?? 'A milestone';
+    case 'invite':
+      return `${who} invited you to ${snippet ?? 'a village'}`;
+    case 'joined':
+      return `${who} joined The Feed from your invite`;
   }
 }
 
@@ -163,7 +169,7 @@ export async function inbox(userId: number, limit = 50): Promise<{ items: InboxI
         unread: r.unread > 0,
         count: r.n,
         actors,
-        prompt: r.kind === 'follow' && !r.follows_back ? 'follow_back' : r.kind === 'reply' || r.kind === 'mention' ? 'reply' : null,
+        prompt: (r.kind === 'follow' || r.kind === 'joined') && !r.follows_back ? 'follow_back' : r.kind === 'reply' || r.kind === 'mention' ? 'reply' : null,
         followsBack: r.follows_back,
       };
     });
@@ -253,7 +259,7 @@ export async function deliverDue(at?: Date): Promise<number> {
 }
 
 /** To every Feed-app device of this person. Returns how many accepted it. */
-async function pushTo(userId: number, msg: Record<string, unknown>): Promise<number> {
+export async function pushTo(userId: number, msg: Record<string, unknown>): Promise<number> {
   const { rows } = await pool.query<{ id: number; endpoint: string; p256dh: string; auth: string }>('SELECT id, endpoint, p256dh, auth FROM feed_push_subscriptions WHERE user_id = $1', [userId]);
   if (!realPush()) {
     if (stubbed()) stubLog.push({ userId, devices: rows.length, ...msg });

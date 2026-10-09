@@ -5,7 +5,7 @@ import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import type { HealthCheck, HouseholdResponse } from '@myday/shared';
 import { config } from './config.js';
-import { rawPool, requestScope, sessionPool } from './db.js';
+import { asSystem, rawPool, requestScope, sessionPool } from './db.js';
 import { authRouter, kidAccessRouter, loadUser, meHandler, requireAuth, requireHousehold } from './auth.js';
 import { errorHandler, HttpError } from './lib/http.js';
 import { reportError } from './lib/report.js';
@@ -252,6 +252,30 @@ app.get(['/feed', '/thefeed'], (req, res, next) => {
   const head = [...appMeta(), `<title>${esc(FEED_META.title)}</title>`, `<meta property="og:title" content="${esc(FEED_META.title)}" />`, ...feedHead(url, origin)];
   res.set('Cache-Control', 'no-cache').type('html').send(page(head, 'landing'));
 });
+/** A personal invite link: a rich preview ("Rae invited you to The Feed"), then the Feed app's sign-up. */
+app.get('/invite/:username', async (req, res, next) => {
+  if (!onFeedApp(req)) {
+    if (config.feedAppUrl) res.redirect(302, `${config.feedAppUrl}${req.originalUrl}`);
+    else next();
+    return;
+  }
+  if (!loadIndex()) {
+    next();
+    return;
+  }
+  const u = String(req.params.username).toLowerCase().slice(0, 20);
+  const { rows } = await asSystem(() => rawPool.query<{ display_name: string }>('SELECT display_name FROM social_profiles WHERE username = $1 AND banned_at IS NULL', [u]));
+  const name = rows[0]?.display_name;
+  const head = name
+    ? feedAppHead({
+        title: `${name} invited you to The Feed`,
+        description: `Join ${name} on The Feed — a calm, supportive community for ADHD adults. Free, 18+.`,
+        url: `${config.feedAppUrl}/invite/${encodeURIComponent(u)}`,
+      })
+    : feedAppHead();
+  res.set('Cache-Control', 'no-cache').type('html').send(page(head, 'app'));
+});
+
 app.get(/.*/, (req, res) => {
   if (!loadIndex()) {
     res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });
@@ -262,13 +286,19 @@ app.get(/.*/, (req, res) => {
     return;
   }
   // The standalone Feed app (its own domain): every page.
+  res.set('Cache-Control', 'no-cache').type('html').send(page(feedAppHead(), 'app'));
+});
+
+/** The Feed app's head: its own title, manifest, colors and launch screens; a page's own preview if it has one. */
+function feedAppHead(o?: { title: string; description: string; url: string }): string[] {
   const origin = config.feedAppUrl;
+  const title = o?.title ?? FEED_META.appTitle;
   const head = [
     ...appMeta(),
     '<meta name="myday-app-mode" content="feed" />',
-    `<title>${esc(FEED_META.appTitle)}</title>`,
-    `<meta property="og:title" content="${esc(FEED_META.appTitle)}" />`,
-    ...feedHead(`${origin}/`, origin),
+    `<title>${esc(title)}</title>`,
+    `<meta property="og:title" content="${esc(title)}" />`,
+    ...feedHead(o?.url ?? `${origin}/`, origin),
     '<link rel="manifest" href="/feed.webmanifest" />',
     '<meta name="theme-color" content="#1F1714" />',
     '<meta name="apple-mobile-web-app-title" content="The Feed" />',
@@ -278,8 +308,12 @@ app.get(/.*/, (req, res) => {
         `<link rel="apple-touch-startup-image" href="/icons/feed-splash-${w * r}x${h * r}.png" media="(device-width: ${w}px) and (device-height: ${h}px) and (-webkit-device-pixel-ratio: ${r}) and (orientation: portrait)" />`,
     ),
   ];
-  res.set('Cache-Control', 'no-cache').type('html').send(page(head, 'app'));
-});
+  if (!o) return head;
+  // A page with its own preview (an invite): its description replaces the Feed's.
+  return head.map((l) =>
+    l.startsWith('<meta name="description"') ? `<meta name="description" content="${esc(o.description)}" />` : l.startsWith('<meta property="og:description"') ? `<meta property="og:description" content="${esc(o.description)}" />` : l,
+  );
+}
 
 app.use(errorHandler);
 

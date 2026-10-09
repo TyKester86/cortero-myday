@@ -1209,6 +1209,20 @@ function appHome(): { url: string; elsewhere: boolean; join: string } {
 }
 
 const AGE_PROOF = 'feed.age';
+const REF = 'feed.ref';
+
+/** An invite link (/invite/<username>, ?village=<slug>): remembered for this sign-up. */
+function inviteFromUrl(): string | null {
+  const m = /^\/invite\/([a-z0-9_.]{3,20})\/?$/i.exec(window.location.pathname);
+  const v = new URLSearchParams(window.location.search).get('village');
+  try {
+    if (m?.[1]) sessionStorage.setItem(REF, m[1].toLowerCase());
+    if (v && /^[a-z0-9-]{2,40}$/.test(v)) sessionStorage.setItem('feed.village', v);
+    return sessionStorage.getItem(REF);
+  } catch {
+    return m?.[1]?.toLowerCase() ?? null;
+  }
+}
 const UNDER_18 = 'feed.under18';
 
 /** Session-only: the checked-age proof, for this sign-up. */
@@ -1292,7 +1306,7 @@ function FeedSignUp({ step, setStep, error }: { step: 'dob' | 'choices'; setStep
           {error}
         </p>
       )}
-      <SignInChoices age={proof} />
+      <SignInChoices age={proof} ref_={inviteFromUrl()} />
       {!proof && (
         <button type="button" className="link small" onClick={() => setStep('dob')} data-testid="signup-new">
           New here? Create your account
@@ -1302,12 +1316,23 @@ function FeedSignUp({ step, setStep, error }: { step: 'dob' | 'choices'; setStep
   );
 }
 
+function InvitedBy() {
+  const [ref] = useState(inviteFromUrl);
+  const { data } = useLoad<{ name: string }>(ref ? `/api/public/invite/${encodeURIComponent(ref)}` : null);
+  if (!ref || !data) return null;
+  return (
+    <p className="fl-invited" data-testid="invited-by">
+      <b>{data.name}</b> invited you to The Feed
+    </p>
+  );
+}
+
 export function FeedLanding() {
   const { data } = useLoad<FeedPreview>('/api/public/feed-preview');
   const app = appHome();
   // Arrived from "Join the Feed" on the other domain (?join=1): they already said they're 18+; open sign-up.
   const qs = new URLSearchParams(window.location.search);
-  const [arrived] = useState(() => qs.get('join') === '1' && !app.elsewhere);
+  const [arrived] = useState(() => (qs.get('join') === '1' || (FEED_APP && /^\/invite\//.test(window.location.pathname))) && !app.elsewhere);
   // Sign-in came back with a problem (expired, cancelled): say so, with the choices open again.
   const [error] = useState(() => LOGIN_ERRORS[qs.get('error') ?? ''] ?? null);
   const [age, setAge] = useState<'ok' | 'under' | null>(arrived || stored(AGE_KEY) === '1' ? 'ok' : null);
@@ -1371,6 +1396,7 @@ export function FeedLanding() {
         </header>
         <section className="fl-hero" id="top">
           <FeedHorn tile size={96} className="fl-hero-mark" />
+          {FEED_APP && <InvitedBy />}
           <span className="fl-pill">18+ adults only</span>
           <h1>The Feed</h1>
           <p>A calm, supportive community for ADHD adults — share, connect, and build routines that actually stick.</p>

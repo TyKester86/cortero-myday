@@ -37,6 +37,7 @@ import { useSession } from '../../session';
 import { BookConsult, FeedNav, SponsoredCard, StoryRail } from '../social/Social';
 import { FeedTitle } from '../social/shell';
 import { FeedOnboarding } from '../social/Onboarding';
+import { VillageInvite } from '../social/Growth';
 import { CatchupCard, EndlessPosts, MemoriesCard, StreakChip, YourStats } from '../social/Endless';
 import { FEED_APP } from '../../apps';
 
@@ -371,13 +372,17 @@ const VILLAGE_KEY = 'myday.village';
 function VillageList({ me }: { me: CommunityMe }) {
   const [cat, setCat] = useState<VillageCategory | ''>('');
   const villages = useLoad<{ villages: VillageInfo[] }>('/api/villages');
+  const [params] = useSearchParams();
   const [village, setVillageState] = useState<string>(() => {
+    const v = params.get('v');
+    if (v && /^[a-z0-9-]{2,40}$/.test(v)) return v;
     try {
       return localStorage.getItem(VILLAGE_KEY) ?? 'adhd-parents';
     } catch {
       return 'adhd-parents';
     }
   });
+  const [inviting, setInviting] = useState(false);
   const setVillage = (v: string): void => {
     setVillageState(v);
     try {
@@ -407,7 +412,26 @@ function VillageList({ me }: { me: CommunityMe }) {
           </button>
         ))}
       </div>
-      {here && <p className="muted small">{here.description} Grown-ups only, first names only.</p>}
+      {here && (
+        <div className="village-head" data-testid="village-head">
+          <p className="muted small grow">
+            {here.description} Grown-ups only, first names only. {count(here.members, 'member')}.
+          </p>
+          <button
+            type="button"
+            className={here.joined ? 'btn small' : 'btn ghost small'}
+            aria-pressed={here.joined}
+            onClick={() => void api(`/api/villages/${here.slug}/members`, here.joined ? 'DELETE' : 'POST').then(() => villages.reload())}
+            data-testid="village-join"
+          >
+            {here.joined ? 'Joined' : 'Join'}
+          </button>
+          <button type="button" className="btn ghost small" onClick={() => setInviting(true)} data-testid="village-invite-open">
+            Invite
+          </button>
+        </div>
+      )}
+      {inviting && here && <VillageInvite slug={here.slug} onClose={() => setInviting(false)} />}
       <div className="chips" role="group" aria-label="Category">
         <button className={cat === '' ? 'chip on' : 'chip'} onClick={() => setCat('')}>
           All
@@ -665,6 +689,10 @@ function FeedBody({ me }: { me: CommunityMe }) {
       <StreakChip />
       <p className="feed-links">
         <Link to={`/people/${me.profile?.userId ?? ''}`}>Your card →</Link>
+        {' · '}
+        <Link to="/invite" data-testid="invite-friends">
+          Invite friends →
+        </Link>
         {me.isModerator && (
           <>
             {' · '}

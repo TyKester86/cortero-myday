@@ -17,9 +17,9 @@ export const LOGIN_ERRORS: Record<string, string> = {
  * Google sign-in. The Feed app (its own domain) goes through MyDay's registered callback and is handed back,
  * carrying the sign-up's age proof (a new Feed account needs it).
  */
-function googleHref(age?: string | null): string {
+function googleHref(age?: string | null, ref?: string | null): string {
   if (!(FEED_APP && elsewhere(APP_URL))) return '/api/auth/google';
-  return `${APP_URL}/api/auth/google?to=feed${age ? `&age=${encodeURIComponent(age)}` : ''}`;
+  return `${APP_URL}/api/auth/google?to=feed${age ? `&age=${encodeURIComponent(age)}` : ''}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`;
 }
 
 interface Methods {
@@ -29,7 +29,7 @@ interface Methods {
 }
 
 /** Google, Apple, or a one-time email link — whichever the server has turned on. */
-export function SignInChoices({ primary = false, age = null }: { primary?: boolean; age?: string | null }) {
+export function SignInChoices({ primary = false, age = null, ref_ = null }: { primary?: boolean; age?: string | null; ref_?: string | null }) {
   const { data } = useLoad<Methods>('/api/auth/methods');
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState<string | null>(null);
@@ -39,7 +39,7 @@ export function SignInChoices({ primary = false, age = null }: { primary?: boole
     e.preventDefault();
     setErr(null);
     try {
-      await api('/api/auth/email', 'POST', { email, ...(invite ? { invite } : {}), ...(age ? { age } : {}) });
+      await api('/api/auth/email', 'POST', { email, ...(invite ? { invite } : {}), ...(age ? { age } : {}), ...(ref_ ? { ref: ref_ } : {}) });
       setSent(email);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : 'Could not send the link');
@@ -49,7 +49,7 @@ export function SignInChoices({ primary = false, age = null }: { primary?: boole
   return (
     <div className="signin-choices" data-testid="signin-choices">
       {m.google && (
-        <a className="btn" href={googleHref(age)} data-testid={primary ? 'start-trial' : 'google-signin'}>
+        <a className="btn" href={googleHref(age, ref_)} data-testid={primary ? 'start-trial' : 'google-signin'}>
           {primary ? 'Start free with Google' : 'Continue with Google'}
         </a>
       )}

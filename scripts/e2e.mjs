@@ -2295,7 +2295,7 @@ async function careTeam() {
   eq('feed post goes live', [fp.review.underReview, fp.post.status, fp.post.author.displayName], [false, 'visible', 'Sam']);
   const samPost = fp.post;
   eq('Everyone tab shows it', (await ty.get('/api/feed?tab=everyone')).data.posts.map((p) => p.body).includes(samPost.body), true);
-  eq('Following tab: nothing until you follow', (await ty.get('/api/feed?tab=following')).data.posts.some((p) => p.id === samPost.id), false);
+  eq('Following tab: Sam’s post only as “Suggested for you” until you follow', (await ty.get('/api/feed?tab=following')).data.posts.filter((p) => p.id === samPost.id).map((p) => !!p.discover), [true]);
   let prof = (await ty.post(`/api/community/people/${samId}/follow`)).data;
   eq('follow', [prof.followedByMe, prof.followers], [true, 1]);
   eq('Following tab now shows Sam', (await ty.get('/api/feed?tab=following')).data.posts.some((p) => p.id === samPost.id), true);
@@ -2326,7 +2326,7 @@ async function careTeam() {
 
   section('The Feed scrolls on: page after page with no time window; Around the Web; a Shop slot on profiles');
   let pg7 = (await ty.get('/api/feed?tab=everyone')).data;
-  eq('pages, not a window: each page hands over the next', [pg7.windowDays, typeof pg7.cursor], [0, 'string']);
+  eq('pages, not a window: each page hands over the next (null only past the villages)', [pg7.windowDays, pg7.cursor === null || typeof pg7.cursor === 'string', Array.isArray(pg7.villages)], [0, true, true]);
   await sql("UPDATE social_posts SET created_at = now() - interval '10 days' WHERE id = $1", [samPost.id]);
   let seenOld = false;
   for (let cur = '', n = 0; n < 30 && cur !== null && !seenOld; n++) {
@@ -3345,7 +3345,7 @@ async function socialSuite() {
   eq('Sam doesn’t follow Ty: it waits in Sam’s Requests first', [inbox.requests.map((t) => t.other.displayName), inbox.unread], [['Ty'], 0]);
   await sam.post(`/api/social/messages/${tyId}/accept`);
   inbox = (await sam.get('/api/social/messages')).data;
-  eq('…accepted: Sam’s inbox: one unread from Ty', [inbox.unread, inbox.threads.map((t) => [t.other.displayName, t.unread, t.last?.mine])], [1, [['Ty', 1, false]]]);
+  eq('…accepted (that opens it): Ty’s conversation is in Sam’s inbox', [inbox.unread, inbox.threads.map((t) => [t.other.displayName, t.unread, t.last?.mine])], [0, [['Ty', 0, false]]]);
   th = (await sam.get(`/api/social/messages/${tyId}`)).data;
   eq('Sam opens it → read', [th.messages.map((m) => m.body), (await sam.get('/api/social/messages')).data.unread], [['Hey Sam — loved the launch pad clip. What bins do you use?'], 0]);
   th = (await sam.post(`/api/social/messages/${tyId}`, { body: 'Dollar-store bins + a label maker!' })).data.thread;
@@ -3777,6 +3777,57 @@ async function feedAppSuite() {
   eq('…Got it → gone; a quick return doesn’t bring it back', (await nb.get('/api/feed/catchup')).data.catchup, null);
   const st = (await nb.get('/api/feed/stats')).data;
   eq('your stats: posts, likes received, followers, villages, streak', [st.posts >= 4, st.likesReceived >= 3, st.followers >= 1, st.villagesJoined >= 1, st.streak.current >= 1], [true, true, true, true, true]);
+
+  section('Bringing people in: your invite link (a rich preview), and friends who join from it are connected');
+  const myInv = (await nb.get('/api/feed/invite')).data;
+  eq('your invite link has your @username on it', [myInv.link, myInv.joined], [`${FEED}/invite/nova.reads`, 0]);
+  const ivPage = String((await new Client('og', 'MyDay-e2e', FEED).get('/invite/nova.reads')).data);
+  eq('…shared, it previews as “Nova invited you to The Feed” with the horn card', [/<title>Nova invited you to The Feed<\/title>/.test(ivPage), /og:title" content="Nova invited you to The Feed"/.test(ivPage), /og:description" content="Join Nova on The Feed/.test(ivPage), /og:image" content="[^"]*\/icons\/feed-og\.png"/.test(ivPage)], [true, true, true, true]);
+  eq('…an unknown name just gets the Feed’s own preview; MyDay’s domain sends the link to the Feed app', [/invited you/.test(String((await new Client('og2', 'MyDay-e2e', FEED).get('/invite/nobody_here')).data)), (await anon.get('/invite/nova.reads')).location], [false, `${FEED}/invite/nova.reads`]);
+  eq('who invited you (first name only, no sign-in)', [(await anon.get('/api/public/invite/nova.reads')).data.name, (await anon.get('/api/public/invite/nobody_here')).status], ['Nova', 404]);
+  const friend = new Client('friend', 'MyDay-e2e', FEED);
+  const fAge = (await friend.post('/api/feed/age', { dob: '1995-05-05' })).data.token;
+  const fN = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+  await friend.post('/api/auth/email', { email: 'nova-friend@example.test', age: fAge, ref: 'nova.reads' });
+  const fLink = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(fN).find((m) => m.to === 'nova-friend@example.test')?.text.match(/https?:\/\/\S+/)?.[0] ?? '';
+  await friend.get(fLink.slice(FEED.length));
+  const fId = (await friend.get('/api/me')).data.userId;
+  eq('a friend joins from it → remembered as Nova’s invite, and they’re connected (they follow Nova)', [(await sql('SELECT referred_by FROM users WHERE id = $1', [fId]))[0].referred_by, (await sql('SELECT COUNT(*)::int AS n FROM social_follows WHERE follower_user_id = $1 AND followed_user_id = $2', [fId, nbId]))[0].n], [nbId, 1]);
+  eq('…Nova hears it (with Follow back), and her link counts them', [(await inboxOf(nb)).items.some((n) => n.kind === 'joined' && n.prompt === 'follow_back'), (await nb.get('/api/feed/invite')).data.joined], [true, 1]);
+
+  section('People you may know: mutual follows first; contacts you choose to share (checked, never stored)');
+  await twin.post(`/api/community/people/${tyFeedId}/follow`);
+  const pymk = (await nb.get('/api/feed/suggestions')).data.people;
+  eq('someone followed by people you follow comes first, with who', [pymk[0]?.displayName, pymk[0]?.reason], ['Ty', 'Followed by Twin']);
+  const cm = (await nb.post('/api/feed/contacts/match', { emails: ['signup-twin@example.test', 'nobody-here@example.test', 'SIGNUP-NEWBIE@example.test', 'not an email'] })).data;
+  eq('contacts: only people on the Feed who can be found — never yourself', [cm.people.map((p) => [p.displayName, p.reason]), cm.checked], [[['Twin', 'In your contacts']], 3]);
+  await twin.put('/api/feed/privacy', { findableByEmail: false });
+  eq('…someone who turned off “find me by email” isn’t found', (await nb.post('/api/feed/contacts/match', { emails: ['signup-twin@example.test'] })).data.people.length, 0);
+  await twin.put('/api/feed/privacy', { findableByEmail: true });
+
+  section('Villages: one-tap invites; “your village misses you”');
+  const inv = (await nb.get('/api/villages/move/invitees')).data;
+  eq('your people who aren’t in the village yet', inv.people.some((p) => p.displayName === 'Twin'), true);
+  eq('invite → they hear it right away', [(await nb.post('/api/villages/move/invite', { userIds: [twinId] })).data.invited, (await inboxOf(twin)).items.find((n) => n.kind === 'invite')?.text], [1, 'Nova invited you to Move']);
+  eq('…once (no repeat invites)', (await nb.post('/api/villages/move/invite', { userIds: [twinId] })).data.invited, 0);
+
+  section('“What you missed”: a gentle digest after two days away — push and email (with unsubscribe), not every day');
+  await sql("UPDATE social_profiles SET last_feed_at = now() - interval '3 days' WHERE user_id = $1", [twinId]);
+  await nb.post('/api/feed/posts', { body: 'Week three of the zine club, thanks all' });
+  const noonTomorrow = new Date(Date.now() + 86400000);
+  noonTomorrow.setUTCHours(17, 0, 0, 0); // noon in Chicago (outside quiet hours)
+  const mailN = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+  const dg = (await nb.post(`/api/dev/feed/digests?token=${DEV_TOKEN}&at=${encodeURIComponent(noonTomorrow.toISOString())}`)).data.sent.find((d) => d.userId === twinId);
+  eq('Twin, away 3 days → one digest: friends’ posts and more', [/new posts? from people you follow/.test(dg?.body ?? ''), dg?.pushed >= 1, dg?.emailed], [true, true, true]);
+  const dMail = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(mailN).find((m) => m.to === 'signup-twin@example.test');
+  const unsub = dMail?.text.match(/https?:\/\/\S+unsubscribe\S+/)?.[0] ?? '';
+  eq('…the email: “What you missed on The Feed”, with a one-tap unsubscribe', [dMail?.subject, unsub.startsWith(`${FEED}/api/feed/unsubscribe?u=${twinId}&t=`)], ['What you missed on The Feed', true]);
+  const dgAgain = (await nb.post(`/api/dev/feed/digests?token=${DEV_TOKEN}&at=${encodeURIComponent(new Date(noonTomorrow.getTime() + 3600000).toISOString())}`)).data.sent;
+  eq("…not again the next hour (at most one every three days)", dgAgain.some((d) => d.userId === twinId), false);
+  const un = await new Client('unsub', 'MyDay-e2e', FEED).get(unsub.slice(FEED.length));
+  eq('unsubscribe (no sign-in needed) → no more digest emails', [un.status, (await twin.get('/api/feed/notifications/prefs')).data.digestEmail], [200, false]);
+  eq('…a forged unsubscribe link does nothing', (await new Client('unsub2', 'MyDay-e2e', FEED).get(`/api/feed/unsubscribe?u=${nbId}&t=nope`)).status, 400);
+  eq('the digest ping can be turned off too', (await twin.put('/api/feed/notifications/prefs', { digests: false })).data.digests, false);
 }
 
 async function businessSuite() {
@@ -4399,7 +4450,7 @@ async function uiGate() {
     await jp.getByTestId('onb-push').waitFor({ timeout: 10000 });
     check('…then, right after following people, the push question — on a tap, never asked by itself', /Know when they answer/.test(await jp.getByTestId('feed-onboarding').innerText()));
     await jp.getByTestId('onb-next').click();
-    eq('“Bring your people”: their own invite link on the Feed’s domain', await jp.getByTestId('onb-invite-link').inputValue(), `${FEED}/?join=1`);
+    eq('“Bring your people”: their own invite link (with their name on it) on the Feed’s domain', await jp.getByTestId('onb-invite-link').inputValue(), `${FEED}/invite/rae_makes`);
     await jp.getByTestId('onb-next').click();
     await jp.getByTestId('story-rail').waitFor({ timeout: 10000 });
     const joinedV = await jp.evaluate(async () => (await (await fetch('/api/villages')).json()).villages.filter((v) => v.joined).map((v) => v.slug).sort());
@@ -4482,7 +4533,32 @@ async function uiGate() {
     await jp.getByTestId('profile-tab-about').click();
     await jp.getByTestId('your-stats').waitFor({ timeout: 10000 });
     check('her own profile shows her stats (only to her)', /day streak/.test(await jp.getByTestId('your-stats').innerText()));
+    // Invite friends: her own link; contacts she pastes; a village invite.
+    await jp.goto(`${FEED}/feed`);
+    await jp.getByTestId('invite-friends').click();
+    await jp.getByTestId('invite-link').waitFor({ timeout: 10000 });
+    eq('Invite friends: her own link', await jp.getByTestId('invite-link').inputValue(), `${FEED}/invite/rae_makes`);
+    await jp.getByTestId('contacts-paste').fill('signup-twin@example.test, someone-new@example.test');
+    await jp.getByTestId('contacts-find').click();
+    await jp.getByTestId('contacts-result').waitFor({ timeout: 10000 });
+    check('…contacts she pastes are checked (never stored): who’s here', /1 person you know is here/.test(await jp.getByTestId('contacts-result').innerText()), await jp.getByTestId('contacts-result').innerText());
+    await jp.goto(`${FEED}/village?v=creatives`);
+    await jp.getByTestId('village-head').waitFor({ timeout: 10000 });
+    eq('a village opened from a link: Joined (from her first run), with Invite', [await jp.getByTestId('village-join').getAttribute('aria-pressed'), await jp.getByTestId('village-invite-open').count()], ['true', 1]);
+    await jp.getByTestId('village-invite-open').click();
+    await jp.getByTestId('village-invite').waitFor({ timeout: 10000 });
+    await jp.getByTestId('village-invite-send').click();
+    await jp.getByTestId('village-invited').waitFor({ timeout: 10000 });
+    check('…one tap invites her people', /Invited/.test(await jp.getByTestId('village-invited').innerText()));
     await joinCtx.close();
+    const ivCtx = await browser.newContext(phone);
+    const ivp = await ivCtx.newPage();
+    watch(ivp);
+    await ivp.goto(`${FEED}/invite/nova.reads`);
+    await ivp.getByTestId('age-yes').click();
+    await ivp.getByTestId('invited-by').waitFor({ timeout: 10000 });
+    eq('an invite link: “Nova invited you to The Feed”, sign-up already open (date of birth first)', [await ivp.getByTestId('invited-by').innerText(), await ivp.getByTestId('signup-dob').isVisible()], ['Nova invited you to The Feed', true]);
+    await ivCtx.close();
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const dp = await desk.newPage();
@@ -5395,6 +5471,7 @@ async function uiGate() {
     }
     eq('kid pages render (and fit the phone)', notFound, []);
     await kp.goto(`${BASE}/`);
+    await kp.getByTestId('who').waitFor({ timeout: 10000 });
     eq('kids: no horn on their tab bar (the Feed is 18+), no menu button; their name opens Me', [await kp.getByTestId('horn-tab').count(), await kp.getByRole('button', { name: 'Menu' }).count(), await kp.getByTestId('who').count()], [0, 0, 1]);
     await openMe(kp);
     const kmenu = await meHub(kp).innerText();

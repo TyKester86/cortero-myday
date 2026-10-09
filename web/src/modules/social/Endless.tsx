@@ -9,6 +9,7 @@ import { CHECKIN_MOODS, type FeedCatchup, type FeedMemory, type FeedPage, type F
 import { api, useLoad } from '../../api';
 import { ago } from '../../dates';
 import { count } from '../../format';
+import { PeopleRail } from './Growth';
 
 type Card = { kind: 'post'; post: FeedPost } | { kind: 'village'; v: FeedVillageItem };
 
@@ -104,6 +105,7 @@ export function EndlessPosts({
             )}
             {renderPost(card.post, update, gone)}
             {i === 1 && sponsored && renderSponsored(sponsored)}
+            {i === 4 && <PeopleRail />}
           </Fragment>
         );
       })}

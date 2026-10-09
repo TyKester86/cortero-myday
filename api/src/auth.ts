@@ -28,6 +28,7 @@ import { asSystem, inHousehold, pool, setHousehold } from './db.js';
 import { logEvent } from './lib/events.js';
 import { HttpError, idParam } from './lib/http.js';
 import { verifyAgeToken } from './lib/age.js';
+import { notify } from './lib/feednotify.js';
 import { memberById, requireAdult } from './lib/members.js';
 import {
   assertStrongPin,
@@ -56,6 +57,8 @@ declare module 'express-session' {
     authTo: 'feed';
     /** The Feed sign-up's age proof (lib/age.ts), carried through Google sign-in. */
     feedAge: string;
+    /** Who invited them (an invite link's username), carried through Google sign-in. */
+    feedRef: string;
   }
 }
 
@@ -136,6 +139,8 @@ export async function upsertUser(
   app: 'myday' | 'feed' = 'myday',
   /** The Feed sign-up's checked date of birth (18+). A NEW Feed account can't exist without it. */
   birthDate: string | null = null,
+  /** Who invited them (username from an invite link). */
+  ref: string | null = null,
 ): Promise<{ userId: number; pendingInvite: string | null }> {
   const email = p.email.toLowerCase();
   return asSystem(async () => {
@@ -179,12 +184,19 @@ export async function upsertUser(
       );
       return { userId: existing, pendingInvite };
     }
+    const { rows: inv } = ref ? await pool.query<{ user_id: number }>('SELECT user_id FROM social_profiles WHERE username = $1 AND banned_at IS NULL', [ref]) : { rows: [] };
+    const inviter = inv[0]?.user_id ?? null;
     const { rows } = await pool.query<{ id: number }>(
-      'INSERT INTO users (google_sub, email, name, member_id, signup_app, birth_date) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-      [p.sub, email, p.name ?? '', memberId, app, birthDate],
+      'INSERT INTO users (google_sub, email, name, member_id, signup_app, birth_date, referred_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+      [p.sub, email, p.name ?? '', memberId, app, birthDate, inviter],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('user upsert returned nothing');
+    // Joined from a friend's invite: they're connected (the new person follows their friend), and the friend hears.
+    if (inviter !== null) {
+      await pool.query('INSERT INTO social_follows (follower_user_id, followed_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [id, inviter]);
+      await notify({ to: inviter, kind: 'joined', actor: id, group: `joined:${id}`, url: `/people/${id}` });
+    }
     await logEvent('signup', { via, invited: memberId !== null, app }, memberId, null);
     return { userId: id, pendingInvite };
   });
@@ -241,6 +253,8 @@ authRouter.get('/api/auth/google', (req, res) => {
   else delete req.session.authTo;
   if (typeof req.query.age === 'string') req.session.feedAge = req.query.age;
   else delete req.session.feedAge;
+  if (typeof req.query.ref === 'string' && /^[a-z0-9_.]{3,20}$/.test(req.query.ref)) req.session.feedRef = req.query.ref;
+  else delete req.session.feedRef;
   const q = new URLSearchParams({
     client_id: config.googleClientId,
     redirect_uri: redirectUri(),
@@ -294,7 +308,7 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
   }
   let userId: number;
   try {
-    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday', verifyAgeToken(req.session.feedAge));
+    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday', verifyAgeToken(req.session.feedAge), req.session.feedRef ?? null);
     userId = up.userId;
     await startSession(req, userId);
     delete req.session.inviteToken;
