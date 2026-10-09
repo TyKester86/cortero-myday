@@ -123,7 +123,7 @@ feedNotificationsRouter.post('/api/feed/push/test', async (req, res) => {
 /** Local/tests only: run delivery now (optionally "as if" at another time), and what was pushed (stubbed). */
 feedNotificationsRouter.post('/api/dev/feed/deliver', async (req, res) => {
   if (config.production || !config.devLoginToken || req.query.token !== config.devLoginToken) throw new HttpError(404, 'Not found');
-  const at = typeof req.query.at === 'string' ? new Date(req.query.at) : new Date();
+  const at = typeof req.query.at === 'string' ? new Date(req.query.at) : undefined;
   const before = stubLog.length;
   const sent = await deliverDue(at);
   res.json({ sent, pushed: stubLog.slice(before) });

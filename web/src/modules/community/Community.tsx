@@ -849,6 +849,24 @@ export function SlipMenu({ children }: { children: ReactNode }) {
   );
 }
 
+/** A post's words with #topics and @names as links (to search). */
+export function RichText({ text }: { text: string }) {
+  const parts = text.split(/((?:^|(?<=[^\w#&@]))[#@][a-z0-9_.]{2,30})/gi);
+  return (
+    <>
+      {parts.map((part, i) =>
+        /^[#@][a-z0-9_.]{2,30}$/i.test(part) ? (
+          <Link key={i} to={`/search?q=${encodeURIComponent(part.replace(/\.$/, ''))}`} className="tag-link">
+            {part}
+          </Link>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 export function FeedCard({ p, onChange, onMsg, onGone }: { p: FeedPost; onChange: (p: FeedPost) => void; onMsg: (m: string) => void; onGone: (id: number) => void }) {
   const confirm = useConfirm();
   return (
@@ -878,7 +896,11 @@ export function FeedCard({ p, onChange, onMsg, onGone }: { p: FeedPost; onChange
           </button>
         )}
       </header>
-      {p.body && <p className="slip-body">{p.body}</p>}
+      {p.body && (
+        <p className="slip-body">
+          <RichText text={p.body} />
+        </p>
+      )}
       {p.imageUrl && <img src={p.imageUrl} alt="" className="feed-photo" loading="lazy" />}
       {p.trusted && <TrustedCard t={p.trusted} />}
       {p.isQuestion && !p.trusted && p.status === 'visible' && <p className="small muted">Hana is looking for a trusted answer…</p>}

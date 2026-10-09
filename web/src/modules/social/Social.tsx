@@ -859,14 +859,26 @@ export function MessagesPage() {
 }
 
 function Inbox() {
-  const { data, error } = useLoad<{ threads: DmThreadSummary[]; unread: number }>('/api/social/messages');
+  const { data, error } = useLoad<{ threads: DmThreadSummary[]; requests: DmThreadSummary[]; unread: number }>('/api/social/messages');
+  const [params] = useSearchParams();
+  const [showReq, setShowReq] = useState(params.has('requests'));
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
+  const list = showReq ? data.requests : data.threads;
   return (
     <>
       <p className="muted small">One-to-one, grown-ups only. Every message is checked before it’s delivered; you can mute, block or report anyone.</p>
-      <div className="dm-list" data-testid="dm-list">
-        {data.threads.map((t) => (
+      <div className="chips" role="tablist" aria-label="Messages">
+        <button type="button" role="tab" aria-selected={!showReq} className={showReq ? 'chip' : 'chip on'} onClick={() => setShowReq(false)} data-testid="dm-tab-inbox">
+          Inbox
+        </button>
+        <button type="button" role="tab" aria-selected={showReq} className={showReq ? 'chip on' : 'chip'} onClick={() => setShowReq(true)} data-testid="dm-tab-requests">
+          Requests{data.requests.length ? ` (${data.requests.length})` : ''}
+        </button>
+      </div>
+      {showReq && <p className="muted small">From people you don’t follow. They won’t know you’ve seen it until you reply or accept.</p>}
+      <div className="dm-list" data-testid={showReq ? 'dm-requests' : 'dm-list'}>
+        {list.map((t) => (
           <Link key={t.other.userId} to={`/messages/${t.other.userId}`} className={t.unread ? 'dm-row unread' : 'dm-row'} data-testid="dm-row">
             <Avatar a={t.other} size={46} />
             <span className="dm-row-text">
@@ -882,10 +894,10 @@ function Inbox() {
             </span>
           </Link>
         ))}
-        {!data.threads.length && (
+        {!list.length && (
           <div className="clip-empty">
-            <b>No messages yet</b>
-            <p className="muted small">Open someone’s profile and tap Message to start a conversation.</p>
+            <b>{showReq ? 'No message requests' : 'No messages yet'}</b>
+            {!showReq && <p className="muted small">Open someone’s profile and tap Message to start a conversation.</p>}
           </div>
         )}
       </div>
@@ -965,6 +977,38 @@ function Thread({ id }: { id: string }) {
         </SlipMenu>
       </header>
       {data.muted && <p className="small muted dm-note">Muted — you won’t get notified about this conversation.</p>}
+      {data.request && !data.blocked && (
+        <div className="card dm-request" data-testid="dm-request">
+          <p className="small">
+            <b>{o.displayName}</b> wants to message you. Accept to chat — or decline (they won’t be told).
+          </p>
+          <div className="row">
+            <button type="button" className="btn small" onClick={() => void api<DmThread>(`/api/social/messages/${o.userId}/accept`, 'POST').then(setData)} data-testid="dm-accept">
+              Accept
+            </button>
+            <button
+              type="button"
+              className="btn ghost small"
+              onClick={() => void api(`/api/social/messages/${o.userId}/decline`, 'POST').then(() => navigate('/messages?requests=1'))}
+              data-testid="dm-decline"
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              className="link danger small"
+              onClick={() =>
+                void confirm({ title: `Block ${o.displayName}?`, body: 'Neither of you can message the other, and you won’t see each other’s posts.', confirmLabel: 'Block', danger: true }).then(
+                  (y) => void (y && api(`/api/community/people/${o.userId}/block`, 'POST').then(() => navigate('/messages?requests=1'))),
+                )
+              }
+              data-testid="dm-request-block"
+            >
+              Block
+            </button>
+          </div>
+        </div>
+      )}
       <div className="dm-messages" data-testid="dm-messages">
         {data.messages.map((m) => (
           <div key={m.id} className={m.mine ? 'dm-msg mine' : 'dm-msg'} data-testid="dm-message">

@@ -2458,6 +2458,8 @@ export interface DmThreadSummary {
   last: { body: string; at: string; mine: boolean } | null;
   unread: number;
   muted: boolean;
+  /** From someone you don't follow and haven't answered: waits in Requests. */
+  request: boolean;
 }
 
 export interface DmMessage {
@@ -2474,6 +2476,17 @@ export interface DmThread {
   muted: boolean;
   /** You blocked them, or they blocked you: no sending. */
   blocked: boolean;
+  /** A message request: accept to chat, decline to hide it (they aren't told), or block. */
+  request: boolean;
+}
+
+/** Search across the Feed: people, posts, villages (and topics — #hashtags). */
+export interface FeedSearch {
+  q: string;
+  people: Array<{ userId: number; displayName: string; username: string | null; avatarUrl: string | null; followers: number; followedByMe: boolean }>;
+  posts: FeedPost[];
+  villages: VillageInfo[];
+  topics: Array<{ tag: string; count: number }>;
 }
 
 export interface VillageInfo {

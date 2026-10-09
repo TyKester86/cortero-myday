@@ -140,6 +140,9 @@ export function FeedNav() {
           )}
         </NavLink>
       ))}
+      <NavLink to="/search" className="feed-nav-link feed-nav-bell feed-nav-search" aria-label="Search the Feed" data-testid="feed-search">
+        <NavIcon name="search" size={18} />
+      </NavLink>
       <NavLink to="/notifications" className="feed-nav-link feed-nav-bell" aria-label={notes ? `Notifications, ${notes} new` : 'Notifications'} data-testid="notif-bell">
         <NavIcon name="bell" size={18} />
         {notes > 0 && (

@@ -14,7 +14,7 @@ import { asSystem, pool } from '../db.js';
 import { inQuietHours, localTime, realPush, stubbed } from './push.js';
 import { registerJob } from './schedulers.js';
 
-export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'village' | 'milestone';
+export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone';
 
 const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone']);
 const BATCH_MINUTES = 15;
@@ -27,6 +27,7 @@ const PREF_OF: Record<FeedNoticeKind, string> = {
   follow: 'follows',
   mention: 'mentions',
   dm: 'dms',
+  request: 'dms',
   village: 'villages',
   milestone: 'milestones',
 };
@@ -108,6 +109,8 @@ function words(kind: FeedNoticeKind, names: string[], count: number, snippet: st
       return `${who} mentioned you${quote}`;
     case 'dm':
       return `${who} sent you a message`;
+    case 'request':
+      return `${who} sent you a message request`;
     case 'village':
       return `New in your village${quote}`;
     case 'milestone':
@@ -192,9 +195,10 @@ function nextLocal(hhmm: string, now: Date): Date {
   return new Date(now.getTime() + mins * 60_000);
 }
 
-/** Send the pushes that are due. Returns how many pushes went out (or would have, stubbed). */
-export async function deliverDue(now = new Date()): Promise<number> {
+/** Send the pushes that are due (by the database's clock — the one that dated them, unless told otherwise). */
+export async function deliverDue(at?: Date): Promise<number> {
   return asSystem(async () => {
+    const now = at ?? (await pool.query<{ n: Date }>('SELECT now() AS n')).rows[0]?.n ?? new Date();
     const { rows } = await pool.query<{ user_id: number; group_key: string; kind: FeedNoticeKind; ids: string[]; url: string; snippet: string | null; names: string[]; n: number }>(
       `SELECT n.user_id, n.group_key, (array_agg(n.kind ORDER BY n.created_at DESC))[1] AS kind, array_agg(n.id) AS ids,
               (array_agg(n.url ORDER BY n.created_at DESC))[1] AS url, (array_agg(n.snippet ORDER BY n.created_at DESC))[1] AS snippet,
@@ -225,11 +229,13 @@ export async function deliverDue(now = new Date()): Promise<number> {
       }
       // One ping per thing every couple of hours (likes keep landing in the inbox), and a daily ceiling.
       const recent = await pool.query(
-        `SELECT 1 FROM feed_notifications WHERE user_id = $1 AND group_key = $2 AND push_state = 'sent' AND pushed_at > $3::timestamptz - make_interval(hours => $4::int) LIMIT 1`,
+        `SELECT 1 FROM feed_notifications WHERE user_id = $1 AND group_key = $2 AND push_state = 'sent'
+            AND pushed_at > $3::timestamptz - make_interval(hours => $4::int) AND pushed_at <= $3::timestamptz LIMIT 1`,
         [g.user_id, g.group_key, now, REPING_HOURS],
       );
       const { rows: day } = await pool.query<{ n: number }>(
-        `SELECT COUNT(DISTINCT group_key)::int AS n FROM feed_notifications WHERE user_id = $1 AND push_state = 'sent' AND pushed_at > $2::timestamptz - interval '24 hours'`,
+        `SELECT COUNT(DISTINCT group_key)::int AS n FROM feed_notifications
+          WHERE user_id = $1 AND push_state = 'sent' AND pushed_at > $2::timestamptz - interval '24 hours' AND pushed_at <= $2::timestamptz`,
         [g.user_id, now],
       );
       if ((recent.rowCount && !NOW_KINDS.has(g.kind)) || ((day[0]?.n ?? 0) >= DAILY_CAP && g.kind !== 'dm')) {

@@ -3682,6 +3682,46 @@ async function feedAppSuite() {
   await nb.put('/api/feed/notifications/prefs', { push: true });
   const test = await nb.post('/api/feed/push/test');
   eq('“Send a test” reaches this person’s devices', test.data.sent >= 1, true);
+
+  section('Search: people, posts, villages; #topics; nothing from people you blocked');
+  const desk = (await nb.post('/api/feed/posts', { body: 'Desk tour time #MessyDesk #adhdwins — and yes that is three coffee mugs' })).data.post;
+  eq('#hashtags are kept with the post (lowercase)', (await sql('SELECT hashtags FROM social_posts WHERE id = $1', [desk.id]))[0].hashtags, ['messydesk', 'adhdwins']);
+  const byTag = (await twin.get('/api/feed/search?q=%23messydesk')).data;
+  eq('a #topic finds its posts', byTag.posts.map((p) => p.id), [desk.id]);
+  eq('…and topics this week include it', (await twin.get('/api/feed/topics')).data.topics.some((t) => t.tag === 'messydesk'), true);
+  const words = (await twin.get('/api/feed/search?q=zine')).data;
+  eq('words find posts (sealed at rest — opened to search, never indexed)', words.posts.length >= 3 && words.posts.every((p) => /zine/i.test(p.body)), true);
+  const ppl = (await twin.get('/api/feed/search?q=nov')).data.people;
+  eq('people by first name…', [ppl[0]?.displayName, ppl[0]?.username, ppl[0]?.followedByMe], ['Nova', 'nova.reads', true]);
+  eq('…or @username', (await tyF.get('/api/feed/search?q=%40twin_')).data.people.map((p) => p.username), ['twin_two']);
+  eq('villages by name or what they’re about', (await twin.get('/api/feed/search?q=bills')).data.villages.map((v) => v.slug), ['money-matters']);
+  await tyF.post(`/api/community/people/${nbId}/block`);
+  const blockedView = (await tyF.get('/api/feed/search?q=nova')).data;
+  eq('someone you blocked never shows up (people or posts)', [blockedView.people.length, (await tyF.get('/api/feed/search?q=%23messydesk')).data.posts.length], [0, 0]);
+  await tyF.del(`/api/community/people/${nbId}/block`);
+  eq('one letter isn’t a search (topics instead)', [(await twin.get('/api/feed/search?q=n')).data.people.length, Array.isArray((await twin.get('/api/feed/search?q=n')).data.topics)], [0, true]);
+
+  section('Message requests: strangers land in Requests — accept, decline (they aren’t told) or block');
+  await tyF.post(`/api/social/messages/${nbId}`, { body: 'Hi Nova — loved the zine post!' });
+  const nbMsgs = (await nb.get('/api/social/messages')).data;
+  eq('someone Nova doesn’t follow → a request, not her inbox (and not her unread count)', [nbMsgs.requests.map((t) => t.other.displayName), nbMsgs.threads.some((t) => t.other.displayName === 'Ty')], [['Ty'], false]);
+  eq('…she hears it quietly: “Ty sent you a message request”', (await inboxOf(nb)).items.find((n) => n.kind === 'request')?.text, 'Ty sent you a message request');
+  eq('…opening it shows the request (accept / decline / block)', (await nb.get(`/api/social/messages/${tyFeedId}`)).data.request, true);
+  eq('accept → it’s a normal conversation', [(await nb.post(`/api/social/messages/${tyFeedId}/accept`)).data.request, (await nb.get('/api/social/messages')).data.threads.some((t) => t.other.displayName === 'Ty')], [false, true]);
+  eq('people she follows were never requests (Twin)', (await nb.get('/api/social/messages')).data.threads.some((t) => t.other.displayName === 'Twin'), true);
+  const samUserId = (await sql("SELECT id FROM users WHERE email = 'sam@example.com' ORDER BY id LIMIT 1"))[0].id;
+  await sam.post(`/api/social/messages/${nbId}`, { body: 'Hello from a provider' });
+  eq('another stranger → Requests', (await nb.get('/api/social/messages')).data.requests.map((t) => t.other.userId), [samUserId]);
+  await nb.post(`/api/social/messages/${samUserId}/decline`);
+  const before3 = (await inboxOf(nb)).items.filter((n) => n.kind === 'request').length;
+  await sam.post(`/api/social/messages/${nbId}`, { body: 'Hello again?' });
+  eq('decline → gone from both lists; more from them doesn’t ping her', [(await nb.get('/api/social/messages')).data.requests.length, (await nb.get('/api/social/messages')).data.threads.some((t) => t.other.userId === samUserId), (await inboxOf(nb)).items.filter((n) => n.kind === 'request').length], [0, false, before3]);
+  eq('…and Sam isn’t told (his side looks normal)', (await sam.get(`/api/social/messages/${nbId}`)).data.messages.length, 2);
+  eq('replying to a request accepts it too', await (async () => {
+    await twin.post(`/api/social/messages/${tyFeedId}`, { body: 'Hey Ty' });
+    await tyF.post(`/api/social/messages/${twinId}`, { body: 'Hey back' });
+    return (await tyF.get('/api/social/messages')).data.threads.some((t) => t.other.userId === twinId);
+  })(), true);
 }
 
 async function businessSuite() {
@@ -4331,6 +4371,37 @@ async function uiGate() {
       const p = await (await fetch('/api/feed/notifications/prefs')).json();
       return [p.likes, p.replies, p.quietStart, p.quietEnd];
     }), [false, true, '22:00', '08:00']);
+    // Search from the section bar: topics first, then people, posts, #tags.
+    await jp.getByTestId('feed-search').click();
+    await jp.getByTestId('search-topics').waitFor({ timeout: 10000 });
+    check('Search opens with what’s talked about this week', (await jp.getByTestId('search-topic').allInnerTexts()).some((t) => /#messydesk/.test(t)));
+    await jp.getByTestId('search-input').fill('nova');
+    await jp.getByTestId('search-person').first().waitFor({ timeout: 10000 });
+    eq('…typing a name finds people (with Follow)', [/Nova/.test(await jp.getByTestId('search-person').first().innerText()), await jp.getByTestId('search-person').first().getByTestId('search-follow').count()], [true, 1]);
+    await jp.getByTestId('search-topic').filter({ hasText: '#messydesk' }).first().click().catch(async () => {
+      await jp.getByTestId('search-input').fill('#messydesk');
+    });
+    await jp.getByTestId('search-posts').waitFor({ timeout: 10000 });
+    const tagLink = jp.getByTestId('search-posts').locator('a.tag-link', { hasText: '#adhdwins' });
+    eq('…a #topic shows its posts; the post’s #tags are links', [/Desk tour/.test(await jp.getByTestId('search-posts').innerText()), await tagLink.count()], [true, 1]);
+    await tagLink.click();
+    await jp.waitForURL(/search\?q=%23adhdwins/, { timeout: 10000 });
+    eq('…tapping one searches it', await jp.getByTestId('search-input').inputValue(), '#adhdwins');
+    // A stranger messages Rae → Requests, with Accept / Decline / Block.
+    const sky = new Client('sky');
+    await sky.get(`/dev-login?token=${DEV_TOKEN}&email=sky-stranger@example.test`);
+    await sky.put('/api/community/profile', { displayName: 'Sky', adult: true, guidelines: true, dob: '1987-03-03' });
+    await sky.post(`/api/social/messages/${raeId}`, { body: 'Hi Rae, saw your desk post!' });
+    await jp.goto(`${FEED}/messages`);
+    await jp.getByTestId('dm-tab-requests').waitFor({ timeout: 10000 });
+    eq('Messages: a stranger’s message waits under Requests (not the inbox)', [await jp.getByTestId('dm-tab-requests').innerText(), await jp.getByTestId('dm-list').getByText('Sky').count()], ['Requests (1)', 0]);
+    await jp.getByTestId('dm-tab-requests').click();
+    await jp.getByTestId('dm-requests').getByText('Sky').click();
+    await jp.getByTestId('dm-request').waitFor({ timeout: 10000 });
+    eq('…opening it: Accept, Decline or Block', [await jp.getByTestId('dm-accept').count(), await jp.getByTestId('dm-decline').count(), await jp.getByTestId('dm-request-block').count()], [1, 1, 1]);
+    await jp.getByTestId('dm-accept').click();
+    await jp.getByTestId('dm-request').waitFor({ state: 'detached', timeout: 10000 });
+    check('…Accept → a normal conversation', (await jp.getByTestId('dm-message').count()) === 1);
     await joinCtx.close();
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });

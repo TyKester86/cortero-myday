@@ -428,3 +428,13 @@
 .notif-text { color: inherit; text-decoration: none; min-width: 0; }
 .notif-prefs { display: grid; gap: 8px; margin-top: 16px; }
 .notif-kinds { display: grid; gap: 4px; border: 0; padding: 0; margin: 0; }
+
+/* Search, topics, message requests. */
+.feed-nav-search { margin-left: auto; }
+.feed-nav-search + .feed-nav-bell { margin-left: 0; }
+.feed-search { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; }
+.feed-search input { flex: 1; min-width: 0; }
+.search-topics { margin: 8px 0 12px; }
+.search-topics .chips { flex-wrap: wrap; }
+.tag-link { color: var(--accent, #e38a4a); text-decoration: none; font-weight: 600; }
+.dm-request { display: grid; gap: 8px; margin: 8px 0; }

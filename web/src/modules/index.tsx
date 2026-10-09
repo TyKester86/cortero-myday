@@ -22,6 +22,7 @@ const StoriesPage = lazy(() => import('./social/Social').then((m) => ({ default:
 const ClipsPage = lazy(() => import('./social/Social').then((m) => ({ default: m.ClipsPage })));
 const MessagesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessagesPage })));
 const NotificationsPage = lazy(() => import('./social/Notifications').then((m) => ({ default: m.NotificationsPage })));
+const SearchPage = lazy(() => import('./social/Search').then((m) => ({ default: m.SearchPage })));
 const MessageThreadPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessageThreadPage })));
 const BusinessPage = lazy(() => import('./social/Business').then((m) => ({ default: m.BusinessPage })));
 const CommunityModeration = lazy(() => import('./community/Community').then((m) => ({ default: m.CommunityModeration })));
@@ -166,6 +167,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/clips', element: <ClipsPage />, audience: 'adult' },
   { path: '/messages', element: <MessagesPage />, audience: 'adult' },
   { path: '/notifications', element: <NotificationsPage />, audience: 'adult' },
+  { path: '/search', element: <SearchPage />, audience: 'adult' },
   { path: '/messages/:id', element: <MessageThreadPage />, audience: 'adult' },
   { path: '/circles', element: <Circles />, audience: 'adult', module: 'circles' },
   { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },

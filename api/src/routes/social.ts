@@ -400,6 +400,28 @@ async function threadId(viewer: number, other: number, create: boolean): Promise
   return rows[0]?.id ?? null;
 }
 
+/**
+ * A message request (for viewer $1 in thread t, with the other person p.user_id): they wrote, you never have, you
+ * don't follow them, and you haven't accepted. Strangers land in Requests, not your inbox.
+ */
+const IS_REQUEST = `(NOT EXISTS (SELECT 1 FROM dm_messages x WHERE x.thread_id = t.id AND x.sender_user_id = $1)
+  AND NOT EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id)
+  AND st.request IS DISTINCT FROM 'accepted')`;
+
+/** Is this conversation a (not yet answered) request for `viewer`? 'declined' when they turned it down. */
+async function requestState(viewer: number, other: number, threadId: number): Promise<'request' | 'declined' | null> {
+  const { rows } = await pool.query<{ request: string | null; sent: boolean; follows: boolean }>(
+    `SELECT (SELECT request FROM dm_thread_state WHERE thread_id = $3 AND user_id = $1) AS request,
+            EXISTS (SELECT 1 FROM dm_messages x WHERE x.thread_id = $3 AND x.sender_user_id = $1) AS sent,
+            EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = $2) AS follows`,
+    [viewer, other, threadId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  if (r.request === 'declined') return 'declined';
+  return !r.sent && !r.follows && r.request !== 'accepted' ? 'request' : null;
+}
+
 /** What a viewer sees of a thread: everything visible, plus their own held messages ("under review"). */
 const DM_SEEN = `(m.status = 'visible' OR (m.sender_user_id = $1 AND m.status IN ('pending', 'hidden')))`;
 
@@ -410,8 +432,8 @@ socialRouter.get('/api/social/messages', async (req, res) => {
     return;
   }
   const m = await member(req);
-  const { rows } = await pool.query<AuthorCols & { id: number; muted: boolean | null; last_body: Buffer | null; last_key: string | null; last_at: Date | null; last_sender: number | null; unread: number }>(
-    `SELECT t.id, st.muted, ${AUTHOR_COLS},
+  const { rows } = await pool.query<AuthorCols & { id: number; muted: boolean | null; last_body: Buffer | null; last_key: string | null; last_at: Date | null; last_sender: number | null; unread: number; is_request: boolean }>(
+    `SELECT t.id, st.muted, ${AUTHOR_COLS}, ${IS_REQUEST} AS is_request,
             lm.body_enc AS last_body, lm.key_id AS last_key, lm.created_at AS last_at, lm.sender_user_id AS last_sender,
             (SELECT COUNT(*)::int FROM dm_messages m WHERE m.thread_id = t.id AND m.status = 'visible' AND m.sender_user_id <> $1 AND m.id > COALESCE(st.last_read_id, 0)) AS unread
        FROM dm_threads t
@@ -419,17 +441,20 @@ socialRouter.get('/api/social/messages', async (req, res) => {
        LEFT JOIN dm_thread_state st ON st.thread_id = t.id AND st.user_id = $1
        LEFT JOIN LATERAL (SELECT m.body_enc, m.key_id, m.created_at, m.sender_user_id FROM dm_messages m WHERE m.thread_id = t.id AND ${DM_SEEN} ORDER BY m.id DESC LIMIT 1) lm ON true
       WHERE (t.user_a = $1 OR t.user_b = $1) AND lm.created_at IS NOT NULL
-        AND p.banned_at IS NULL AND ${NOT_BLOCKED('p.user_id')}
+        AND p.banned_at IS NULL AND ${NOT_BLOCKED('p.user_id')} AND st.request IS DISTINCT FROM 'declined'
       ORDER BY lm.created_at DESC LIMIT 100`,
     [m.userId],
   );
-  const threads: DmThreadSummary[] = rows.map((r) => ({
+  const all: DmThreadSummary[] = rows.map((r) => ({
     other: author(r),
     last: r.last_body && r.last_key && r.last_at ? { body: openText(r.last_body, r.last_key), at: r.last_at.toISOString(), mine: r.last_sender === m.userId } : null,
-    unread: r.muted ? 0 : r.unread,
+    unread: r.muted || r.is_request ? 0 : r.unread,
     muted: r.muted ?? false,
+    request: r.is_request,
   }));
-  res.json({ threads, unread: threads.reduce((n, t) => n + t.unread, 0) });
+  const threads = all.filter((t) => !t.request);
+  const requests = all.filter((t) => t.request);
+  res.json({ threads, requests, unread: threads.reduce((n, t) => n + t.unread, 0) });
 });
 
 async function threadView(viewer: number, other: number): Promise<DmThread> {
@@ -456,7 +481,8 @@ async function threadView(viewer: number, other: number): Promise<DmThread> {
     muted = st[0]?.muted ?? false;
   }
   // Blocked people can't see each other's messages either.
-  return { other: author(who[0]), messages: blocked ? [] : messages, muted, blocked };
+  const request = id !== null && messages.some((x) => !x.mine) && (await requestState(viewer, other, id)) === 'request';
+  return { other: author(who[0]), messages: blocked ? [] : messages, muted, blocked, request };
 }
 
 socialRouter.get('/api/social/messages/:userId', async (req, res) => {
@@ -483,12 +509,31 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
   if (d.status === 'visible') {
     await pool.query('UPDATE dm_threads SET last_at = now() WHERE id = $1', [id]);
     // A message is for them: right away (unless they muted this conversation). Never the words themselves.
+    // From a stranger it's a request: a quieter note, nothing at all if they declined.
     const { rows: mu } = await pool.query<{ muted: boolean }>('SELECT muted FROM dm_thread_state WHERE thread_id = $1 AND user_id = $2', [id, other]);
-    if (!mu[0]?.muted) await notify({ to: other, kind: 'dm', actor: m.userId, group: `dm:${id}`, url: `/messages/${m.userId}` });
+    const theirs = id === null ? null : await requestState(other, m.userId, id);
+    if (theirs === 'request') await notify({ to: other, kind: 'request', actor: m.userId, group: `dmreq:${id}`, url: '/messages?requests=1' });
+    else if (theirs === null && !mu[0]?.muted) await notify({ to: other, kind: 'dm', actor: m.userId, group: `dm:${id}`, url: `/messages/${m.userId}` });
   }
   await logEvent('social_message', { held: d.status !== 'visible' }, null, null);
   res.status(201).json({ thread: await threadView(m.userId, other), review: d.note });
 });
+
+/** A message request: accept (it moves to your inbox) or decline (hidden; they aren't told). Block is on profiles. */
+for (const [action, state] of [['accept', 'accepted'], ['decline', 'declined']] as const) {
+  socialRouter.post(`/api/social/messages/:userId/${action}`, async (req, res) => {
+    const m = await member(req);
+    const other = idParam(req.params.userId);
+    const id = await threadId(m.userId, other, false);
+    if (!id) throw new HttpError(404, 'No such conversation');
+    await pool.query(
+      `INSERT INTO dm_thread_state (thread_id, user_id, request) VALUES ($1, $2, $3)
+       ON CONFLICT (thread_id, user_id) DO UPDATE SET request = EXCLUDED.request`,
+      [id, m.userId, state],
+    );
+    res.json(state === 'accepted' ? await threadView(m.userId, other) : { ok: true });
+  });
+}
 
 socialRouter.post('/api/social/messages/:userId/mute', async (req, res) => {
   const m = await member(req);

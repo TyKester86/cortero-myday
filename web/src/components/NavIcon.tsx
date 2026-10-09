@@ -48,6 +48,7 @@ const P: Record<string, string> = {
   library: '<path d="M4 4.5h3.2v15H4z"/><path d="M8.6 4.5h3.2v15H8.6z"/><path d="m13.6 5.6 3-.8 3.6 13.9-3 .8z"/><path d="M4 8h3.2M8.6 8h3.2M4 16h3.2M8.6 16h3.2"/>',
   // Row and card icons for the hybrid layouts (same style).
   bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2H4.5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/>',
   chevron: '<path d="m9.5 5.5 6.5 6.5-6.5 6.5"/>',
   back: '<path d="M14.5 5.5 8 12l6.5 6.5"/>',
   flame: '<path d="M12 21c-3.6 0-6.5-2.6-6.5-6.2 0-3.4 2.6-5.6 3.8-8.8.4 1.8 1.4 3 2.7 3.6-.2-2.8 1-5.2 3.2-6.6-.4 3.2 3.3 5.4 3.3 10 0 4.6-3 8-6.5 8z"/><path d="M12 21c-1.6 0-2.8-1.2-2.8-2.8 0-1.8 1.6-2.6 2.2-4.4 1.6 1.2 3.4 2.2 3.4 4.4 0 1.6-1.2 2.8-2.8 2.8z"/>',

@@ -110,10 +110,14 @@ function Inbox() {
 }
 
 function NotificationSettings() {
-  const { data, reload } = useLoad<Prefs>('/api/feed/notifications/prefs');
+  const { data: loaded, reload } = useLoad<Prefs>('/api/feed/notifications/prefs');
+  const [local, setLocal] = useState<Partial<Prefs>>({});
   const [state, setState] = useState<string | null>(null);
-  if (!data) return null;
+  if (!loaded) return null;
+  // Switches move the moment they're tapped; the server catches up.
+  const data: Prefs = { ...loaded, ...local };
   const save = (patch: Partial<Prefs>): void => {
+    setLocal((l) => ({ ...l, ...patch }));
     void api('/api/feed/notifications/prefs', 'PUT', patch).then(reload);
   };
   const turnOn = async (): Promise<void> => {

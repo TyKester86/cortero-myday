@@ -38,6 +38,7 @@ import {
   FEED_INTERESTS,
   USERNAME_RE,
   type FeedOnboarding,
+  type FeedSearch,
   type FeedSuggestion,
   type VillageInfo,
 } from '@myday/shared';
@@ -1037,8 +1038,8 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
   const d = await decide(s, 'feed');
   const keyId = currentKeyId();
   const { rows } = await pool.query<{ id: number }>(
-    'INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
-    [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags],
+    'INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags, hashtags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+    [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags, hashtagsOf(body)],
   );
   if (d.status === 'visible' && body) ensureTrusted('feed', rows[0]?.id ?? 0, body);
   if (d.status === 'visible') {
@@ -1090,6 +1091,83 @@ communityRouter.delete('/api/feed/posts/:id', async (req, res) => {
   const { rowCount } = await pool.query("UPDATE social_posts SET status = 'removed' WHERE id = $1 AND author_user_id = $2", [idParam(req.params.id), m.userId]);
   if (!rowCount) throw new HttpError(404, 'Not found');
   res.json({ ok: true });
+});
+
+/* ---------- search: people, posts, villages, topics (#hashtags) ---------- */
+
+/** #hashtags in a piece of text (lowercase, 2–30 letters/numbers/_; at most 10). */
+export function hashtagsOf(text: string): string[] {
+  return [...new Set([...text.matchAll(/(?:^|[^\w#&])#([a-z0-9_]{2,30})\b/gi)].map((m) => (m[1] ?? '').toLowerCase()))].slice(0, 10);
+}
+
+/** How far back free-text post search reads (posts are sealed at rest: they're opened here, never indexed). */
+const SEARCH_WINDOW = 1500;
+
+/** What's being talked about this week: the most-used hashtags in posts and clips. */
+async function topics(limit: number, like: string | null = null): Promise<Array<{ tag: string; count: number }>> {
+  const { rows } = await pool.query<{ tag: string; n: number }>(
+    `SELECT tag, COUNT(*)::int AS n FROM (
+       SELECT unnest(hashtags) AS tag FROM social_posts WHERE status = 'visible' AND created_at > now() - interval '7 days'
+       UNION ALL SELECT unnest(hashtags) FROM social_clips WHERE status = 'visible' AND created_at > now() - interval '7 days'
+     ) x WHERE $2::text IS NULL OR tag LIKE $2 GROUP BY tag ORDER BY n DESC, tag LIMIT $1`,
+    [limit, like],
+  );
+  return rows.map((r) => ({ tag: r.tag, count: r.n }));
+}
+
+communityRouter.get('/api/feed/topics', async (req, res) => {
+  await member(req);
+  res.json({ topics: await topics(12) });
+});
+
+communityRouter.get('/api/feed/search', async (req, res) => {
+  const m = await member(req);
+  const q = String(req.query.q ?? '').trim().slice(0, 60);
+  const out: FeedSearch = { q, people: [], posts: [], villages: [], topics: [] };
+  if (q.length < 2) {
+    out.topics = await topics(12);
+    res.json(out);
+    return;
+  }
+  const tag = q.startsWith('#') ? q.slice(1).toLowerCase().replace(/[^a-z0-9_]/g, '') : null;
+  const needle = q.replace(/^[@#]/, '').toLowerCase();
+  const esc = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+  if (!tag) {
+    const { rows: ppl } = await pool.query<{ user_id: number; display_name: string; username: string | null; avatar: number | null; followers: number; followed: boolean }>(
+      `SELECT p.user_id, p.display_name, p.username,
+              (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar,
+              (SELECT COUNT(*)::int FROM social_follows f WHERE f.followed_user_id = p.user_id) AS followers,
+              EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id) AS followed
+         FROM social_profiles p
+        WHERE p.banned_at IS NULL AND p.user_id <> $1 AND ${NOT_BLOCKED('p.user_id')}
+          AND (lower(p.display_name) LIKE $2 OR p.username LIKE $2)
+        ORDER BY (p.username = $3 OR lower(p.display_name) = $3) DESC, followers DESC, p.user_id LIMIT 20`,
+      [m.userId, `${esc(needle)}%`, needle],
+    );
+    out.people = ppl.map((r) => ({ userId: r.user_id, displayName: r.display_name, username: r.username, avatarUrl: imageUrl(r.avatar), followers: r.followers, followedByMe: r.followed }));
+    out.villages = (await villageList(m.userId)).filter((v) => `${v.name} ${v.description}`.toLowerCase().includes(needle));
+  }
+  // Posts: by hashtag (indexed), or by words (the recent window, opened one by one — they're sealed at rest).
+  let ids: number[] = [];
+  if (tag) {
+    const { rows } = await pool.query<{ id: number }>(
+      `SELECT s.id FROM social_posts s WHERE $2 = ANY(s.hashtags) AND ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} ORDER BY s.id DESC LIMIT 30`,
+      [m.userId, tag],
+    );
+    ids = rows.map((r) => r.id);
+  } else {
+    const { rows } = await pool.query<{ id: number; body_enc: Buffer | null; key_id: string }>(
+      `SELECT s.id, s.body_enc, s.key_id FROM social_posts s WHERE s.status = 'visible' AND ${NOT_BLOCKED('s.author_user_id')} ORDER BY s.id DESC LIMIT ${SEARCH_WINDOW}`,
+      [m.userId],
+    );
+    for (const r of rows) {
+      if (ids.length >= 20) break;
+      if (openText(r.body_enc, r.key_id).toLowerCase().includes(needle)) ids.push(r.id);
+    }
+  }
+  out.posts = await Promise.all(ids.map((id) => onePost(m.userId, id)));
+  out.topics = await topics(8, `${esc(tag ?? needle)}%`);
+  res.json(out);
 });
 
 /* ---------- people: profiles, follows, blocks, reports ---------- */
