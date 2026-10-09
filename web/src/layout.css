@@ -454,3 +454,97 @@ a.row-card:hover { border-color: color-mix(in srgb, var(--hy-amber) 45%, var(--h
 :root[data-theme='light'] .app:not(.sidebar) .top > b { color: var(--hy-sage-label); }
 /* Scrolled-to content lands above the floating tab bar and the Hana button, never under them. */
 html:has(.app:not(.sidebar) nav.tabs) { scroll-padding-bottom: calc(180px + env(safe-area-inset-bottom)); }
+
+/* =============================== Density: the references' scale ===============================
+   The mockups are compact: ~58pt titles, 15–16pt card titles, 13–14pt meta, tight padding. */
+.page-title { font-size: clamp(48px, 15vw, 60px); }
+.page-head { margin: 4px 0 16px; }
+.page-sub { font-size: 17px; margin-top: 10px; }
+.eyebrow { font-size: 13px; margin: 20px 0 10px; }
+.check-list { gap: 12px; }
+.check-card { padding: 14px 16px 14px 14px; gap: 12px; border-radius: 20px; }
+.check-card b { font-size: 16.5px; }
+.check-card .check-sub { font-size: 14px; }
+.check-card .check-meta { font-size: 13px; }
+.check-card .check-pts { font-size: 15px; }
+.round-check { width: 42px; height: 42px; }
+.round-check svg { width: 22px; height: 22px; }
+.row-list { gap: 10px; }
+.row-card { padding: 14px 16px; gap: 14px; border-radius: 18px; }
+.row-card .row-title { font-size: 16px; }
+.row-card .row-sub { font-size: 13.5px; margin-top: 2px; }
+.row-card .row-trail { font-size: 16.5px; }
+.row-card .row-icon svg { width: 26px; height: 26px; }
+.event-card { padding: 14px 16px 16px; }
+.event-card .event-top { margin-bottom: 8px; }
+.icon-chip { width: 34px; height: 34px; }
+.icon-chip svg { width: 19px; height: 19px; }
+.event-card .row-trail { font-size: 16px; }
+.stat-card .stat-big b { font-size: 26px; }
+.icon-tile { width: 46px; height: 46px; }
+.sage-card { padding: 18px; border-radius: 22px; }
+.sage-big { font-size: clamp(44px, 12vw, 56px); }
+.week-card .week-top .label { font-size: 12.5px; letter-spacing: 0.06em; white-space: nowrap; }
+.ring.big { width: 84px; height: 84px; }
+.week-strip { margin-top: 14px; }
+.week-strip b { font-size: 21px; }
+.week-strip small { font-size: 11.5px; }
+.member-card { gap: 16px; }
+.member-card .ring-avatar { width: 66px; height: 66px; font-size: 28px; border-width: 3px; }
+.member-card .member-name { font-size: 27px; }
+.member-card .member-line { font-size: 14px; margin-top: 6px; }
+.member-card .ring { width: 20px; height: 20px; }
+.member-card details > summary { font-size: 13px; color: var(--hy-muted); }
+.me-card { padding: 20px 18px; gap: 18px; }
+.me-card .ring-avatar { width: 88px !important; height: 88px !important; font-size: 38px !important; }
+.me-card .me-name { font-size: 21px; }
+.me-card .me-role { font-size: 12.5px; }
+.row-card.hubtile { padding: 13px 16px; }
+.row-card.hubtile .row-title { font-size: 16px; }
+
+/* Feed */
+.feed-head .page-title { font-size: clamp(44px, 13vw, 58px); }
+.feed-head-mark { width: 44px; height: 44px; }
+.feed-nav-link { padding: 6px 12px; font-size: 13.5px; }
+.feed-page .desk-tab { font-size: 15px; padding: 12px 6px 11px; }
+.story-bubble { width: 66px; }
+.story-bubble small { font-size: 12.5px; }
+.story-add { top: 42px; left: 44px; width: 22px; height: 22px; }
+.feed-page .post-card { padding: 14px 14px 12px; border-radius: 18px; }
+.post-head { gap: 10px; }
+.post-avatar { width: 40px; height: 40px; font-size: 18px; }
+.post-name { font-size: 16px; }
+.post-who small { font-size: 13px; }
+.post-follow { padding: 5px 13px; font-size: 14px; }
+.post-card .slip-body { font-size: 15px; margin: 10px 0; }
+.post-actions { padding: 4px 10px; }
+.post-actions .stamp-count { font-size: 15px; }
+.post-actions .verify-btn { font-size: 13px; padding: 5px 10px; }
+.feed-page .sheet-compose textarea { height: 56px; min-height: 0; }
+
+/* Profiles */
+.profile-top { padding: 9px 12px; margin-bottom: 12px; border-radius: 18px; }
+.profile-back { font-size: 17px; }
+.profile-page .profile-avatar { width: 148px; height: 148px; border-width: 6px; }
+.profile-page .profile-avatar span { font-size: 60px; }
+.profile-page .profile-name { font-size: 32px; margin-top: 6px; }
+.profile-page .profile-bio { font-size: 13.5px; }
+.profile-page .profile-stats { margin: 8px 0 4px; }
+.profile-page .profile-stats b { font-size: 34px; }
+.profile-page .profile-stats small { font-size: 14px; }
+.profile-page .profile-actions .btn { padding: 11px 16px; font-size: 16px; border-radius: 12px; }
+.profile-page .profile-tabs .desk-tab { font-size: 15px; padding: 10px 6px; }
+.profile-page .profile-about .label { font-size: 15px; }
+.about-rows { gap: 8px; }
+.about-rows li { padding: 11px 16px; font-size: 15px; border-radius: 12px; }
+.achievement-tiles .achievement { font-size: 11.5px; }
+.achievement-icon { aspect-ratio: 1.05; border-radius: 14px; }
+.provider-page .profile-hero .provider-badge { font-size: 12px; padding: 7px 16px 7px 10px; }
+.provider-page .profile-avatar { width: 138px; height: 138px; }
+.provider-page .profile-name { font-size: 32px; }
+.cred-rows { gap: 10px; }
+.cred-rows li { padding: 12px 16px; font-size: 15px; gap: 12px; border-radius: 10px; }
+.cred-rows .navicon { width: 22px; height: 22px; }
+.provider-page .spec-chip { padding: 8px 16px; font-size: 14px; }
+.provider-page .profile-stats small { font-size: 11.5px; }
+.member-card details { grid-column: 2; margin-top: -6px; }

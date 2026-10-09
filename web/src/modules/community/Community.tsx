@@ -1010,7 +1010,7 @@ function Person({ id }: { id: string }) {
               <li>
                 <NavIcon name="card" size={26} />
                 <span>
-                  {pro.licenseState} License #{pro.licenseNumber}
+                  {STATE_NAMES[pro.licenseState] ?? pro.licenseState} License #{pro.licenseNumber}
                 </span>
               </li>
               <li>
@@ -1172,6 +1172,12 @@ function Person({ id }: { id: string }) {
     </div>
   );
 }
+
+const STATE_NAMES: Record<string, string> = Object.fromEntries(
+  'AL Alabama|AK Alaska|AZ Arizona|AR Arkansas|CA California|CO Colorado|CT Connecticut|DE Delaware|DC District of Columbia|FL Florida|GA Georgia|HI Hawaii|ID Idaho|IL Illinois|IN Indiana|IA Iowa|KS Kansas|KY Kentucky|LA Louisiana|ME Maine|MD Maryland|MA Massachusetts|MI Michigan|MN Minnesota|MS Mississippi|MO Missouri|MT Montana|NE Nebraska|NV Nevada|NH New Hampshire|NJ New Jersey|NM New Mexico|NY New York|NC North Carolina|ND North Dakota|OH Ohio|OK Oklahoma|OR Oregon|PA Pennsylvania|RI Rhode Island|SC South Carolina|SD South Dakota|TN Tennessee|TX Texas|UT Utah|VT Vermont|VA Virginia|WA Washington|WV West Virginia|WI Wisconsin|WY Wyoming|PR Puerto Rico'
+    .split('|')
+    .map((x) => [x.slice(0, 2), x.slice(3)]),
+);
 
 /** An icon for each achievement (the About tab's tiles). */
 const ACHIEVEMENT_ICON: Record<string, string> = { early: 'star', streak: 'flame', photo: 'camera', clips: 'share', helper: 'heart-hands', provider: 'shield' };

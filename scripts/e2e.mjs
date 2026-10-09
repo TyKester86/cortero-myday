@@ -3718,7 +3718,7 @@ async function uiGate() {
     await page.goto(`${BASE}/people/${samUser}`);
     await page.getByTestId('provider-badge').waitFor({ timeout: 10000 });
     const creds = await page.getByTestId('provider-credentials').innerText();
-    eq('provider page: teal header, gold VERIFIED LICENSED PROVIDER badge, credentials, specialties, Book consult + Message', [/verified\W+licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.locator('.profile-hero.provider').count(), /CSW-10420/.test(creds) && /OK/.test(creds), await page.locator('.spec-chip').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
+    eq('provider page: teal header, gold VERIFIED LICENSED PROVIDER badge, credentials, specialties, Book consult + Message', [/verified\W+licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.locator('.profile-hero.provider').count(), /CSW-10420/.test(creds) && /Oklahoma/.test(creds), await page.locator('.spec-chip').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
     await page.getByTestId('book-consult').click();
     await page.getByTestId('book-sheet').waitFor({ timeout: 10000 });
     await page.getByTestId('book-sheet').getByRole('link', { name: /Send .* a message/ }).click();

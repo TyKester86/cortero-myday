@@ -33,9 +33,11 @@ function KidCard({ k, onCurfew }: { k: KidOverview; onCurfew: (field: keyof Curf
         </span>
       </span>
       <details>
-        <summary>
+        <summary>Details</summary>
+        <small className="muted">
           Chores {k.choresDone}/{k.choresToday} · {k.bank} to spend{k.lastSignIn ? ` · signed in ${ago(k.lastSignIn)}` : ' · not signed in yet'}
-        </summary>
+        </small>
+        <br />
         <small className={k.overdueHomework ? 'warn' : 'muted'}>
           {k.openHomework} homework open{k.overdueHomework ? ` (${k.overdueHomework} overdue)` : ''}
           {k.pendingRewards > 0 && ` · ${k.pendingRewards} reward request${k.pendingRewards > 1 ? 's' : ''} waiting`}
