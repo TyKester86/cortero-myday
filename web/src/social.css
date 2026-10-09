@@ -438,3 +438,15 @@
 .search-topics .chips { flex-wrap: wrap; }
 .tag-link { color: var(--accent, #e38a4a); text-decoration: none; font-weight: 600; }
 .dm-request { display: grid; gap: 8px; margin: 8px 0; }
+
+/* Bottomless feed, streak chip, memories, catch-up, your stats. */
+.feed-divider { margin: 18px 0 6px; }
+.feed-sentinel { height: 1px; }
+.feed-keepgoing { display: grid; gap: 10px; margin-top: 12px; }
+.streak-chip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.streak-flame { font-size: 22px; }
+.memory-card, .catchup-card { display: grid; gap: 8px; margin: 8px 0; }
+.your-stats { display: grid; gap: 10px; margin-bottom: 12px; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.stat-tile { display: grid; gap: 2px; padding: 10px; border-radius: 12px; background: var(--card-alt); }
+.stat-tile b { font-size: 22px; font-variant-numeric: tabular-nums; }

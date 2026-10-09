@@ -39,11 +39,17 @@ import {
   USERNAME_RE,
   type FeedOnboarding,
   type FeedSearch,
+  type FeedCatchup,
+  type FeedMemory,
+  type FeedStats,
+  type FeedVillageItem,
+  CHECKIN_MOODS,
   type FeedSuggestion,
   type VillageInfo,
 } from '@myday/shared';
 import { onFeedApp } from '../lib/hosts.js';
 import { milestone, notify, notifyMentions } from '../lib/feednotify.js';
+import { feedStreak } from '../lib/feedstreak.js';
 import { config } from '../config.js';
 import { asSystem, detached, pool, tx } from '../db.js';
 import { logEvent } from '../lib/events.js';
@@ -123,8 +129,8 @@ const shopUrl = (slug: string | null): string | null =>
 const SHOP_SLUG = /^[a-z0-9][a-z0-9-]{1,59}$/;
 
 /** The Feed's window: the last week, then "you're caught up". */
-const FEED_WINDOW_DAYS = 7;
-const FEED_MAX = 60;
+/** One page of the bottomless Feed. */
+const FEED_PAGE = 15;
 
 export async function profileRow(userId: number): Promise<ProfileRow | null> {
   const { rows } = await pool.query<ProfileRow>('SELECT *, dob::text AS dob FROM social_profiles WHERE user_id = $1', [userId]);
@@ -257,16 +263,8 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
     [userId, config.tz],
   );
   const e = ex[0];
-  const days = new Set(e?.days ?? []);
-  // Day by day back from today (the database's today, in the app's time zone — the same clock that dated the posts).
-  const ymd = (d: Date): string => d.toISOString().slice(0, 10);
-  let streak = 0;
-  const cursor = new Date(`${e?.today ?? ymd(new Date())}T12:00:00Z`);
-  if (!days.has(ymd(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
-  while (days.has(ymd(cursor))) {
-    streak += 1;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
-  }
+  // Days in a row they showed up — with one protected rest day a week (lib/feedstreak.ts).
+  const streak = (await feedStreak(userId)).current;
   const { rows: prov } = await pool.query<{ license_type: string; license_state: string; license_number: string; specialties: string[]; status: string; submitted_at: Date; verified_at: Date | null; reject_reason: string | null }>(
     'SELECT license_type, license_state, license_number, specialties, status, submitted_at, verified_at, reject_reason FROM provider_credentials WHERE user_id = $1',
     [userId],
@@ -903,7 +901,7 @@ function verifyAllowed(userId: number): boolean {
 /** The Business Suite (routes/business.ts) plugs its sponsored item in here, so this module never imports it (no cycle). */
 export const sponsorHook: { feed: ((viewer: number) => Promise<SponsoredItem | null>) | null; clips: ((viewer: number) => Promise<SponsoredItem | null>) | null } = { feed: null, clips: null };
 
-export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone'; author: number | null; before: number | null; id?: number }): Promise<FeedPage> {
+export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone' | 'discover'; author: number | null; before: number | null; id?: number; limit?: number }): Promise<FeedPage> {
   const { rows } = await pool.query<FeedRow>(
     `SELECT s.id, s.body_enc, s.key_id, s.image_id, i.status AS img_status, s.status, s.created_at, s.author_user_id, s.like_count, ${AUTHOR_COLS},
             EXISTS (SELECT 1 FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS liked,
@@ -911,12 +909,12 @@ export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone
        FROM social_posts s ${AUTHOR_JOIN('s.author_user_id')} LEFT JOIN community_images i ON i.id = s.image_id
       WHERE ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL
         AND ($2::text <> 'following' OR s.author_user_id = $1 OR EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id))
+        AND ($2::text <> 'discover' OR (s.author_user_id <> $1 AND s.status = 'visible' AND NOT EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id)))
         AND ($3::int IS NULL OR s.author_user_id = $3)
         AND ($4::int IS NULL OR s.id < $4)
         AND ($5::int IS NULL OR s.id = $5)
-        AND ($3::int IS NOT NULL OR $5::int IS NOT NULL OR s.created_at > now() - make_interval(days => $6))
-      ORDER BY s.id DESC LIMIT $7`,
-    [viewer, o.tab, o.author, o.before, o.id ?? null, FEED_WINDOW_DAYS, o.author !== null ? 30 : FEED_MAX],
+      ORDER BY s.id DESC LIMIT $6`,
+    [viewer, o.tab, o.author, o.before, o.id ?? null, o.limit ?? (o.author !== null ? 30 : FEED_PAGE)],
   );
   const posts = rows.map((r) => toFeed(viewer, r));
   const ids = posts.map((p) => p.id);
@@ -925,7 +923,52 @@ export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone
     p.check = checks.get(p.id) ?? null;
     p.trusted = trusted.get(p.id) ?? null;
   }
-  return { posts, next: null, windowDays: o.author !== null ? 0 : FEED_WINDOW_DAYS };
+  if (o.tab === 'discover') for (const p of posts) p.discover = true;
+  return { posts, next: null, windowDays: 0 };
+}
+
+/**
+ * One page of the bottomless Feed. Cursor "<phase>.<before id>": posts on the tab, then (Following) posts from
+ * people you don't follow, then village conversations. Null only when even those run out.
+ */
+async function endlessPage(viewer: number, tab: 'following' | 'everyone', cursor: string | null): Promise<FeedPage> {
+  const m = /^(posts|discover|village)\.(\d*)$/.exec(cursor ?? '');
+  let phase: 'posts' | 'discover' | 'village' | 'end' = (m?.[1] as 'posts' | 'discover' | 'village' | undefined) ?? 'posts';
+  let before: number | null = m?.[2] ? Number(m[2]) : null;
+  const posts: FeedPost[] = [];
+  while ((phase === 'posts' || phase === 'discover') && posts.length < FEED_PAGE) {
+    const need = FEED_PAGE - posts.length;
+    const pg = await feedPage(viewer, { tab: phase === 'discover' ? 'discover' : tab, author: null, before, limit: need });
+    posts.push(...pg.posts);
+    if (pg.posts.length < need) {
+      phase = phase === 'posts' && tab === 'following' ? 'discover' : 'village';
+      before = null;
+    } else before = pg.posts.at(-1)?.id ?? null;
+  }
+  let villages: FeedVillageItem[] = [];
+  if (phase === 'village' && posts.length < FEED_PAGE) {
+    const want = 10;
+    const { rows } = await pool.query<AuthorCols & { id: number; title_enc: Buffer; key_id: string; village: string; replies: number; last_activity_at: Date }>(
+      `SELECT t.id, t.title_enc, t.key_id, v.name AS village, t.last_activity_at, ${AUTHOR_COLS},
+              (SELECT COUNT(*)::int FROM forum_posts x WHERE x.thread_id = t.id AND NOT x.opening AND x.status = 'visible') AS replies
+         FROM forum_threads t JOIN villages v ON v.id = t.village_id ${AUTHOR_JOIN('t.author_user_id')}
+        WHERE t.status = 'visible' AND ${NOT_BLOCKED('t.author_user_id')} AND p.banned_at IS NULL AND ($2::int IS NULL OR t.id < $2)
+        ORDER BY t.id DESC LIMIT $3`,
+      [viewer, before, want],
+    );
+    villages = rows.map((r) => ({ id: r.id, title: openText(r.title_enc, r.key_id), village: r.village, author: author(r), replies: r.replies, at: r.last_activity_at.toISOString() }));
+    if (rows.length < want) phase = 'end';
+    else before = rows.at(-1)?.id ?? null;
+  }
+  const ids = posts.map((p) => p.id);
+  if (ids.length) {
+    const [checks, trusted] = await Promise.all([checksFor('feed', ids), trustedFor('feed', ids)]);
+    for (const p of posts) {
+      p.check = checks.get(p.id) ?? p.check;
+      p.trusted = trusted.get(p.id) ?? p.trusted;
+    }
+  }
+  return { posts, villages, next: null, windowDays: 0, cursor: phase === 'end' ? null : `${phase}.${before ?? ''}` };
 }
 
 communityRouter.get('/api/feed', async (req, res) => {
@@ -933,15 +976,142 @@ communityRouter.get('/api/feed', async (req, res) => {
   const tab = req.query.tab === 'following' ? 'following' : 'everyone';
   const authorId = typeof req.query.author === 'string' && req.query.author ? idParam(req.query.author) : null;
   const before = typeof req.query.before === 'string' && req.query.before ? idParam(req.query.before) : null;
-  const page = await feedPage(m.userId, { tab, author: authorId, before });
+  const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+  const page = authorId !== null ? await feedPage(m.userId, { tab, author: authorId, before }) : await endlessPage(m.userId, tab, cursor);
   // Seen: once per person per day (the writers' analytics). Not your own.
   const others = page.posts.filter((p) => !p.mine && p.status === 'visible').map((p) => p.id);
   if (others.length) {
     await pool.query('INSERT INTO social_post_views (post_id, viewer_user_id, day) SELECT unnest($1::int[]), $2, (now() AT TIME ZONE $3)::date ON CONFLICT DO NOTHING', [others, m.userId, config.tz]);
   }
   // One sponsored item on the Feed's tabs (never on a person's profile list).
-  if (authorId === null && before === null && sponsorHook.feed) page.sponsored = await sponsorHook.feed(m.userId);
+  if (authorId === null && before === null && !cursor && sponsorHook.feed) page.sponsored = await sponsorHook.feed(m.userId);
   res.json(page);
+});
+
+/* ---------- streaks (with a rest day), check-ins, memories, catch-up, your stats ---------- */
+
+communityRouter.get('/api/feed/streak', async (req, res) => {
+  const m = await member(req);
+  res.json(await feedStreak(m.userId));
+});
+
+/** "How's today?" — a check-in keeps your streak on a day you don't post. */
+communityRouter.post('/api/feed/checkin', async (req, res) => {
+  const m = await member(req);
+  const mood = (req.body as { mood?: unknown }).mood;
+  if (!CHECKIN_MOODS.some((x) => x.key === mood)) throw new HttpError(400, 'Pick how today is going');
+  await pool.query(
+    `INSERT INTO feed_checkins (user_id, day, mood) VALUES ($1, (now() AT TIME ZONE $3)::date, $2)
+     ON CONFLICT (user_id, day) DO UPDATE SET mood = EXCLUDED.mood`,
+    [m.userId, mood, config.tz],
+  );
+  const s = await feedStreak(m.userId);
+  if (s.current >= 30) await milestone(m.userId, 'streak-30', 'A 30-day streak. Thirty days of showing up — that’s real.', `/people/${m.userId}`);
+  res.json(s);
+});
+
+/** "A year ago today": your own posts from this day in earlier years (once a day, until dismissed). */
+communityRouter.get('/api/feed/memories', async (req, res) => {
+  const m = await member(req);
+  const { rows: seen } = await pool.query<{ seen: boolean }>(
+    'SELECT memories_seen_on = (now() AT TIME ZONE $2)::date AS seen FROM social_profiles WHERE user_id = $1',
+    [m.userId, config.tz],
+  );
+  if (seen[0]?.seen) {
+    res.json({ memories: [] });
+    return;
+  }
+  const { rows } = await pool.query<{ id: number; years: number }>(
+    `SELECT s.id, (date_part('year', now() AT TIME ZONE $2) - date_part('year', s.created_at AT TIME ZONE $2))::int AS years
+       FROM social_posts s
+      WHERE s.author_user_id = $1 AND s.status = 'visible'
+        AND to_char(s.created_at AT TIME ZONE $2, 'MM-DD') = to_char(now() AT TIME ZONE $2, 'MM-DD')
+        AND (s.created_at AT TIME ZONE $2)::date < (now() AT TIME ZONE $2)::date - 300
+      ORDER BY s.created_at DESC LIMIT 5`,
+    [m.userId, config.tz],
+  );
+  const memories: FeedMemory[] = [];
+  for (const r of rows) memories.push({ yearsAgo: r.years, post: await onePost(m.userId, r.id) });
+  res.json({ memories });
+});
+
+communityRouter.post('/api/feed/memories/seen', async (req, res) => {
+  const m = await member(req);
+  await pool.query('UPDATE social_profiles SET memories_seen_on = (now() AT TIME ZONE $2)::date WHERE user_id = $1', [m.userId, config.tz]);
+  res.json({ ok: true });
+});
+
+/**
+ * Back after two days or more: what happened while you were away (from people you follow, to you, in your
+ * villages), with the posts people liked most. Each visit is recorded here (a visit = a gap of 30+ minutes).
+ */
+communityRouter.get('/api/feed/catchup', async (req, res) => {
+  const m = await member(req);
+  const { rows: v } = await pool.query<{ last: Date | null; prev: Date | null; seen: Date | null }>(
+    `UPDATE social_profiles SET prev_feed_at = CASE WHEN last_feed_at IS NULL OR last_feed_at < now() - interval '30 minutes' THEN last_feed_at ELSE prev_feed_at END,
+                                last_feed_at = CASE WHEN last_feed_at IS NULL OR last_feed_at < now() - interval '30 minutes' THEN now() ELSE last_feed_at END
+      WHERE user_id = $1 RETURNING last_feed_at AS last, prev_feed_at AS prev, catchup_seen_at AS seen`,
+    [m.userId],
+  );
+  const r = v[0];
+  if (!r?.last || !r.prev || r.last.getTime() - r.prev.getTime() < 48 * 3600_000 || (r.seen && r.seen >= r.last)) {
+    res.json({ catchup: null });
+    return;
+  }
+  const since = r.prev;
+  const { rows: c } = await pool.query<{ posts: number; replies: number; followers: number; villages: number }>(
+    `SELECT (SELECT COUNT(*)::int FROM social_posts s WHERE s.status = 'visible' AND s.created_at > $2
+               AND EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id)) AS posts,
+            (SELECT COUNT(*)::int FROM feed_notifications n WHERE n.user_id = $1 AND n.kind IN ('reply', 'mention', 'comment') AND n.created_at > $2) AS replies,
+            (SELECT COUNT(*)::int FROM social_follows f WHERE f.followed_user_id = $1 AND f.created_at > $2) AS followers,
+            (SELECT COUNT(*)::int FROM forum_threads t JOIN village_members vm ON vm.village_id = t.village_id AND vm.user_id = $1
+              WHERE t.status = 'visible' AND t.created_at > $2) AS villages`,
+    [m.userId, since],
+  );
+  const { rows: top } = await pool.query<{ id: number }>(
+    `SELECT s.id FROM social_posts s WHERE s.status = 'visible' AND s.created_at > $2 AND s.author_user_id <> $1 AND ${NOT_BLOCKED('s.author_user_id')}
+        AND EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id)
+      ORDER BY s.like_count DESC, s.id DESC LIMIT 3`,
+    [m.userId, since],
+  );
+  const k = c[0];
+  const catchup: FeedCatchup = {
+    since: since.toISOString(),
+    days: Math.floor((r.last.getTime() - since.getTime()) / 86_400_000),
+    newPosts: k?.posts ?? 0,
+    replies: k?.replies ?? 0,
+    newFollowers: k?.followers ?? 0,
+    villageConversations: k?.villages ?? 0,
+    top: await Promise.all(top.map((t) => onePost(m.userId, t.id))),
+  };
+  res.json({ catchup });
+});
+
+communityRouter.post('/api/feed/catchup/seen', async (req, res) => {
+  const m = await member(req);
+  await pool.query('UPDATE social_profiles SET catchup_seen_at = now() WHERE user_id = $1', [m.userId]);
+  res.json({ ok: true });
+});
+
+/** Your own numbers. */
+communityRouter.get('/api/feed/stats', async (req, res) => {
+  const m = await member(req);
+  const { rows } = await pool.query<Omit<FeedStats, 'streak'>>(
+    `SELECT (SELECT COUNT(*)::int FROM social_posts WHERE author_user_id = $1 AND status = 'visible') AS posts,
+            (SELECT COUNT(*)::int FROM social_clips WHERE author_user_id = $1 AND status = 'visible') AS clips,
+            ((SELECT COALESCE(SUM(like_count), 0) FROM social_posts WHERE author_user_id = $1 AND status = 'visible')
+              + (SELECT COALESCE(SUM(like_count), 0) FROM social_clips WHERE author_user_id = $1 AND status = 'visible'))::int AS "likesReceived",
+            (SELECT COUNT(*)::int FROM social_follows WHERE followed_user_id = $1) AS followers,
+            (SELECT COUNT(*)::int FROM social_follows WHERE followed_user_id = $1 AND created_at > now() - interval '7 days') AS "newFollowers7d",
+            (SELECT COUNT(*)::int FROM social_profile_views WHERE profile_user_id = $1 AND day > (now() AT TIME ZONE $2)::date - 7) AS "profileViews7d",
+            (SELECT COUNT(*)::int FROM social_post_views v JOIN social_posts s ON s.id = v.post_id WHERE s.author_user_id = $1 AND v.day > (now() AT TIME ZONE $2)::date - 7) AS "postViews7d",
+            (SELECT COUNT(*)::int FROM forum_posts WHERE author_user_id = $1 AND NOT opening AND status = 'visible') AS "repliesGiven",
+            (SELECT COUNT(*)::int FROM village_members WHERE user_id = $1) AS "villagesJoined",
+            (SELECT COUNT(*)::int FROM feed_checkins WHERE user_id = $1 AND day > (now() AT TIME ZONE $2)::date - 7) AS "checkins7d"`,
+    [m.userId, config.tz],
+  );
+  const out: FeedStats = { ...(rows[0] as Omit<FeedStats, 'streak'>), streak: await feedStreak(m.userId) };
+  res.json(out);
 });
 
 /** "Verify with Hana": a shared, inline fact-check of a visible post (made once, then everyone sees it). */

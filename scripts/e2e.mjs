@@ -2324,12 +2324,18 @@ async function careTeam() {
   eq('unblock', (await kayla.get('/api/feed')).data.posts.some((p) => p.author.userId === samId), true);
   eq('report a profile', (await ty.post(`/api/community/people/${await uid('retired@example.com')}/report`, { reason: 'Spam or selling' })).status, 201);
 
-  section('The Feed is finite: the last 7 days, then “you’re caught up”; Around the Web; a Shop slot on profiles');
+  section('The Feed scrolls on: page after page with no time window; Around the Web; a Shop slot on profiles');
   let pg7 = (await ty.get('/api/feed?tab=everyone')).data;
-  eq('one finite page: the last 7 days, no next page', [pg7.windowDays, pg7.next], [7, null]);
+  eq('pages, not a window: each page hands over the next', [pg7.windowDays, typeof pg7.cursor], [0, 'string']);
   await sql("UPDATE social_posts SET created_at = now() - interval '10 days' WHERE id = $1", [samPost.id]);
-  eq('a post older than a week drops off the Feed…', (await ty.get('/api/feed?tab=everyone')).data.posts.some((p) => p.id === samPost.id), false);
-  eq('…but stays on its writer’s profile', (await ty.get(`/api/feed?author=${samId}`)).data.posts.some((p) => p.id === samPost.id), true);
+  let seenOld = false;
+  for (let cur = '', n = 0; n < 30 && cur !== null && !seenOld; n++) {
+    const pg = (await ty.get(`/api/feed?tab=everyone${cur ? `&cursor=${encodeURIComponent(cur)}` : ''}`)).data;
+    seenOld = pg.posts.some((p) => p.id === samPost.id);
+    cur = pg.cursor;
+  }
+  eq('a post from ten days ago is still there as you keep scrolling (no “last week only”)', seenOld, true);
+  eq('…and on its writer’s profile', (await ty.get(`/api/feed?author=${samId}`)).data.posts.some((p) => p.id === samPost.id), true);
   await sql('UPDATE social_posts SET created_at = now() WHERE id = $1', [samPost.id]);
   eq('only moderators can pull the publisher feeds', (await ty.post('/api/feed/web/refresh')).status, 403);
   let wr = (await cmod.post('/api/feed/web/refresh')).data;
@@ -3336,7 +3342,10 @@ async function socialSuite() {
   let th = (await ty.post(`/api/social/messages/${samId}`, { body: 'Hey Sam — loved the launch pad clip. What bins do you use?' })).data;
   eq('Ty → Sam: delivered', [th.review.underReview, th.thread.messages.map((m) => [m.mine, m.status])], [false, [[true, 'visible']]]);
   let inbox = (await sam.get('/api/social/messages')).data;
-  eq('Sam’s inbox: one unread from Ty', [inbox.unread, inbox.threads.map((t) => [t.other.displayName, t.unread, t.last?.mine])], [1, [['Ty', 1, false]]]);
+  eq('Sam doesn’t follow Ty: it waits in Sam’s Requests first', [inbox.requests.map((t) => t.other.displayName), inbox.unread], [['Ty'], 0]);
+  await sam.post(`/api/social/messages/${tyId}/accept`);
+  inbox = (await sam.get('/api/social/messages')).data;
+  eq('…accepted: Sam’s inbox: one unread from Ty', [inbox.unread, inbox.threads.map((t) => [t.other.displayName, t.unread, t.last?.mine])], [1, [['Ty', 1, false]]]);
   th = (await sam.get(`/api/social/messages/${tyId}`)).data;
   eq('Sam opens it → read', [th.messages.map((m) => m.body), (await sam.get('/api/social/messages')).data.unread], [['Hey Sam — loved the launch pad clip. What bins do you use?'], 0]);
   th = (await sam.post(`/api/social/messages/${tyId}`, { body: 'Dollar-store bins + a label maker!' })).data.thread;
@@ -3722,6 +3731,52 @@ async function feedAppSuite() {
     await tyF.post(`/api/social/messages/${twinId}`, { body: 'Hey back' });
     return (await tyF.get('/api/social/messages')).data.threads.some((t) => t.other.userId === twinId);
   })(), true);
+
+  section('Bottomless: the posts, then (Following) suggested posts, then the villages — the cursor runs on');
+  const walk = [];
+  for (let cur = '', n = 0; n < 40 && cur !== null; n++) {
+    const pg = (await nb.get(`/api/feed?tab=following${cur ? `&cursor=${encodeURIComponent(cur)}` : ''}`)).data;
+    walk.push(...pg.posts.map((p) => ({ t: p.discover ? 'discover' : 'post', author: p.author.userId })), ...(pg.villages ?? []).map(() => ({ t: 'village' })));
+    cur = pg.cursor;
+  }
+  const order = walk.map((w) => w.t).filter((t, i, a) => t !== a[i - 1]);
+  eq('Following, scrolled to the end: who you follow, then “Suggested for you”, then village conversations', order, ['post', 'discover', 'village']);
+  eq('…suggested posts are only from people you don’t follow (and never your own)', walk.filter((w) => w.t === 'discover').every((w) => w.author !== nbId && w.author !== twinId), true);
+
+  section('Streaks: days you showed up, with one protected rest day a week; check-ins count');
+  process.env.DATABASE_URL ??= dbUrl;
+  const { streakFrom } = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'feedstreak.js')).href);
+  const S = (...d) => new Set(d.map((x) => `2026-10-${String(x).padStart(2, '0')}`));
+  const T = '2026-10-09'; // a Friday
+  eq('three days in a row → 3', streakFrom(S(7, 8, 9), T).current, 3);
+  const rest = streakFrom(S(5, 6, 8, 9), T);
+  eq('missed one day this week (the rest day) → the streak holds: 4 days, rest day used', [rest.current, rest.restDayUsed], [4, true]);
+  eq('missed two days in one week → it starts over', streakFrom(S(4, 6, 8, 9), T).current, 2);
+  eq('today isn’t over: not posting yet doesn’t break it', [streakFrom(S(6, 7, 8), T).current, streakFrom(S(6, 7, 8), T).todayDone], [3, false]);
+  eq('skipped yesterday, today still open → held by the rest day', streakFrom(S(5, 6, 7), T).current, 3);
+  eq('best streak is remembered', streakFrom(S(1, 2, 3, 4, 5, 8, 9), T).best >= 5, true);
+  eq('a check-in needs a mood from the list', (await nb.post('/api/feed/checkin', { mood: 'meh' })).status, 400);
+  const ck = (await nb.post('/api/feed/checkin', { mood: 'good' })).data;
+  eq('“How’s today?” → today counts', [ck.todayDone, ck.current >= 1], [true, true]);
+  eq('kids never get here', (await avery.get('/api/feed/streak')).status, 403);
+
+  section('Memories, “what you missed” for people coming back, and your own stats');
+  const zine = (await sql("SELECT id FROM social_posts WHERE author_user_id = $1 AND status = 'visible' ORDER BY id LIMIT 1", [nbId]))[0].id;
+  await sql("UPDATE social_posts SET created_at = created_at - interval '1 year' WHERE id = $1", [zine]);
+  const mem = (await nb.get('/api/feed/memories')).data.memories;
+  eq('“A year ago today”: your own post from this day last year', [mem[0]?.yearsAgo, mem[0]?.post.id], [1, zine]);
+  await nb.post('/api/feed/memories/seen');
+  eq('…once a day (Done hides it until tomorrow)', (await nb.get('/api/feed/memories')).data.memories.length, 0);
+  eq('nothing from other people’s pasts', (await twin.get('/api/feed/memories')).data.memories.length, 0);
+  await sql("UPDATE social_profiles SET last_feed_at = now() - interval '3 days', prev_feed_at = NULL, catchup_seen_at = NULL WHERE user_id = $1", [nbId]);
+  const tw2 = (await twin.post('/api/feed/posts', { body: 'Back from a long weekend away — the zine club grew!' })).data.post;
+  const cu = (await nb.get('/api/feed/catchup')).data.catchup;
+  eq('back after 3 days → “here’s what you missed”, with the posts people liked most', [cu?.days, cu?.newPosts >= 1, cu?.top.some((p) => p.id === tw2.id)], [3, true, true]);
+  eq('…shown until dismissed (a reload in the same visit keeps it)', (await nb.get('/api/feed/catchup')).data.catchup?.days, 3);
+  await nb.post('/api/feed/catchup/seen');
+  eq('…Got it → gone; a quick return doesn’t bring it back', (await nb.get('/api/feed/catchup')).data.catchup, null);
+  const st = (await nb.get('/api/feed/stats')).data;
+  eq('your stats: posts, likes received, followers, villages, streak', [st.posts >= 4, st.likesReceived >= 3, st.followers >= 1, st.villagesJoined >= 1, st.streak.current >= 1], [true, true, true, true, true]);
 }
 
 async function businessSuite() {
@@ -3872,6 +3927,7 @@ async function uiGate() {
     const meHub = (pg) => pg.getByTestId('me-hub');
     const openMe = async (pg) => {
       const tab = pg.locator('nav.tabs a[href="/me"]');
+      await pg.locator('nav.tabs a[href="/me"], [data-testid="who"]').first().waitFor({ timeout: 15000 });
       if (await tab.count()) await tab.click();
       else await pg.getByTestId('who').click();
       await meHub(pg).waitFor({ timeout: 10000 });
@@ -3984,8 +4040,14 @@ async function uiGate() {
     await page.getByTestId('crisis-resources').waitFor({ timeout: 10000 });
     check('Feed: crisis words surface 988', /988/.test(await page.getByTestId('crisis-resources').innerText()));
     await page.goto(`${BASE}/feed`);
-    await page.getByTestId('feed-caught-up').waitFor({ timeout: 10000 });
-    eq('Feed ends with “You’re caught up” — no Show more, no endless scroll', [/caught up/i.test(await page.getByTestId('feed-caught-up').innerText()), await page.getByRole('button', { name: /show more|load more/i }).count()], [true, 0]);
+    await page.getByTestId('feed-posts').waitFor({ timeout: 10000 });
+    for (let n = 0; n < 25 && !(await page.getByTestId('feed-keepgoing').count()); n++) {
+      await page.mouse.wheel(0, 20000);
+      await page.waitForTimeout(400);
+    }
+    eq('the Feed is bottomless: scrolling keeps loading (posts, then village conversations, then people to find) — no end, no Load more', [await page.getByTestId('feed-caught-up').count(), await page.getByTestId('feed-village-card').count() > 0, await page.getByTestId('feed-keepgoing').count(), await page.getByRole('button', { name: /show more|load more/i }).count()], [0, true, 1, 0]);
+    await page.goto(`${BASE}/feed`);
+    await page.getByTestId('feed-posts').waitFor({ timeout: 10000 });
     const stamp = page.getByTestId('feed-post').filter({ hasNot: page.locator('.pill.sun') }).locator('.ink-stamp[aria-pressed="false"]').first();
     await stamp.click();
     await page.locator('.ink-stamp[aria-pressed="true"]').first().waitFor({ timeout: 10000 });
@@ -4386,6 +4448,7 @@ async function uiGate() {
     eq('…a #topic shows its posts; the post’s #tags are links', [/Desk tour/.test(await jp.getByTestId('search-posts').innerText()), await tagLink.count()], [true, 1]);
     await tagLink.click();
     await jp.waitForURL(/search\?q=%23adhdwins/, { timeout: 10000 });
+    await jp.waitForFunction(() => document.querySelector('[data-testid="search-input"]')?.value === '#adhdwins', null, { timeout: 10000 }).catch(() => undefined);
     eq('…tapping one searches it', await jp.getByTestId('search-input').inputValue(), '#adhdwins');
     // A stranger messages Rae → Requests, with Accept / Decline / Block.
     const sky = new Client('sky');
@@ -4402,6 +4465,23 @@ async function uiGate() {
     await jp.getByTestId('dm-accept').click();
     await jp.getByTestId('dm-request').waitFor({ state: 'detached', timeout: 10000 });
     check('…Accept → a normal conversation', (await jp.getByTestId('dm-message').count()) === 1);
+    // The top of her feed: her streak (check in on a day without a post), and “what you missed” after time away.
+    await jp.goto(`${FEED}/feed`);
+    await jp.getByTestId('streak-chip').waitFor({ timeout: 10000 });
+    await jp.getByTestId('checkin').click();
+    await jp.getByTestId('mood-good').click();
+    await jp.getByTestId('streak-count').getByText('1 day').waitFor({ timeout: 10000 });
+    check('streak chip: “Check in” → today counts (1-day streak), with the weekly rest day explained', /rest day/i.test(await jp.getByTestId('streak-chip').innerText()));
+    await sql("UPDATE social_profiles SET last_feed_at = now() - interval '4 days', prev_feed_at = NULL, catchup_seen_at = NULL WHERE user_id = $1", [raeId]);
+    await jp.reload();
+    await jp.getByTestId('catchup-card').waitFor({ timeout: 10000 });
+    check('back after 4 days: “Welcome back — here’s what you missed”', /what you missed/.test(await jp.getByTestId('catchup-card').innerText()));
+    await jp.getByTestId('catchup-dismiss').click();
+    await jp.getByTestId('catchup-card').waitFor({ state: 'detached', timeout: 10000 });
+    await jp.goto(`${FEED}/people/${raeId}`);
+    await jp.getByTestId('profile-tab-about').click();
+    await jp.getByTestId('your-stats').waitFor({ timeout: 10000 });
+    check('her own profile shows her stats (only to her)', /day streak/.test(await jp.getByTestId('your-stats').innerText()));
     await joinCtx.close();
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });

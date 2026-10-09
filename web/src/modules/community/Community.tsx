@@ -37,6 +37,7 @@ import { useSession } from '../../session';
 import { BookConsult, FeedNav, SponsoredCard, StoryRail } from '../social/Social';
 import { FeedTitle } from '../social/shell';
 import { FeedOnboarding } from '../social/Onboarding';
+import { CatchupCard, EndlessPosts, MemoriesCard, StreakChip, YourStats } from '../social/Endless';
 import { FEED_APP } from '../../apps';
 
 /* ---------- shared pieces ---------- */
@@ -659,6 +660,9 @@ function FeedBody({ me }: { me: CommunityMe }) {
         ))}
       </nav>
       <StoryRail me={me} />
+      <CatchupCard renderPost={(p) => <FeedCard p={p} onChange={() => undefined} onMsg={setMsg} onGone={() => undefined} />} />
+      <MemoriesCard renderPost={(p) => <FeedCard p={p} onChange={() => undefined} onMsg={setMsg} onGone={() => undefined} />} />
+      <StreakChip />
       <p className="feed-links">
         <Link to={`/people/${me.profile?.userId ?? ''}`}>Your card →</Link>
         {me.isModerator && (
@@ -687,49 +691,12 @@ function FeedBody({ me }: { me: CommunityMe }) {
 }
 
 function Posts({ tab, onMsg }: { tab: 'following' | 'everyone'; onMsg: (m: string) => void }) {
-  const { data, setData, reload } = useLoad<FeedPage>(`/api/feed?tab=${tab}`);
-  if (!data) return <p className="muted desk-note">Laying out the desk…</p>;
-  const replace = (p: FeedPost): void => setData({ ...data, posts: data.posts.map((x) => (x.id === p.id ? p : x)) });
-  if (!data.posts.length) {
-    return (
-      <>
-        {tab === 'following' ? (
-          <EmptySheet title="Nobody you follow has written this week">Tap a name on Everyone to follow people — their notes land here.</EmptySheet>
-        ) : (
-          <EmptySheet title="Fresh sheet — be the first to write">A win, a strategy, a laugh. Someone out there needs it today.</EmptySheet>
-        )}
-        {data.sponsored && (
-          <div className="slips">
-            <SponsoredCard s={data.sponsored} />
-          </div>
-        )}
-      </>
-    );
-  }
   return (
-    <div className="slips" data-testid="feed-posts">
-      {data.posts.map((p, i) => (
-        <Fragment key={p.id}>
-          <FeedCard p={p} onChange={replace} onMsg={onMsg} onGone={() => reload()} />
-          {/* At most one paid placement, after the second post, always labelled. */}
-          {i === Math.min(1, data.posts.length - 1) && data.sponsored && <SponsoredCard s={data.sponsored} />}
-        </Fragment>
-      ))}
-      <CaughtUp days={data.windowDays} />
-    </div>
-  );
-}
-
-/** The end of the Feed — a stopping cue, on purpose. */
-function CaughtUp({ days }: { days: number }) {
-  return (
-    <div className="caught-up" role="status" data-testid="feed-caught-up">
-      <span className="caught-check" aria-hidden="true">
-        ✓
-      </span>
-      <b>You’re caught up</b>
-      <p className="small">That’s everything from the last {count(days, 'day')}. Go do something kind for yourself — the desk will be here.</p>
-    </div>
+    <EndlessPosts
+      tab={tab}
+      renderPost={(p, update, gone) => <FeedCard p={p} onChange={update} onMsg={onMsg} onGone={gone} />}
+      renderSponsored={(sp) => <SponsoredCard s={sp} />}
+    />
   );
 }
 
@@ -751,7 +718,6 @@ function WebTab() {
           </span>
         </a>
       ))}
-      <CaughtUp days={90} />
     </div>
   );
 }
@@ -1186,6 +1152,7 @@ function Person({ id }: { id: string }) {
           {clips.data && !clips.data.clips.length && <p className="muted small">No clips yet.</p>}
         </div>
       )}
+      {tab === 'about' && data.me && <YourStats />}
       {tab === 'about' && (
         <section className="profile-about" data-testid="profile-about">
           <small className="label">About</small>

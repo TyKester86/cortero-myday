@@ -2746,20 +2746,83 @@ export interface FeedPost {
   check: PostCheck | null;
   isQuestion: boolean;
   trusted: TrustedAnswer | null;
+  /** From someone you don't follow, shown once the people you follow run out ("Suggested for you"). */
+  discover?: boolean;
 }
 
 /**
- * The Feed is finite on purpose: the last WINDOW days, newest first, then a
- * "you're caught up" end. No infinite scroll.
+ * The Feed scrolls on and on: newest first, page after page (`cursor`). When the posts run out it carries on —
+ * suggested posts from people you don't follow (on Following), then conversations from the villages.
  */
 export interface FeedPage {
   posts: FeedPost[];
-  /** Always null now (kept for older app versions): there is no next page. */
+  /** A person's profile: older posts (by id). The Feed's tabs use `cursor`. */
   next: number | null;
-  /** How far back this page goes (days); 0 = a person's profile (their latest posts). */
+  /** Kept for older app versions (0 = no window). */
   windowDays: number;
+  /** The next page of the Feed; null only once even the villages run out (the app then keeps checking for new). */
+  cursor?: string | null;
+  /** Village conversations, once the posts run out. */
+  villages?: FeedVillageItem[];
   /** At most one paid placement from a verified provider, labelled "Sponsored" (Feed tabs only). */
   sponsored?: SponsoredItem | null;
+}
+
+export interface FeedVillageItem {
+  id: number;
+  title: string;
+  village: string;
+  author: CommunityAuthor;
+  replies: number;
+  at: string;
+}
+
+/** Days in a row you showed up (posts, clips, stories, village posts, check-ins), with one rest day a week. */
+export interface FeedStreakInfo {
+  current: number;
+  best: number;
+  todayDone: boolean;
+  restDayUsed: boolean;
+}
+
+export const CHECKIN_MOODS = [
+  { key: 'great', label: 'Great' },
+  { key: 'good', label: 'Good' },
+  { key: 'okay', label: 'Okay' },
+  { key: 'rough', label: 'Rough' },
+  { key: 'hard', label: 'Hard' },
+] as const;
+
+/** "A year ago today": your own posts from this day in earlier years. */
+export interface FeedMemory {
+  yearsAgo: number;
+  post: FeedPost;
+}
+
+/** Coming back after a couple of days: what happened while you were away. */
+export interface FeedCatchup {
+  since: string;
+  days: number;
+  newPosts: number;
+  replies: number;
+  newFollowers: number;
+  villageConversations: number;
+  top: FeedPost[];
+}
+
+/** Your own numbers in the Feed. */
+export interface FeedStats {
+  posts: number;
+  clips: number;
+  likesReceived: number;
+  followers: number;
+  newFollowers7d: number;
+  profileViews7d: number;
+  postViews7d: number;
+  repliesGiven: number;
+  villagesJoined: number;
+  checkins7d: number;
+  streak: FeedStreakInfo;
 }
 
 /** "Around the Web": a trusted publisher's article, as a link-out card. */
