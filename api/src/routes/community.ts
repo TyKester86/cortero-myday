@@ -760,7 +760,7 @@ communityRouter.get('/api/feed', async (req, res) => {
   // Seen: once per person per day (the writers' analytics). Not your own.
   const others = page.posts.filter((p) => !p.mine && p.status === 'visible').map((p) => p.id);
   if (others.length) {
-    await pool.query('INSERT INTO social_post_views (post_id, viewer_user_id) SELECT unnest($1::int[]), $2 ON CONFLICT DO NOTHING', [others, m.userId]);
+    await pool.query('INSERT INTO social_post_views (post_id, viewer_user_id, day) SELECT unnest($1::int[]), $2, (now() AT TIME ZONE $3)::date ON CONFLICT DO NOTHING', [others, m.userId, config.tz]);
   }
   // One sponsored item on the Feed's tabs (never on a person's profile list).
   if (authorId === null && before === null && sponsorHook.feed) page.sponsored = await sponsorHook.feed(m.userId);
@@ -916,7 +916,7 @@ communityRouter.get('/api/community/people/:id', async (req, res) => {
   const id = idParam(req.params.id);
   const view = await profileView(m.userId, id);
   // A profile view (once per person per day) for the provider's analytics.
-  if (id !== m.userId) await pool.query('INSERT INTO social_profile_views (profile_user_id, viewer_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [id, m.userId]);
+  if (id !== m.userId) await pool.query('INSERT INTO social_profile_views (profile_user_id, viewer_user_id, day) VALUES ($1, $2, (now() AT TIME ZONE $3)::date) ON CONFLICT DO NOTHING', [id, m.userId, config.tz]);
   res.json(view);
 });
 

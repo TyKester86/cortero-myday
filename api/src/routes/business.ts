@@ -49,6 +49,8 @@ export const adCpmCents = (): number => {
   return Number.isInteger(n) && n >= 100 ? n : 1200;
 };
 const MIN_BUDGET = 1000;
+/** "Today" in the app's time zone (the analytics' days), not the database server's (UTC on the droplet). */
+const TODAY = `(now() AT TIME ZONE '${config.tz.replace(/[^A-Za-z0-9_/+-]/g, '')}')::date`;
 const MAX_BUDGET = 500000;
 
 /* ---------- who may use it ---------- */
@@ -220,8 +222,8 @@ businessRouter.post('/api/business/boost', async (req, res) => {
   if (text) await mustPassAdScreen(text);
   const keyId = currentKeyId();
   const { rows: ins } = await pool.query<{ id: number }>(
-    `INSERT INTO ad_campaigns (provider_user_id, kind, name, target_kind, target_id, key_id, destination, package_code, budget_cents, impressions_bought)
-     VALUES ($1, 'boost', $2, $3, $4, $5, 'profile', $6, $7, $8) RETURNING id`,
+    `INSERT INTO ad_campaigns (provider_user_id, kind, name, target_kind, target_id, key_id, destination, package_code, budget_cents, impressions_bought, starts_on)
+     VALUES ($1, 'boost', $2, $3, $4, $5, 'profile', $6, $7, $8, ${TODAY}) RETURNING id`,
     [p.userId, `Boost: ${targetKind} · ${pkg.label}`, targetKind, targetId, keyId, pkg.code, pkg.cents, pkg.impressions],
   );
   const id = ins[0]?.id ?? 0;
@@ -267,7 +269,7 @@ businessRouter.post('/api/business/campaigns', async (req, res) => {
   const keyId = currentKeyId();
   const { rows: ins } = await pool.query<{ id: number }>(
     `INSERT INTO ad_campaigns (provider_user_id, kind, name, headline_enc, body_enc, key_id, image_id, destination, destination_url, budget_cents, impressions_bought, starts_on, ends_on)
-     VALUES ($1, 'campaign', $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::date, current_date), $12) RETURNING id`,
+     VALUES ($1, 'campaign', $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::date, ${TODAY}), $12) RETURNING id`,
     [p.userId, name, sealText(headline, keyId), sealText(body, keyId), keyId, imageId, destination, destinationUrl, budget, impressions, startsOn, endsOn],
   );
   const id = ins[0]?.id ?? 0;
@@ -316,16 +318,16 @@ export async function sponsoredFor(viewer: number, where: 'feed' | 'clips'): Pro
   };
   // Done or out of date: completed.
   await pool.query(
-    "UPDATE ad_campaigns SET status = 'completed' WHERE status = 'active' AND (impressions >= impressions_bought OR (ends_on IS NOT NULL AND ends_on < current_date))",
+    `UPDATE ad_campaigns SET status = 'completed' WHERE status = 'active' AND (impressions >= impressions_bought OR (ends_on IS NOT NULL AND ends_on < ${TODAY}))`,
   );
   const { rows } = await pool.query<ServeRow>(
     `SELECT ${CAMPAIGN_COLS}, ${AUTHOR_COLS}
        FROM ad_campaigns c ${AUTHOR_JOIN('c.provider_user_id')}
-      WHERE c.status = 'active' AND c.starts_on <= current_date AND c.provider_user_id <> $1 AND p.banned_at IS NULL
+      WHERE c.status = 'active' AND c.starts_on <= ${TODAY} AND c.provider_user_id <> $1 AND p.banned_at IS NULL
         AND ${NOT_BLOCKED('c.provider_user_id')}
         AND ($2 = 'feed' OR c.target_kind = 'clip')
         AND EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = c.provider_user_id AND pc.status = 'verified')
-      ORDER BY EXISTS (SELECT 1 FROM ad_impressions i WHERE i.campaign_id = c.id AND i.viewer_user_id = $1 AND i.day = current_date), random()
+      ORDER BY EXISTS (SELECT 1 FROM ad_impressions i WHERE i.campaign_id = c.id AND i.viewer_user_id = $1 AND i.day = ${TODAY}), random()
       LIMIT 3`,
     [viewer, where],
   );
@@ -335,7 +337,7 @@ export async function sponsoredFor(viewer: number, where: 'feed' | 'clips'): Pro
     if (r.target_kind === 'post' && r.target_id) post = await render.post(r.target_id);
     if (r.target_kind === 'clip' && r.target_id) clip = await render.clip(r.target_id);
     if (r.target_kind && !post && !clip) continue; // the boosted item is gone or held
-    const { rowCount } = await pool.query('INSERT INTO ad_impressions (campaign_id, viewer_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [r.id, viewer]);
+    const { rowCount } = await pool.query(`INSERT INTO ad_impressions (campaign_id, viewer_user_id, day) VALUES ($1, $2, ${TODAY}) ON CONFLICT DO NOTHING`, [r.id, viewer]);
     if (rowCount) await pool.query('UPDATE ad_campaigns SET impressions = impressions + 1 WHERE id = $1', [r.id]);
     const a = author(r);
     const href = r.destination === 'url' && r.destination_url ? r.destination_url : r.destination === 'consult' ? `/people/${a.userId}?book=1` : `/people/${a.userId}`;

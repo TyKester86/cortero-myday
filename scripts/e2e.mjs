@@ -313,6 +313,8 @@ async function setup() {
   await admin.query(`DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${APP_ROLE}') THEN CREATE ROLE ${APP_ROLE} LOGIN NOSUPERUSER NOBYPASSRLS; END IF; END $$`);
   await admin.query(`ALTER ROLE ${APP_ROLE} WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${APP_PW}'`);
   await admin.query(`CREATE DATABASE myday_e2e OWNER ${APP_ROLE} ENCODING 'UTF8' TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'`);
+  // Like the droplet: the database runs in UTC, so "today" in SQL can differ from the app's time zone.
+  await admin.query(`ALTER DATABASE myday_e2e SET timezone TO 'UTC'`);
   await admin.end();
   const m1 = runNode(['dist/migrate.js']);
   const m2 = runNode(['dist/migrate.js']);
