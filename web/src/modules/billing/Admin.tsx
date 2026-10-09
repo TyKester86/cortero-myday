@@ -80,6 +80,9 @@ export default function Admin() {
       <p className="small muted">
         Trial ended {t.trialEnded} · past due {t.pastDue} · canceled {t.canceled} · complimentary {t.comped}
       </p>
+      <p className="small" data-testid="admin-feed-funnel">
+        <b>The Feed → MyDay:</b> {t.feedSignups} joined through the Feed app · {t.feedConverted} set up MyDay · {t.feedPaying} paying
+      </p>
 
       <div className="card" data-testid="admin-plans">
         <h2>Plans (flat price per household)</h2>

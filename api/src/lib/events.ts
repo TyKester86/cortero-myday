@@ -40,6 +40,8 @@ export type EventName =
   | 'build_screen_referred'
   | 'cut_paused'
   | 'ai_consent_given'
+  | 'account_linked'
+  | 'feed_converted'
   | 'ai_consent_withdrawn'
   | 'tutor_style_changed'
   | 'data_exported'

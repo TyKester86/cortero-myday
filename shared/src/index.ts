@@ -2056,6 +2056,12 @@ export interface AdminDashboard {
     mrrCents: number;
     /** Active households whose plan has no price yet. */
     unpriced: number;
+    /** People who joined through the Feed app (free) … */
+    feedSignups: number;
+    /** … of them, how many set up MyDay (same account) … */
+    feedConverted: number;
+    /** … and how many of those households are paying. */
+    feedPaying: number;
   };
   provider: 'none' | 'stub' | 'stripe';
 }

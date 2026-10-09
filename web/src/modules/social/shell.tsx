@@ -4,9 +4,10 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation } from 'react-router';
-import { api, useLoad } from '../../api';
+import { useLoad } from '../../api';
 import { useSession } from '../../session';
 import { FeedHorn } from '../../components/NavIcon';
+import { signOut } from '../../signout';
 import { APP_URL, clearInstall, FEED_APP, iosSafari, pendingInstall, standalone } from '../../apps';
 import type { ReactNode } from 'react';
 
@@ -39,14 +40,9 @@ export function takeNext(): string | null {
 
 /** Header for a Feed-only account: the Feed, and a way to set up the rest of MyDay later. */
 export function SocialHeader() {
-  const signOut = async (): Promise<void> => {
-    await api('/api/auth/logout', 'POST').catch(() => undefined);
-    navigator.serviceWorker?.controller?.postMessage('clear-api');
-    window.location.href = '/';
-  };
   const { me } = useSession();
-  // In the Feed app, MyDay is the other app (the family planner): its door, for when they want it.
-  const myday = FEED_APP ? `${APP_URL}/${me.household ? '' : 'start'}` : '/start';
+  // In the Feed app, MyDay is the other app (the family planner): its door, signed in (same account).
+  const myday = FEED_APP && APP_URL ? `/api/auth/go?to=myday&next=${me.household ? '/' : '/start'}` : '/start';
   return (
     <header className="top social-top" data-testid="social-shell">
       <FeedHorn tile size={30} className="mark-horn" />

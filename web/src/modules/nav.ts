@@ -3,6 +3,7 @@
  * One place, used by the shell (phone tabs + menu, desktop sidebar) and the
  * Me page.
  */
+import { FEED_URL } from '../apps';
 import { liveFeatures, type Me } from '@myday/shared';
 import { MODULES, NAV_GROUPS, type ModuleRoute, type NavGroup } from './index';
 
@@ -47,7 +48,8 @@ export function navFor(me: Me): Nav {
     return { path: m.path, label, tabLabel: n.tabLabel ?? label, icon: n.icon, group: !family && m.soloGroup ? m.soloGroup : n.group };
   };
   const tabs = routes.filter((m) => m.nav?.tabFor?.includes(who)).map(item);
-  const listed = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who)).map(item);
+  // With the Feed app on its own domain, the horn on the tab bar is the Feed's one front door (no second entry).
+  const listed = routes.filter((m) => m.nav && !m.nav.tabFor?.includes(who) && !(FEED_URL && m.path === '/feed')).map(item);
   const groups = NAV_GROUPS.map((g) => ({ ...g, items: listed.filter((i) => i.group === g.key) })).filter((g) => g.items.length > 0);
   return { routes, tabs, groups, hana: who === 'adult' && !off.has('hana') };
 }

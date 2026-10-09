@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router';
 import type { ModuleKey } from '@myday/shared';
-import { api, useOffline } from './api';
+import { useOffline } from './api';
 import FirstRun from './components/FirstRun';
 import Shortcuts from './components/Shortcuts';
 import { CreateHousehold } from './Onboarding';
@@ -18,7 +18,8 @@ import Login from './Login';
 import { navFor } from './modules/nav';
 import { MODULES } from './modules';
 import { InstallFeed, SocialHeader, takeNext } from './modules/social/shell';
-import { APP_URL, FEED_APP } from './apps';
+import { APP_URL, FEED_APP, FEED_URL, standalone } from './apps';
+import { signOut } from './signout';
 import { FeedHorn, HanaFace, NavIcon } from './components/NavIcon';
 import { useKeyboardLayout } from './components/useKeyboard';
 import GroceryPopout from './modules/meals/GroceryPopout';
@@ -88,9 +89,33 @@ function SectionTabs({ path }: { path: string }) {
   );
 }
 
+/**
+ * The bulb horn on MyDay's tab bar: the front door to the Feed. With the Feed app on its own domain it's a plain
+ * link (a tap the phone can hand to the installed Feed app) that signs you in there — no login wall. Grown-ups only.
+ */
+function HornTab({ side = false }: { side?: boolean }) {
+  const body = (
+    <>
+      <FeedHorn size={side ? 20 : 24} className="navicon" />
+      {side ? ' The Feed' : <small>Feed</small>}
+    </>
+  );
+  if (!FEED_URL) {
+    return (
+      <NavLink to="/feed" className="horn-tab" data-testid="horn-tab">
+        {body}
+      </NavLink>
+    );
+  }
+  return (
+    <a href="/api/auth/go?to=feed" className="horn-tab" data-testid="horn-tab" target={standalone() ? '_blank' : undefined} rel="noopener">
+      {body}
+    </a>
+  );
+}
+
 function Shell() {
   const { me, viewable, viewing, setViewing, isAdult } = useSession();
-  const [menu, setMenu] = useState(false);
   const [find, setFind] = useState('');
   const wide = useWide();
   const location = useLocation();
@@ -102,19 +127,8 @@ function Shell() {
     applyLook(me.prefs?.theme ?? 'system', me.prefs?.accent ?? 'navy');
   }, [me.prefs]);
   const nav = navFor(me);
-  // Grown-ups on a desktop get a sidebar instead of the phone's bottom bar + menu.
+  // Grown-ups on a desktop get a sidebar instead of the phone's bottom bar (everything else: the Me tab).
   const sidebar = wide && isAdult;
-  const signOut = async (): Promise<void> => {
-    await api('/api/auth/logout', 'POST');
-    // Don't leave this person's cached data on a shared device.
-    navigator.serviceWorker?.controller?.postMessage('clear-api');
-    try {
-      localStorage.removeItem('myday.offline-queue');
-    } catch {
-      /* ignore */
-    }
-    window.location.href = '/';
-  };
   const needle = find.trim().toLowerCase();
   const groupedLinks = (onPick?: () => void) =>
     nav.groups.map((g) => {
@@ -157,20 +171,10 @@ function Shell() {
             ))}
           </select>
         ) : (
-          <span className="who">{me.member?.name ?? me.name}</span>
-        )}
-        {!sidebar && (
-          <button className="link light" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>
-            ☰
-          </button>
-        )}
-        {menu && !sidebar && (
-          <nav className="menu" data-testid="menu">
-            {groupedLinks(() => setMenu(false))}
-            <button className="link" onClick={() => void signOut()}>
-              Sign out
-            </button>
-          </nav>
+          // Your name opens Me: every page, your settings, Sign out (there is no menu button).
+          <Link to="/me" className="who" data-testid="who">
+            {me.member?.name ?? me.name}
+          </Link>
         )}
       </header>
       {sidebar && (
@@ -184,6 +188,7 @@ function Shell() {
                   <NavIcon name={t.icon} /> {t.label}
                 </NavLink>
               ))}
+            {isAdult && (!needle || 'the feed'.includes(needle)) && <HornTab side />}
           </div>
           {groupedLinks()}
           <button className="link small" onClick={() => void signOut()}>
@@ -217,6 +222,7 @@ function Shell() {
               <small>{t.tabLabel}</small>
             </NavLink>
           ))}
+          {isAdult && <HornTab />}
         </nav>
       )}
     </div>

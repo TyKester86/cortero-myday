@@ -73,7 +73,7 @@ signinRouter.get('/api/auth/email/callback', async (req, res) => {
     return;
   }
   try {
-    const { userId, pendingInvite } = await upsertUser({ sub: `email:${row.email}`, email: row.email, email_verified: true, name: '' }, row.invite ?? undefined, 'email');
+    const { userId, pendingInvite } = await upsertUser({ sub: `email:${row.email}`, email: row.email, email_verified: true, name: '' }, row.invite ?? undefined, 'email', onFeedApp(req) ? 'feed' : 'myday');
     await startSession(req, userId);
     if (pendingInvite) req.session.pendingInvite = pendingInvite;
   } catch (e) {

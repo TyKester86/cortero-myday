@@ -82,6 +82,9 @@ householdsRouter.post('/api/households', async (req, res) => {
       );
     }
     await logEvent('household_created', { type, build: build ?? '' }, memberId, id);
+    // The free → paid funnel: someone who joined through the Feed app just set up MyDay (same account).
+    const from = await pool.query<{ signup_app: string }>('SELECT signup_app FROM users WHERE id = $1', [userId]);
+    if (from.rows[0]?.signup_app === 'feed') await logEvent('feed_converted', { type }, memberId, id);
     return id;
   });
   await setHousehold(householdId);

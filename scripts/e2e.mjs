@@ -3511,6 +3511,42 @@ async function feedAppSuite() {
   const late = await tyH.post('/api/auth/handoff', { to: 'feed' });
   await sql("UPDATE auth_handoffs SET expires_at = now() - interval '1 second' WHERE used_at IS NULL");
   eq('…and only for two minutes', (await new Client('late', 'MyDay-e2e', FEED).get(late.data.url.slice(FEED.length))).location, '/login?error=handoff');
+  section('One person, one account: the Feed app → MyDay, same email = same account; the funnel counts real people');
+  const fEmail = 'feed-first@example.test';
+  const outbox = async () => (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail;
+  const linkFor = async (client, base, who) => {
+    const n0 = (await outbox()).length;
+    await client.post('/api/auth/email', { email: who });
+    const m = (await outbox()).slice(n0).find((x) => x.to === who);
+    return (m?.text.match(/https?:\/\/\S+/)?.[0] ?? '').slice(base.length);
+  };
+  const ff = new Client('feed-first', 'MyDay-e2e', FEED);
+  await ff.get(await linkFor(ff, FEED, fEmail));
+  const ffId = (await ff.get('/api/me')).data.userId;
+  eq('joining in the Feed app marks the account as a Feed signup', (await sql('SELECT signup_app FROM users WHERE id = $1', [ffId]))[0]?.signup_app, 'feed');
+  // Later, on MyDay, with a different way in (Sign in with Apple) but the same verified email.
+  const ffm = new Client('feed-first-myday');
+  await ffm.get('/api/auth/apple');
+  const [ffc] = decodeURIComponent(ffm.jar.get('myday.apple') ?? '').split('~');
+  const [ffSt, ffNonce] = ffc.split('.');
+  const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const ffHead = enc({ alg: 'RS256', kid: 'test1' });
+  const ffBody = enc({ iss: 'https://appleid.apple.com', aud: 'app.myday.test', sub: 'apple-feed-first', email: fEmail, exp: Math.floor(Date.now() / 1000) + 3600, nonce: sha('sha256').update(ffNonce).digest('hex') });
+  const ffTok = `${ffHead}.${ffBody}.${rsaSign('RSA-SHA256', Buffer.from(`${ffHead}.${ffBody}`), APPLE_KEY.privateKey).toString('base64url')}`;
+  await ffm.req('POST', '/api/auth/apple/callback', new URLSearchParams({ state: ffSt, id_token: ffTok }).toString(), { json: false, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  eq('…signing in to MyDay later another way (Apple) with the same email is the SAME account, not a second person', [(await ffm.get('/api/me')).data.userId, (await sql('SELECT COUNT(*)::int AS n FROM users WHERE lower(email) = $1', [fEmail]))[0].n], [ffId, 1]);
+  eq('…linked: the second way in points at the first account', (await sql('SELECT COUNT(*)::int AS n FROM user_identities WHERE user_id = $1', [ffId]))[0].n, 1);
+  const conv = await ffm.post('/api/households', { type: 'family', householdName: 'Feed First Family', yourName: 'Fen' });
+  eq('…setting up MyDay from there converts that same person: household on their account, funnel event logged', [conv.status, (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name = 'feed_converted' AND member_id = (SELECT member_id FROM users WHERE id = $1)", [ffId]))[0].n], [201, 1]);
+  const adminC = new Client('admin-funnel');
+  await adminC.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  const fun = (await adminC.get('/api/admin/dashboard')).data.totals;
+  eq('the admin dashboard counts the Feed → MyDay funnel (joined via the Feed · set up MyDay · paying)', [fun.feedSignups >= 2, fun.feedConverted >= 1, typeof fun.feedPaying], [true, true, 'number']);
+  const kidGoApi = await avery.get('/api/auth/go?to=feed');
+  eq('the horn link: signed out → the Feed app’s front page; a kid → home, never the Feed', [(await anon.get('/api/auth/go?to=feed')).location, kidGoApi.location], [`${FEED}/`, '/']);
+  const goTy = await tyH.get('/api/auth/go?to=feed');
+  eq('…a grown-up → a one-time sign-in on the Feed app', String(goTy.location).startsWith(`${FEED}/api/auth/handoff?token=`), true);
+
   eq('kids are never handed to the Feed (18+); signed out gets nothing; no other apps', [(await avery.post('/api/auth/handoff', { to: 'feed' })).status, (await anon.post('/api/auth/handoff', { to: 'feed' })).status, (await tyH.post('/api/auth/handoff', { to: 'elsewhere' })).status], [403, 401, 400]);
 }
 
@@ -3658,6 +3694,14 @@ async function uiGate() {
     const phone = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true };
     const errors = [];
     const watch = (page) => page.on('pageerror', (e) => errors.push(`${page.url()}: ${e.stack ?? e.message}`));
+    // No menu button: grown-ups open Me from the tab bar; anyone can tap their name in the header.
+    const meHub = (pg) => pg.getByTestId('me-hub');
+    const openMe = async (pg) => {
+      const tab = pg.locator('nav.tabs a[href="/me"]');
+      if (await tab.count()) await tab.click();
+      else await pg.getByTestId('who').click();
+      await meHub(pg).waitFor({ timeout: 10000 });
+    };
 
     section('A1. in-page confirm (no native dialogs): remove a chore, delete homework, archive a member — and it sticks');
     const tyCtx = await browser.newContext(phone);
@@ -3704,8 +3748,8 @@ async function uiGate() {
     section('audit layout: one Today, five tabs, a grouped menu, Hana everywhere, kid tools only as a parent’s view');
     await page.goto(`${BASE}/`);
     await page.getByTestId('today-adult').waitFor({ timeout: 10000 });
-    eq('phone: a grown-up’s home is the merged Today; tabs are Today · Plan · Family · Money · Me', (await page.locator('nav.tabs a small').allInnerTexts()).map((t) => t.toLowerCase()), ['today', 'plan', 'family', 'money', 'me']);
-    eq('each tab has its line icon', await page.locator('nav.tabs a svg.navicon').count(), 5);
+    eq('phone: a grown-up’s home is the merged Today; tabs are Today · Plan · Family · Money · Me, then the Feed’s horn', (await page.locator('nav.tabs a small').allInnerTexts()).map((t) => t.toLowerCase()), ['today', 'plan', 'family', 'money', 'me', 'feed']);
+    eq('each tab has its line icon (the horn too)', await page.locator('nav.tabs a svg.navicon').count(), 6);
     eq('Hana button shows her face (local image, not an emoji)', await page.getByTestId('hana-fab').locator('img.hana-face').getAttribute('src'), '/images/hana-face.webp');
     check('…and it loads (served from the app, not hotlinked)', await page.waitForFunction(() => { const i = document.querySelector('[data-testid="hana-fab"] img.hana-face'); return !!i && i.complete && i.naturalWidth > 0; }, null, { timeout: 10000 }).then(() => true, () => false));
     await page.getByTestId('hana-fab').click();
@@ -3714,10 +3758,11 @@ async function uiGate() {
     await page.goto(`${BASE}/`);
     await page.getByTestId('kids-glance').waitFor({ timeout: 10000 });
     check('Today shows what’s next, the workout and meals, and the kids at a glance', (await page.getByTestId('next-up').count()) === 1 && (await page.getByTestId('kids-glance').count()) === 1);
-    await page.getByRole('button', { name: 'Menu' }).click();
-    const groups = await page.getByTestId('menu').locator('.navgroup-label').allInnerTexts();
-    eq('the menu is grouped (Me · Family · Home · Money · School · Help & people · Account)', groups.map((g) => g.toLowerCase()), ['me', 'family', 'home', 'money', 'school', 'help & people', 'account']);
-    await page.getByRole('button', { name: 'Menu' }).click();
+    eq('no menu button anywhere (it opened out of view) — everything is on the Me tab', await page.getByRole('button', { name: 'Menu' }).count(), 0);
+    await openMe(page);
+    const groups = await meHub(page).locator('.hubgroup .eyebrow').allInnerTexts();
+    eq('Me lists every page, grouped (Me · Family · Home · Money · School · Help & people · Account)', groups.map((g) => g.toLowerCase()), ['me', 'family', 'home', 'money', 'school', 'help & people', 'account']);
+    eq('…and Sign out lives there', await meHub(page).getByTestId('sign-out').count(), 1);
     await page.getByTestId('hana-fab').click();
     await page.waitForURL('**/hana');
     check('the Hana button opens Ask Hana from any page', page.url().endsWith('/hana'));
@@ -3786,11 +3831,21 @@ async function uiGate() {
     await page.getByTestId('thread-list').locator('a').first().waitFor({ timeout: 10000 });
     check('Village: categories + threads', (await page.getByRole('button', { name: 'School & IEPs' }).count()) === 1 && (await page.getByTestId('thread-list').innerText()).includes('Visual timers saved our mornings'));
     await page.goto(`${BASE}/`);
-    await page.getByRole('button', { name: 'Menu' }).click();
-    const cmenu = await page.getByTestId('menu').innerText();
-    check('grown-up menu: one door — The Feed (no separate Village or Circles entries)', cmenu.includes('The Feed') && !cmenu.includes('The Village') && !/\bCircles\b/.test(cmenu), cmenu);
-    eq('…and its menu entry wears the bulb horn (not a generic icon)', await page.getByTestId('menu').getByRole('link', { name: 'The Feed' }).locator('svg.feed-horn').count(), 1);
-    await page.getByRole('button', { name: 'Menu' }).click();
+    const horn = page.locator('nav.tabs').getByTestId('horn-tab');
+    await horn.waitFor({ timeout: 10000 });
+    eq('the Feed’s front door: the bulb horn on MyDay’s tab bar, a link that signs you in to the Feed app', [await horn.count(), await horn.locator('svg.feed-horn').count(), await horn.getAttribute('href'), (await horn.innerText()).trim()], [1, 1, '/api/auth/go?to=feed', 'Feed']);
+    await openMe(page);
+    const cmenu = await meHub(page).innerText();
+    check('…one door: no second Feed entry, no separate Village or Circles entries on Me', !cmenu.includes('The Feed') && !cmenu.includes('The Village') && !/\bCircles\b/.test(cmenu), cmenu);
+    await page.goto(`${BASE}/`);
+    await page.locator('nav.tabs').getByTestId('horn-tab').click();
+    await page.waitForURL(`${FEED}/feed`, { timeout: 15000 });
+    await page.getByTestId('feed-nav').waitFor({ timeout: 10000 });
+    eq('tapping the horn lands in the Feed app, signed in (no login wall)', [new URL(page.url()).origin, await page.getByTestId('signin-choices').count(), await page.getByTestId('age-gate').count(), await page.evaluate(async () => (await (await fetch('/api/me')).json()).member?.key)], [FEED, 0, 0, 'ty']);
+    await page.getByTestId('setup-household').click();
+    await page.waitForURL(`${BASE}/`, { timeout: 15000 });
+    await page.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    check('…and the Feed app’s “MyDay” door comes back to MyDay, signed in', (await page.locator('nav.tabs').count()) === 1);
 
     section('UI: the Feed — one section bar, Stories, Clips, Profiles, Providers, Messages');
     const tyUser = (await sql("SELECT u.id FROM users u JOIN household_members m ON m.id = u.member_id WHERE m.key = 'ty' ORDER BY u.id LIMIT 1"))[0].id;
@@ -4007,7 +4062,7 @@ async function uiGate() {
     await fap.goto(hand);
     await fap.getByTestId('social-shell').waitFor({ timeout: 10000 });
     eq('MyDay → the Feed app lands signed in, in the Feed: horn header, Feed sections, no MyDay tab bar or Circles', [new URL(fap.url()).origin + new URL(fap.url()).pathname, await fap.locator('.social-top svg.feed-horn').count(), await fap.locator('nav.tabs').count(), await fap.getByTestId('feed-nav').getByRole('link', { name: 'Circles' }).count(), await fap.locator('img[src*="myday-mark"]').count()], [`${FEED}/feed`, 1, 0, 0, 0]);
-    eq('…with a door back to MyDay', await fap.getByTestId('setup-household').getAttribute('href'), `${BASE}/`);
+    eq('…with a door back to MyDay (signed in there too)', await fap.getByTestId('setup-household').getAttribute('href'), '/api/auth/go?to=myday&next=/');
     await fap.goto(`${FEED}/today`);
     await fap.getByTestId('feed-nav').waitFor({ timeout: 10000 });
     eq('…MyDay pages don’t exist in the Feed app (back to the Feed)', new URL(fap.url()).pathname, '/feed');
@@ -4058,7 +4113,7 @@ async function uiGate() {
     eq('…with search', await dp.getByTestId('sidebar').locator('a').allInnerTexts().then((t) => t.map((x) => x.trim())), ['Grocery list']);
     await dp.getByLabel('Find a page').fill('');
     const sideTop = await dp.getByTestId('sidebar').locator('.navgroup').first().locator('a').allInnerTexts().then((t) => t.map((x) => x.trim()));
-    eq('desktop sidebar top: Today · Plan · Family · Money · Me (no “Weekly plan” / “Everything”)', sideTop, ['Today', 'Plan', 'Family', 'Money', 'Me']);
+    eq('desktop sidebar top: Today · Plan · Family · Money · Me, then the Feed’s horn (no “Weekly plan” / “Everything”)', sideTop, ['Today', 'Plan', 'Family', 'Money', 'Me', 'The Feed']);
     eq('sidebar links use the line icons (svg), not emoji', await dp.getByTestId('sidebar').locator('a').evaluateAll((as) => as.every((a) => a.querySelector('svg.navicon, img.hana-face') && !/\p{Extended_Pictographic}/u.test(a.textContent ?? ''))), true);
     await dp.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
     await dp.keyboard.press('?');
@@ -4100,13 +4155,13 @@ async function uiGate() {
     await page.waitForURL(`${BASE}/`, { timeout: 10000 });
     await page.waitForTimeout(200);
     eq('leaving Ask Hana lets the rest of the app scroll again', await page.evaluate(() => document.documentElement.classList.contains('chat-screen')), false);
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await page.locator('.top .menu').getByRole('link', { name: /Health/ }).click();
-    eq('Ask Hana → Back → menu → Health renders (no blank page)', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await page.getByRole('link', { name: /Meals/ }).click();
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await page.getByRole('link', { name: /Health/ }).click();
+    await openMe(page);
+    await meHub(page).getByRole('link', { name: /Health/ }).click();
+    eq('Ask Hana → Back → Me → Health renders (no blank page)', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
+    await openMe(page);
+    await meHub(page).getByRole('link', { name: /Meals/ }).first().click();
+    await openMe(page);
+    await meHub(page).getByRole('link', { name: /Health/ }).click();
     eq('…and again after another hop', await page.getByRole('heading', { name: /workout|Plan your year/i }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), true);
 
     section('3 + 0e. admin page: delete a test household through the in-page confirm');
@@ -4773,12 +4828,11 @@ async function uiGate() {
     await sp.request.patch(`${BASE}/api/me/prefs`, { data: { firstRunDone: true }, headers: { 'Content-Type': 'application/json' } });
     await sp.goto(`${BASE}/`);
     await sp.getByTestId('today-adult').waitFor({ timeout: 10000 });
-    eq('solo tabs: Today · Plan · Money · Me (no Family)', (await sp.locator('nav.tabs a small').allTextContents()).map((t) => t.trim().toLowerCase()), ['today', 'plan', 'money', 'me']);
-    await sp.getByRole('button', { name: 'Menu' }).click();
-    const soloMenu = (await sp.getByTestId('menu').locator('a').allTextContents()).map((t) => t.trim());
-    eq('…no Chores, Family wins, Homework, Rewards or Kid money in the menu', soloMenu.filter((t) => /Chores|Family wins|Homework|Rewards|Kid money/.test(t)), []);
-    check('…Household is still there (to invite someone or add a kid), under Account', (await sp.getByTestId('menu').locator('.navgroup').filter({ hasText: 'Account' }).getByRole('link', { name: 'Household' }).count()) === 1);
-    await sp.getByRole('button', { name: 'Menu' }).click();
+    eq('solo tabs: Today · Plan · Money · Me (no Family), then the Feed’s horn', (await sp.locator('nav.tabs a small').allTextContents()).map((t) => t.trim().toLowerCase()), ['today', 'plan', 'money', 'me', 'feed']);
+    await openMe(sp);
+    const soloMenu = (await meHub(sp).locator('a').allTextContents()).map((t) => t.trim());
+    eq('…no Chores, Family wins, Homework, Rewards or Kid money on Me', soloMenu.filter((t) => /Chores|Family wins|Homework|Rewards|Kid money/.test(t)), []);
+    check('…Household is still there (to invite someone or add a kid), under Account', (await meHub(sp).locator('.hubgroup').filter({ hasText: /Account/i }).getByRole('link', { name: 'Household' }).count()) === 1);
     await sp.goto(`${BASE}/family`);
     check('…and the Family page (partner check-in, kids) isn’t there for one person', (await sp.getByText('Page not found.').waitFor({ timeout: 10000 }).then(() => true, () => false)) && (await sp.getByTestId('partner-checkin').count()) === 0);
     const soloInv = await (await sp.request.post(`${BASE}/api/household/invites`, { data: { name: 'Quinn', email: 'quinn-solo@example.com', xpTrack: 'leader' }, headers: { 'Content-Type': 'application/json' } })).json();
@@ -4788,7 +4842,7 @@ async function uiGate() {
     await qc.close();
     await sp.goto(`${BASE}/`);
     await sp.getByTestId('today-adult').waitFor({ timeout: 10000 });
-    eq('once a second grown-up signs in: the Family tab appears', (await sp.locator('nav.tabs a small').allTextContents()).map((t) => t.trim().toLowerCase()), ['today', 'plan', 'family', 'money', 'me']);
+    eq('once a second grown-up signs in: the Family tab appears', (await sp.locator('nav.tabs a small').allTextContents()).map((t) => t.trim().toLowerCase()), ['today', 'plan', 'family', 'money', 'me', 'feed']);
     await sp.goto(`${BASE}/family`);
     check('…with the partner check-in', await sp.getByTestId('partner-checkin').waitFor({ timeout: 10000 }).then(() => true, () => false));
     await soloCtx.close();
@@ -4804,10 +4858,10 @@ async function uiGate() {
     await np.request.patch(`${BASE}/api/me/prefs`, { data: { firstRunDone: true }, headers: { 'Content-Type': 'application/json' } });
     await np.reload();
     await np.getByTestId('setup-checklist').waitFor({ timeout: 10000 });
-    await np.getByRole('button', { name: 'Menu' }).click();
-    const menu2 = (await np.getByTestId('menu').locator('a').allInnerTexts()).map((t) => t.trim());
-    eq('a new couple: setup checklist on Today; no Homework, Rewards, Kid money or School in the menu', [menu2.some((t) => /Homework|Rewards|Kid money|School|Lectures/.test(t)), menu2.some((t) => /Health/.test(t))], [false, true]);
-    await np.getByRole('button', { name: 'Menu' }).click();
+    await openMe(np);
+    const menu2 = (await meHub(np).locator('a').allInnerTexts()).map((t) => t.trim());
+    eq('a new couple: setup checklist on Today; no Homework, Rewards, Kid money or School on Me', [menu2.some((t) => /Homework|Rewards|Kid money|School|Lectures/.test(t)), menu2.some((t) => /Health/.test(t))], [false, true]);
+    await np.locator('nav.tabs a[href="/"]').click();
     await np.getByTestId('setup-checklist').getByRole('button', { name: 'Hide' }).click();
     await np.reload();
     await np.getByTestId('today-adult').waitFor({ timeout: 10000 });
@@ -4818,8 +4872,8 @@ async function uiGate() {
     await np.getByTestId('modules').getByRole('button', { name: 'Save' }).click();
     await np.waitForLoadState('networkidle');
     await np.getByTestId('modules').waitFor({ timeout: 10000 });
-    await np.getByRole('button', { name: 'Menu' }).click();
-    eq('Settings → What’s in your MyDay: turning Health off removes it from the menu', (await np.getByTestId('menu').locator('a').allInnerTexts()).some((t) => /Health/.test(t)), false);
+    await openMe(np);
+    eq('Settings → What’s in your MyDay: turning Health off removes it from Me', (await meHub(np).locator('a').allInnerTexts()).some((t) => /Health/.test(t)), false);
     await nk.close();
     await kpg.goto(`${BASE}/health`);
 
@@ -4910,10 +4964,10 @@ async function uiGate() {
 
     section('Library in the nav: the book and the ADHD medical reference, no chat needed');
     await page.goto(`${BASE}/`);
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await page.locator('.top .menu').getByRole('link', { name: 'Library' }).click();
+    await openMe(page);
+    await meHub(page).getByRole('link', { name: 'Library' }).click();
     await page.getByTestId('library').waitFor({ timeout: 10000 });
-    eq('tap Library in the menu → the book’s chapters and the medical reference topics', [await page.getByTestId('library-chapter').count() >= 29, await page.getByTestId('library-topic').count() >= 8], [true, true]);
+    eq('tap Library on Me → the book’s chapters and the medical reference topics', [await page.getByTestId('library-chapter').count() >= 29, await page.getByTestId('library-topic').count() >= 8], [true, true]);
     await page.getByTestId('library-chapter').filter({ hasText: 'Executive Command' }).click();
     await page.getByTestId('library-chapter-page').waitFor({ timeout: 10000 });
     check('a chapter reads as a page: section headings, the text, and a link to the next chapter', (await page.locator('.lib-text').innerText()).includes('The 4-Pillar Command Structure') && (await page.locator('.lib-text .md-h').count()) >= 3 && (await page.getByTestId('library-next').isVisible()));
@@ -4958,9 +5012,12 @@ async function uiGate() {
     }
     eq('kid pages render (and fit the phone)', notFound, []);
     await kp.goto(`${BASE}/`);
-    await kp.getByRole('button', { name: 'Menu' }).click();
-    const kmenu = await kp.getByTestId('menu').innerText();
-    check('kid menu: no Village, no Feed', !kmenu.includes('Village') && !kmenu.includes('Feed'));
+    eq('kids: no horn on their tab bar (the Feed is 18+), no menu button; their name opens Me', [await kp.getByTestId('horn-tab').count(), await kp.getByRole('button', { name: 'Menu' }).count(), await kp.getByTestId('who').count()], [0, 0, 1]);
+    await openMe(kp);
+    const kmenu = await meHub(kp).innerText();
+    check('kid Me: their pages and Sign out — no Village, no Feed', !kmenu.includes('Village') && !kmenu.includes('Feed') && (await meHub(kp).getByTestId('sign-out').count()) === 1, kmenu);
+    const kidGo = await kp.request.get(`${BASE}/api/auth/go?to=feed`, { maxRedirects: 0 });
+    eq('…and the Feed link sends a kid nowhere but home', [kidGo.status(), kidGo.headers().location], [302, '/']);
     for (const p of ['/feed', '/village', `/people/1`]) {
       await kp.goto(BASE + p);
       await kp.getByText('Page not found.').waitFor({ timeout: 10000 }).catch(() => undefined);
@@ -4974,9 +5031,8 @@ async function uiGate() {
       await kp.waitForTimeout(300);
     }
     eq('focus timer stays on screen while running (10/10 samples)', seen, 10);
-    await kp.getByRole('button', { name: 'Menu' }).click();
-    eq('Focus timer in the kid menu', await kp.getByRole('link', { name: /Focus timer/ }).count(), 1);
-    await kp.getByRole('button', { name: 'Menu' }).click();
+    await openMe(kp);
+    eq('Focus timer on the kid’s Me page', await meHub(kp).getByRole('link', { name: /Focus timer/ }).count(), 1);
     const ev = await browser.newContext(phone);
     const ep = await ev.newPage();
     await ep.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=evan`);
@@ -4994,9 +5050,10 @@ async function uiGate() {
     await kp.goto(`${BASE}/lectures`);
     await kp.getByTestId('lecture-list').waitFor();
     check('(a) /lectures lists the kid’s recordings', (await kp.getByTestId('lecture-list').locator('li').count()) >= 3);
-    await kp.getByRole('button', { name: 'Menu' }).click();
-    eq('(a) Lectures is in the menu', await kp.getByRole('link', { name: /Lectures/ }).count(), 1);
-    await kp.getByRole('button', { name: 'Menu' }).click();
+    await openMe(kp);
+    eq('(a) Lectures is on the kid’s Me page', await meHub(kp).getByRole('link', { name: /Lectures/ }).count(), 1);
+    await kp.goBack();
+    await kp.getByTestId('lecture-list').waitFor({ timeout: 10000 });
     await kp.getByLabel('Class').selectOption({ label: 'Biology' });
     await kp.getByTestId('lecture-upload').setInputFiles({ name: 'class.m4a', mimeType: 'audio/mp4', buffer: Buffer.from(`STUB-TRANSCRIPT: ${'Mitosis is how a cell divides. '.repeat(5)}`) });
     await kp.waitForURL(/\/lectures\/\d+$/);

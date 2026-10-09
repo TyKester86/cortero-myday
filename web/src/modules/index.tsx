@@ -115,7 +115,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/calendar', element: <Calendar />, audience: 'all', nav: { label: 'Calendar', icon: 'calendar', group: 'home' } },
   { path: '/family', element: <Family />, audience: 'adult', familyOnly: true, nav: { label: 'Family', icon: 'family', group: 'family', tabFor: ['adult'] } },
   { path: '/money', element: <Money />, audience: 'adult', module: 'money', nav: { label: 'Money', icon: 'money', group: 'money', tabFor: ['adult'] } },
-  { path: '/me', element: <MeHub />, audience: 'adult', nav: { label: 'Me', icon: 'everything', group: 'me', tabFor: ['adult'] } },
+  { path: '/me', element: <MeHub />, audience: 'all', nav: { label: 'Me', icon: 'everything', group: 'me', tabFor: ['adult'] } },
   { path: '/homework', element: <Homework />, audience: 'all', kidsOnly: true, nav: { label: 'Homework', icon: 'homework', group: 'family', tabFor: ['kid'] } },
   { path: '/tutor', element: <Chat mode="tutor" />, audience: 'tutor', nav: { label: 'Homework helper', icon: 'helper', group: 'school', tabFor: ['kid'], tabLabel: 'Helper' } },
   { path: '/rewards', element: <Rewards />, audience: 'all', kidsOnly: true, nav: { label: 'Rewards', icon: 'rewards', group: 'family', tabFor: ['kid'] } },

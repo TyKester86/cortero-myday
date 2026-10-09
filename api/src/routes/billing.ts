@@ -414,6 +414,13 @@ async function dashboard(): Promise<AdminDashboard> {
     });
     const n = (s: BillingDisplayStatus): number => households.filter((h) => h.status === s).length;
     const week = now + 7 * 86_400_000;
+    // The free → paid funnel: people who joined through the Feed app, and how many of them set up MyDay.
+    const { rows: funnel } = await pool.query<{ signups: number; converted: number; paying: number }>(
+      `SELECT COUNT(*)::int AS signups, COUNT(m.id)::int AS converted, COUNT(*) FILTER (WHERE h.billing_status = 'active')::int AS paying
+         FROM users u LEFT JOIN household_members m ON m.id = u.member_id AND m.archived_at IS NULL
+         LEFT JOIN households h ON h.id = m.household_id
+        WHERE u.signup_app = 'feed'`,
+    );
     return {
       households,
       plans: plans.map(toPlan),
@@ -433,6 +440,9 @@ async function dashboard(): Promise<AdminDashboard> {
           const plan = plans.find((p) => p.id === r?.plan_id) ?? def;
           return plan?.price_cents == null;
         }).length,
+        feedSignups: funnel[0]?.signups ?? 0,
+        feedConverted: funnel[0]?.converted ?? 0,
+        feedPaying: funnel[0]?.paying ?? 0,
       },
       provider: config.billingProvider,
     };

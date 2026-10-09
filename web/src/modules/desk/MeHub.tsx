@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 import { useSession } from '../../session';
 import { navFor } from '../nav';
 import { NavIcon } from '../../components/NavIcon';
+import { signOut } from '../../signout';
 
 /** Everything in one calm, grouped place (the phone's "Me" tab): you, then every page as a row. */
 export default function MeHub() {
@@ -26,7 +27,8 @@ export default function MeHub() {
         </span>
       </Link>
       {nav.groups
-        .filter((g) => g.key !== 'today')
+        .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== '/me') }))
+        .filter((g) => g.key !== 'today' && g.items.length > 0)
         .map((g) => (
           <div key={g.key} className="hubgroup">
             <h2 className="eyebrow">{g.label}</h2>
@@ -45,9 +47,14 @@ export default function MeHub() {
             </div>
           </div>
         ))}
-      <p className="small muted">
-        Missing something? Turn parts of MyDay on or off in <Link to="/settings">Settings</Link>.
-      </p>
+      {me.member?.kind === 'adult' && (
+        <p className="small muted">
+          Missing something? Turn parts of MyDay on or off in <Link to="/settings">Settings</Link>.
+        </p>
+      )}
+      <button type="button" className="btn ghost signout" onClick={() => void signOut()} data-testid="sign-out">
+        Sign out
+      </button>
     </section>
   );
 }

@@ -402,3 +402,4 @@
 .feed-install-text { flex: 1 1 180px; min-width: 0; display: grid; gap: 2px; }
 .feed-install-actions { display: flex; align-items: center; gap: 10px; }
 .install-steps { margin: 8px 0 12px; padding-left: 22px; display: grid; gap: 8px; text-align: left; }
+.social-top .link { white-space: nowrap; }

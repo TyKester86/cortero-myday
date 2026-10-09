@@ -108,9 +108,33 @@ export async function peekInvite(token: string): Promise<{ memberId: number; hou
   return r ? { memberId: r.member_id, householdId: r.household_id, household: r.household, name: r.name } : null;
 }
 
-export async function upsertUser(p: GoogleProfile, inviteToken: string | undefined, via: 'google' | 'email' | 'apple' = 'google'): Promise<{ userId: number; pendingInvite: string | null }> {
+/**
+ * The account a sign-in method belongs to: its own, one it was linked to, or — same verified email — the
+ * person's existing account (then this method is linked to it: one person, one account, MyDay and Feed).
+ */
+async function accountFor(sub: string, email: string): Promise<number | null> {
+  const own = await pool.query<{ id: number }>('SELECT id FROM users WHERE google_sub = $1', [sub]);
+  if (own.rows[0]) return own.rows[0].id;
+  const linked = await pool.query<{ user_id: number }>('SELECT user_id FROM user_identities WHERE sub = $1', [sub]);
+  if (linked.rows[0]) return linked.rows[0].user_id;
+  // Real sign-ins only (Google, email link, Apple — all verify the address); never a kid PIN or a dev sign-in.
+  const same = await pool.query<{ id: number }>("SELECT id FROM users WHERE lower(email) = $1 AND auth = 'google' ORDER BY id LIMIT 1", [email]);
+  const id = same.rows[0]?.id;
+  if (id === undefined) return null;
+  await pool.query('INSERT INTO user_identities (sub, user_id) VALUES ($1, $2) ON CONFLICT (sub) DO NOTHING', [sub, id]);
+  await logEvent('account_linked', {}, null, null);
+  return id;
+}
+
+export async function upsertUser(
+  p: GoogleProfile,
+  inviteToken: string | undefined,
+  via: 'google' | 'email' | 'apple' = 'google',
+  app: 'myday' | 'feed' = 'myday',
+): Promise<{ userId: number; pendingInvite: string | null }> {
   const email = p.email.toLowerCase();
   return asSystem(async () => {
+    const existing = await accountFor(p.sub, email);
     let memberId: number | null = null;
     let pendingInvite: string | null = null;
     // Accepting an invite link links this Google account to the invited member,
@@ -120,8 +144,8 @@ export async function upsertUser(p: GoogleProfile, inviteToken: string | undefin
     if (inviteToken) {
       const inv = await peekInvite(inviteToken);
       const { rows: cur } = await pool.query<{ household_id: number | null }>(
-        'SELECT m.household_id FROM users u JOIN household_members m ON m.id = u.member_id WHERE u.google_sub = $1 AND m.archived_at IS NULL',
-        [p.sub],
+        'SELECT m.household_id FROM users u JOIN household_members m ON m.id = u.member_id WHERE u.id = $1 AND m.archived_at IS NULL',
+        [existing ?? -1],
       );
       const mine = cur[0]?.household_id ?? null;
       if (inv && mine !== null && mine !== inv.householdId) pendingInvite = inviteToken;
@@ -135,22 +159,24 @@ export async function upsertUser(p: GoogleProfile, inviteToken: string | undefin
       memberId = mem[0]?.id ?? null;
     }
     if (memberId !== null) await markInviteAccepted(memberId);
-    const existing = await pool.query<{ id: number }>('SELECT id FROM users WHERE google_sub = $1', [p.sub]);
-    if (memberId === null && !existing.rowCount && !config.signupOpen && !config.allowedEmails.includes(email)) {
+    if (memberId === null && existing === null && !config.signupOpen && !config.allowedEmails.includes(email)) {
       throw new HttpError(403, `${email} is not on a household roster`);
     }
+    if (existing !== null) {
+      // An email-link sign-in has no name: keep the one the account has.
+      await pool.query(
+        "UPDATE users SET name = COALESCE(NULLIF($2, ''), name), member_id = COALESCE($3, member_id), last_login_at = now() WHERE id = $1",
+        [existing, p.name ?? '', memberId],
+      );
+      return { userId: existing, pendingInvite };
+    }
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO users (google_sub, email, name, member_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (google_sub) DO UPDATE
-         SET email = EXCLUDED.email, name = EXCLUDED.name,
-             member_id = COALESCE(EXCLUDED.member_id, users.member_id), last_login_at = now()
-       RETURNING id`,
-      [p.sub, email, p.name ?? '', memberId],
+      'INSERT INTO users (google_sub, email, name, member_id, signup_app) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [p.sub, email, p.name ?? '', memberId, app],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('user upsert returned nothing');
-    if (!existing.rowCount) await logEvent('signup', { via, invited: memberId !== null }, memberId, null);
+    await logEvent('signup', { via, invited: memberId !== null, app }, memberId, null);
     return { userId: id, pendingInvite };
   });
 }
@@ -257,7 +283,7 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
   }
   let userId: number;
   try {
-    const up = await upsertUser(info, req.session.inviteToken);
+    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday');
     userId = up.userId;
     await startSession(req, userId);
     delete req.session.inviteToken;
@@ -292,6 +318,27 @@ export async function createHandoff(userId: number, next: string): Promise<strin
 export function safeNext(v: unknown): string {
   return typeof v === 'string' && /^\/(?![/\\])[\w\-/.?=&%]*$/.test(v) && v.length <= 200 ? v : '/';
 }
+
+/**
+ * A plain link to the other app, signed in: /api/auth/go?to=feed|myday[&next=/path]. MyDay's horn tab and the
+ * Feed app's door to MyDay are ordinary links (a tap the phone can hand to the installed app); this makes the
+ * one-time hand-off and sends the browser on. Signed out → the other app's front page. Kids never go to the Feed.
+ */
+authRouter.get('/api/auth/go', async (req, res) => {
+  const feed = req.query.to === 'feed';
+  const target = feed ? config.feedAppUrl : req.query.to === 'myday' ? config.publicUrl : '';
+  if (!target) throw new HttpError(400, 'No such app');
+  const next = safeNext(req.query.next ?? (feed ? '/feed' : '/'));
+  if (!req.user) {
+    res.redirect(`${target}${feed ? '/' : next}`);
+    return;
+  }
+  if (feed && req.member && req.member.kind !== 'adult') {
+    res.redirect('/');
+    return;
+  }
+  res.redirect(`${target}/api/auth/handoff?token=${await createHandoff(req.user.id, next)}`);
+});
 
 /** Signed in here → a one-time link that signs you in on the other app (MyDay's horn → the Feed app, and back). */
 authRouter.post('/api/auth/handoff', async (req, res) => {
