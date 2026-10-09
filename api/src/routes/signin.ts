@@ -16,6 +16,7 @@ type JsonWebKey = webcrypto.JsonWebKey;
 import express, { Router, type Request, type Response } from 'express';
 import { asSystem, pool } from '../db.js';
 import { config } from '../config.js';
+import { onFeedApp, originFor } from '../lib/hosts.js';
 import { hashToken, startSession, upsertUser } from '../auth.js';
 import { HttpError, str } from '../lib/http.js';
 import { mailOn, sendMail, stubOutbox } from '../lib/mail.js';
@@ -46,11 +47,13 @@ signinRouter.post('/api/auth/email', async (req, res) => {
   await asSystem(() =>
     pool.query("INSERT INTO email_logins (email, token_hash, invite, expires_at) VALUES ($1, $2, $3, now() + interval '15 minutes')", [email, hashToken(token), invite]),
   );
-  const link = `${config.publicUrl}/api/auth/email/callback?token=${token}`;
+  // Back to the domain that asked: the Feed app (its own domain) or MyDay.
+  const link = `${originFor(req)}/api/auth/email/callback?token=${token}`;
+  const name = onFeedApp(req) ? 'The Feed' : 'MyDay';
   await sendMail({
     to: email,
-    subject: 'Your MyDay sign-in link',
-    text: `Tap to sign in to MyDay:\n\n${link}\n\nThe link works once, for 15 minutes. If you didn’t ask for it, you can ignore this email.`,
+    subject: `Your ${name} sign-in link`,
+    text: `Tap to sign in to ${name}:\n\n${link}\n\nThe link works once, for 15 minutes. If you didn’t ask for it, you can ignore this email.`,
   });
   // Same answer whether or not the address has an account.
   res.json({ sent: true });

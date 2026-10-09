@@ -17,7 +17,8 @@ import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
 import { MODULES } from './modules';
-import { SocialHeader, takeNext } from './modules/social/shell';
+import { InstallFeed, SocialHeader, takeNext } from './modules/social/shell';
+import { APP_URL, FEED_APP } from './apps';
 import { FeedHorn, HanaFace, NavIcon } from './components/NavIcon';
 import { useKeyboardLayout } from './components/useKeyboard';
 import GroceryPopout from './modules/meals/GroceryPopout';
@@ -230,16 +231,17 @@ const SOCIAL = /^\/(feed|clips|messages|people|village|business)(\/|$)/;
 /** Every page that belongs to the Feed (Circles too). */
 const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles)(\/|$)/;
 
-/** A Feed-only account: the social pages, with a way to set up the rest of MyDay later. */
+/** A Feed-only account (or anyone in the Feed app): the social pages, with a way to MyDay for later. */
 function SocialShell() {
   useKeyboardLayout();
   useEffect(() => {
     applyLook('system', 'navy');
   }, []);
   return (
-    <div className="app social-only">
+    <div className={FEED_APP ? 'app social-only feed-app' : 'app social-only'}>
       <SocialHeader />
       <main>
+        {FEED_APP && <InstallFeed />}
         <Suspense fallback={<p className="muted">Loading…</p>}>
           <Routes>
             {MODULES.filter((m) => SOCIAL_PATHS.includes(m.path)).map((m) => (
@@ -282,11 +284,48 @@ function Gate() {
   );
 }
 
+/** The standalone Feed app (its own domain): grown-ups only, the Feed and nothing else. */
+function FeedApp() {
+  const { me } = useSession();
+  if (me.member && me.member.kind !== 'adult') {
+    return (
+      <main className="center" data-testid="feed-adults-only">
+        <div className="card" style={{ maxWidth: 420, textAlign: 'center' }}>
+          <FeedHorn tile size={64} />
+          <h1>The Feed is for grown-ups</h1>
+          <p className="muted">It’s an 18+ community. Your MyDay is right where you left it.</p>
+          <a className="btn" href={APP_URL || '/'}>
+            Open MyDay
+          </a>
+        </div>
+      </main>
+    );
+  }
+  return <SocialShell />;
+}
+
 export default function App() {
   const path = window.location.pathname;
   // Public pages: readable signed out.
   if (path === '/privacy') return <Privacy />;
   if (path === '/terms') return <Terms />;
+  if (FEED_APP) {
+    return (
+      <BrowserRouter>
+        <ConfirmProvider>
+          <SessionProvider
+            signedOut={
+              <Suspense fallback={<div className="center muted">Loading…</div>}>
+                <FeedLanding />
+              </Suspense>
+            }
+          >
+            <FeedApp />
+          </SessionProvider>
+        </ConfirmProvider>
+      </BrowserRouter>
+    );
+  }
   // Invite links work signed out.
   const join = path.match(/^\/join\/([^/]+)$/);
   if (join?.[1]) {

@@ -25,6 +25,8 @@ const apiDir = path.join(root, 'api');
 const fixtures = path.join(root, 'scripts', 'fixtures');
 const PORT = Number(process.env.E2E_PORT ?? 4100);
 const BASE = `http://localhost:${PORT}`;
+// The Feed's own app: the same server under another host name (Chromium resolves *.localhost to this machine).
+const FEED = `http://feed.localhost:${PORT}`;
 
 /* ---------- config ---------- */
 
@@ -155,6 +157,7 @@ const serverEnv = (fakeNow) => ({
   PORT: String(PORT),
   TZ_HOUSEHOLD: 'America/Chicago',
   PUBLIC_URL: BASE,
+  FEED_APP_URL: FEED,
   DATABASE_URL: dbUrl,
   SESSION_SECRET: SECRET,
   DEV_LOGIN_TOKEN: DEV_TOKEN,
@@ -209,11 +212,36 @@ const section = (s) => console.log(`\n== ${s}`);
 
 /* ---------- HTTP personas with cookie jars ---------- */
 
+/** fetch() for another host name on this machine (Node can't resolve feed.localhost; Chromium can). */
+async function hostFetch(url, { method, headers, body }) {
+  const { request } = await import('node:http');
+  const u = new URL(url);
+  return new Promise((resolve, reject) => {
+    const lookup = (_h, o, cb) => (o?.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4));
+    const q = request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, lookup }, (res) => {
+      let b = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => (b += c));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode,
+          headers: { get: (k) => [res.headers[k.toLowerCase()]].flat().filter(Boolean).join(', ') || null, getSetCookie: () => res.headers['set-cookie'] ?? [] },
+          text: async () => b,
+        }),
+      );
+    });
+    q.on('error', reject);
+    if (body) q.write(body);
+    q.end();
+  });
+}
+
 class Client {
-  constructor(name, userAgent = 'MyDay-e2e') {
+  constructor(name, userAgent = 'MyDay-e2e', base = BASE) {
     this.name = name;
     this.jar = new Map();
     this.userAgent = userAgent;
+    this.base = base;
   }
   get cookie() {
     return [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ');
@@ -230,7 +258,7 @@ class Client {
       h['Content-Type'] = 'application/json';
       payload = '{}';
     }
-    const res = await fetch(BASE + p, { method, headers: h, body: payload, redirect: 'manual' });
+    const res = this.base === BASE ? await fetch(BASE + p, { method, headers: h, body: payload, redirect: 'manual' }) : await hostFetch(this.base + p, { method, headers: h, body: payload });
     for (const sc of res.headers.getSetCookie()) {
       const [pair] = sc.split(';');
       const i = (pair ?? '').indexOf('=');
@@ -3402,14 +3430,88 @@ async function socialSuite() {
   const apexOld = await feedAs('conquermyday.app', '/feed');
   eq('…conquermyday.app/feed moves permanently to /thefeed', [apexOld.status, apexOld.location], [301, 'https://conquermyday.app/thefeed']);
   eq('…a look-alike host gets the app’s own address, not its name', [new RegExp(`<link rel="canonical" href="${BASE}/feed"`).test(lookalike), /evil/.test(lookalike)], [true, false]);
-  const tfRoot = await feedAs('thefeedsocial.com', '/');
-  const tfDeep = await feedAs('www.thefeedsocial.com', '/people/7?x=1');
-  eq('thefeedsocial.com sends people to the Feed in the app (until the standalone app ships there)', [tfRoot.status, tfRoot.location, tfDeep.status, tfDeep.location], [302, `${BASE}/feed`, 302, `${BASE}/people/7?x=1`]);
   eq('…while the app’s own host is untouched by those rules', [(await feedAs('localhost', '/feed')).status, (await feedAs('localhost', '/thefeed')).status], [200, 200]);
   eq('/feed wears the Feed’s bulb-horn mark: favicon + touch icon + OG card (never the MyDay mark)', [/<link rel="icon" type="image\/svg\+xml" href="\/icons\/feed-horn\.svg"/.test(lpHtml), /feed-icon-180\.png/.test(lpHtml), /og:image" content="[^"]*\/icons\/feed-og\.png"/.test(lpHtml), /summary_large_image/.test(lpHtml), /myday-favicon|apple-touch-icon\.png|myday-icon-512/.test(lpHtml)], [true, true, true, true, false]);
   eq('…and those files are served', await Promise.all(['/icons/feed-horn.svg', '/icons/feed-favicon-32.png', '/icons/feed-icon-180.png', '/icons/feed-og.png'].map(async (u) => (await fetch(BASE + u)).status)), [200, 200, 200, 200]);
   eq('/feed: real title, description, robots index, Open Graph tags in the HTML', [/<title>The Feed — a calm community for ADHD adults · MyDay<\/title>/.test(lpHtml), /<meta name="robots" content="index, follow"/.test(lpHtml), /property="og:title"/.test(lpHtml), /<link rel="canonical"/.test(lpHtml)], [true, true, true, true]);
   eq('…while the rest of the app stays out of search', /index, follow/.test((await anon.get('/today')).data), false);
+}
+
+async function feedAppSuite() {
+  section('The Feed as its own app (its own domain): installable, its own head, sign-in there');
+  const fa = new Client('feed-app', 'MyDay-e2e', FEED);
+  const home = await fa.get('/');
+  const h = String(home.data);
+  eq('the Feed’s domain serves the Feed app: “The Feed”, its own manifest, horn icons, iOS launch screens — no MyDay mark', [home.status, /<meta name="myday-app-mode" content="feed"/.test(h), /<title>The Feed — a calm community for ADHD adults<\/title>/.test(h), /<link rel="manifest" href="\/feed\.webmanifest"/.test(h), /href="\/manifest\.webmanifest"/.test(h), /apple-mobile-web-app-title" content="The Feed"/.test(h), (h.match(/feed-splash-\d+x\d+\.png/g) ?? []).length, /myday-favicon|\/icons\/apple-touch-icon\.png|"\/icons\/splash-|myday-mark/.test(h), /<link rel="apple-touch-icon" sizes="180x180" href="\/icons\/feed-icon-180\.png"/.test(h), new RegExp(`<meta name="myday-app-url" content="${BASE}"`).test(h)], [200, true, true, true, false, true, 8, false, true, true]);
+  eq('…every page there is the Feed app (deep links too)', [/myday-app-mode/.test(String((await fa.get('/messages')).data)), /myday-app-mode/.test(String((await fa.get('/people/1')).data))], [true, true]);
+  const man = (await fa.get('/feed.webmanifest')).data;
+  eq('…its manifest: “The Feed”, standalone, its own colors, horn icons 192 + 512, maskable too', [man.name, man.short_name, man.display, man.start_url, man.scope, man.background_color, man.icons.filter((i) => i.purpose === 'maskable').map((i) => i.sizes), ['192x192', '512x512'].every((z) => man.icons.some((i) => i.sizes === z && i.purpose === 'any'))], ['The Feed', 'The Feed', 'standalone', '/feed?source=pwa', '/', '#12100E', ['192x192', '512x512'], true]);
+  const files = [...man.icons.map((i) => i.src), ...(h.match(/\/icons\/feed-splash-\d+x\d+\.png/g) ?? []), '/icons/feed-favicon-32.png', '/icons/feed-og.png'];
+  eq('…every icon and launch screen it names is there', (await Promise.all(files.map(async (f) => (await fa.get(f)).status))).every((x) => x === 200), true);
+  eq('…an older link to /manifest.webmanifest there gets the Feed’s manifest; MyDay keeps its own', [(await fa.get('/manifest.webmanifest')).data.name, (await anon.get('/manifest.webmanifest')).data.name], ['The Feed', 'MyDay']);
+  const md = String((await anon.get('/today')).data);
+  eq('MyDay’s pages know where the Feed app lives — and stay MyDay', [new RegExp(`<meta name="myday-feed-url" content="${FEED}"`).test(md), /myday-app-mode/.test(md), /<title>MyDay<\/title>/.test(md)], [true, false, true]);
+
+  section('Sign-in on the Feed’s domain: email links come back there; Google goes through MyDay’s callback and back');
+  const email = 'feed-app-email@example.test';
+  const before = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+  eq('email sign-in from the Feed app', (await fa.post('/api/auth/email', { email })).status, 200);
+  const mail = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(before).find((m) => m.to === email);
+  const link = mail?.text.match(/https?:\/\/\S+/)?.[0] ?? '';
+  eq('…the email names The Feed and links back to the Feed app’s domain', [mail?.subject, link.startsWith(`${FEED}/api/auth/email/callback?token=`)], ['Your The Feed sign-in link', true]);
+  const cb = await fa.get(link.slice(FEED.length));
+  const meFa = await fa.get('/api/me');
+  eq('…tapping it signs them in there (the Feed app’s own session)', [cb.status, cb.location, meFa.status, meFa.data.email], [302, '/', 200, email]);
+  eq('…MyDay’s domain doesn’t share that session (sign-in is per domain)', (await new Client('fa-other').get('/api/me')).status, 401);
+  const b2 = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+  await new Client('md-email').post('/api/auth/email', { email: 'md-email@example.test' });
+  const m2 = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(b2).find((m) => m.to === 'md-email@example.test');
+  eq('MyDay’s own sign-in email still names MyDay and links to MyDay', [m2?.subject, (m2?.text.match(/https?:\/\/\S+/)?.[0] ?? '').startsWith(`${BASE}/api/auth/email/callback`)], ['Your MyDay sign-in link', true]);
+
+  // Google: a second server with a Google client (a fake id: only our redirects are checked; Google is never called).
+  const PORT3 = PORT + 3;
+  const B3 = `http://localhost:${PORT3}`;
+  const env3 = { ...serverEnv(), PORT: String(PORT3), PUBLIC_URL: B3, FEED_APP_URL: `http://feed.localhost:${PORT3}`, GOOGLE_CLIENT_ID: 'feed-e2e.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'not-a-secret' };
+  const s3 = spawn(process.execPath, ['dist/server.js'], { cwd: apiDir, env: env3, stdio: ['ignore', 'ignore', 'pipe'] });
+  try {
+    for (let i = 0; i < 80; i++) {
+      if (await fetch(`${B3}/api/health`).then((r) => r.ok, () => false)) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const get3 = (p, cookie) => fetch(B3 + p, { redirect: 'manual', headers: cookie ? { Cookie: cookie } : {} });
+    const start = await get3('/api/auth/google?to=feed');
+    const to = new URL(start.headers.get('location') ?? 'http://x/');
+    eq('“Continue with Google” in the Feed app → Google, with MyDay’s registered callback (no new redirect address needed)', [start.status, to.host, to.searchParams.get('redirect_uri')], [302, 'accounts.google.com', `${B3}/api/auth/google/callback`]);
+    const cookie = (start.headers.getSetCookie()[0] ?? '').split(';')[0];
+    eq('…and when Google sign-in doesn’t finish, they land back in the Feed app (with why)', (await get3('/api/auth/google/callback?code=x&state=wrong', cookie)).headers.get('location'), `http://feed.localhost:${PORT3}/login?error=state`);
+    const plain = await get3('/api/auth/google');
+    const pc = (plain.headers.getSetCookie()[0] ?? '').split(';')[0];
+    eq('…MyDay’s own Google sign-in still comes back to MyDay', (await get3('/api/auth/google/callback?code=x&state=wrong', pc)).headers.get('location'), '/login?error=state');
+  } finally {
+    s3.kill();
+  }
+
+  section('Handing a signed-in person to the other app (one-time, two minutes, grown-ups only)');
+  const tyH = new Client('ty-handoff');
+  await tyH.get(`/dev-login?token=${DEV_TOKEN}&member=ty`);
+  const ho = await tyH.post('/api/auth/handoff', { to: 'feed' });
+  eq('MyDay → the Feed app: a one-time link on the Feed’s domain', [ho.status, String(ho.data.url).startsWith(`${FEED}/api/auth/handoff?token=`)], [200, true]);
+  const tyF = new Client('ty-in-feed', 'MyDay-e2e', FEED);
+  const land = await tyF.get(ho.data.url.slice(FEED.length));
+  const tyMe = await tyF.get('/api/me');
+  eq('…opening it signs them in on the Feed app and opens the Feed', [land.status, land.location, tyMe.status, tyMe.data.member?.key], [302, '/feed', 200, 'ty']);
+  const again = await new Client('replay', 'MyDay-e2e', FEED).get(ho.data.url.slice(FEED.length));
+  eq('…used once only (a copied link is dead)', [again.status, again.location], [302, '/login?error=handoff']);
+  const back = await tyF.post('/api/auth/handoff', { to: 'myday', next: '/money' });
+  const tyM = new Client('ty-back');
+  const bl = await tyM.get(String(back.data.url).slice(BASE.length));
+  eq('the Feed app → MyDay works the same way (back to the page asked for)', [String(back.data.url).startsWith(`${BASE}/api/auth/handoff?token=`), bl.location, (await tyM.get('/api/me')).data.member?.key], [true, '/money', 'ty']);
+  const evil = await tyH.post('/api/auth/handoff', { to: 'feed', next: '//evil.example/x' });
+  eq('…only to a page on that site (never another site)', (await new Client('ev', 'MyDay-e2e', FEED).get(evil.data.url.slice(FEED.length))).location, '/');
+  const late = await tyH.post('/api/auth/handoff', { to: 'feed' });
+  await sql("UPDATE auth_handoffs SET expires_at = now() - interval '1 second' WHERE used_at IS NULL");
+  eq('…and only for two minutes', (await new Client('late', 'MyDay-e2e', FEED).get(late.data.url.slice(FEED.length))).location, '/login?error=handoff');
+  eq('kids are never handed to the Feed (18+); signed out gets nothing; no other apps', [(await avery.post('/api/auth/handoff', { to: 'feed' })).status, (await anon.post('/api/auth/handoff', { to: 'feed' })).status, (await tyH.post('/api/auth/handoff', { to: 'elsewhere' })).status], [403, 401, 400]);
 }
 
 async function businessSuite() {
@@ -3877,6 +3979,74 @@ async function uiGate() {
     await landing.getByTestId('create-household').waitFor({ timeout: 10000 });
     check('…the rest of MyDay is one tap away (“Set up MyDay”)', (await landing.getByTestId('feed-only').count()) === 1);
     await pubCtx.close();
+
+    section('UI: the Feed app on its own domain — landing, signed-in hand-off, installable');
+    const faCtx = await browser.newContext(phone);
+    const fap = await faCtx.newPage();
+    watch(fap);
+    await fap.goto(`${FEED}/`);
+    await fap.getByTestId('age-gate').waitFor({ timeout: 10000 });
+    eq('signed out, the Feed app is the Feed’s own page: 18+ first, the horn, its own title', [await fap.title(), await fap.locator('.fl-brand svg.feed-horn').count(), await fap.locator('img[src*="myday-mark"]').count()], ['The Feed — a calm community for ADHD adults', 1, 0]);
+    await fap.getByTestId('age-yes').click();
+    await fap.getByTestId('feed-signin-top').click();
+    await fap.getByTestId('feed-signin').waitFor({ state: 'visible', timeout: 10000 });
+    eq('…“Sign in” opens the ways in right there (no trip to MyDay)', [new URL(fap.url()).origin, await fap.getByTestId('signin-choices').count(), await fap.getByLabel('Email address').count()], [FEED, 1, 1]);
+    await fap.goto(`${FEED}/login?error=handoff`);
+    await fap.getByTestId('signin-error').waitFor({ timeout: 10000 });
+    check('…a sign-in that expired comes back with the choices open and why', /expired/i.test(await fap.getByTestId('signin-error').innerText()));
+    const arrivals = await browser.newContext(phone);
+    const arr = await arrivals.newPage();
+    await arr.goto(`${FEED}/?join=1`);
+    await arr.getByTestId('feed-signin').waitFor({ state: 'visible', timeout: 10000 });
+    eq('…arriving from conquermyday.app (?join=1): no second 18+ gate, sign-up already open', await arr.getByTestId('age-gate').count(), 0);
+    await arrivals.close();
+    // Signed in to MyDay → handed to the Feed app, signed in there.
+    await fap.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
+    await fap.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    const hand = await fap.evaluate(async () => (await (await fetch('/api/auth/handoff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"to":"feed"}' })).json()).url);
+    await fap.goto(hand);
+    await fap.getByTestId('social-shell').waitFor({ timeout: 10000 });
+    eq('MyDay → the Feed app lands signed in, in the Feed: horn header, Feed sections, no MyDay tab bar or Circles', [new URL(fap.url()).origin + new URL(fap.url()).pathname, await fap.locator('.social-top svg.feed-horn').count(), await fap.locator('nav.tabs').count(), await fap.getByTestId('feed-nav').getByRole('link', { name: 'Circles' }).count(), await fap.locator('img[src*="myday-mark"]').count()], [`${FEED}/feed`, 1, 0, 0, 0]);
+    eq('…with a door back to MyDay', await fap.getByTestId('setup-household').getAttribute('href'), `${BASE}/`);
+    await fap.goto(`${FEED}/today`);
+    await fap.getByTestId('feed-nav').waitFor({ timeout: 10000 });
+    eq('…MyDay pages don’t exist in the Feed app (back to the Feed)', new URL(fap.url()).pathname, '/feed');
+    // Installable: Chrome's own check (manifest, icons, service worker) finds nothing missing.
+    await fap.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+    const cdp = await faCtx.newCDPSession(fap);
+    const inst = await cdp.send('Page.getInstallabilityErrors');
+    const appMan = await cdp.send('Page.getAppManifest');
+    eq('the Feed app is installable (Chrome finds no installability errors) with its own manifest', [inst.installabilityErrors.map((e) => e.errorId), appMan.url, appMan.errors.length], [[], `${FEED}/feed.webmanifest`, 0]);
+    await fap.evaluate(() => {
+      const e = new Event('beforeinstallprompt', { cancelable: true });
+      e.prompt = async () => {
+        window.__prompted = true;
+      };
+      e.userChoice = Promise.resolve({ outcome: 'accepted' });
+      window.dispatchEvent(e);
+    });
+    await fap.getByTestId('feed-install').waitFor({ timeout: 10000 });
+    eq('when the browser offers to install, the Feed shows its own “Put The Feed on your home screen” card', [await fap.getByTestId('feed-install-go').innerText(), await fap.getByTestId('feed-install').locator('svg.feed-horn').count()], ['Install', 1]);
+    await fap.getByTestId('feed-install-go').click();
+    await fap.getByTestId('feed-install').waitFor({ state: 'detached', timeout: 10000 });
+    eq('…Install opens the browser’s install prompt, and the card goes away', await fap.evaluate(() => window.__prompted === true), true);
+    await faCtx.close();
+    const faIosCtx = await browser.newContext({ ...phone, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
+    const fip = await faIosCtx.newPage();
+    watch(fip);
+    await fip.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=ty`);
+    await fip.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    await fip.goto(await fip.evaluate(async () => (await (await fetch('/api/auth/handoff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"to":"feed"}' })).json()).url));
+    await fip.getByTestId('feed-install').waitFor({ timeout: 10000 });
+    await fip.getByTestId('feed-install-go').click();
+    await fip.getByTestId('install-steps').waitFor({ timeout: 10000 });
+    check('iPhone Safari (no install prompt): the card shows the two steps — Share, then Add to Home Screen', /Share[\s\S]*Add to Home Screen/.test(await fip.getByTestId('install-steps').innerText()));
+    await fip.getByRole('button', { name: 'Got it' }).click();
+    await fip.getByRole('button', { name: 'Not now' }).click();
+    await fip.reload();
+    await fip.getByTestId('feed-nav').waitFor({ timeout: 10000 });
+    eq('…“Not now” keeps it away on this phone', await fip.getByTestId('feed-install').count(), 0);
+    await faIosCtx.close();
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const dp = await desk.newPage();
@@ -5013,6 +5183,7 @@ try {
   await careTeam();
   await socialSuite();
   await businessSuite();
+  await feedAppSuite();
   await exercisePictures();
   await bodyScience();
   await privacyRules();

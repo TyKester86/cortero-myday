@@ -1,14 +1,19 @@
 import { useState, type FormEvent } from 'react';
 import { KID_PIN_LENGTH, type DeviceKidsResponse, type KidPinLoginRequest } from '@myday/shared';
 import { api, useLoad } from './api';
+import { APP_URL, elsewhere, FEED_APP } from './apps';
 
-const LOGIN_ERRORS: Record<string, string> = {
+export const LOGIN_ERRORS: Record<string, string> = {
   roster: "That account isn't on this household's roster yet. Ask a parent to add your email.",
   google: 'Google sign-in did not finish. Try again.',
   apple: 'Sign in with Apple did not finish. Try again.',
   state: 'Sign-in expired. Try again.',
   link: 'That sign-in link has expired or was already used. Send yourself a new one.',
+  handoff: 'That sign-in expired before it finished. Sign in again.',
 };
+
+/** Google sign-in. The Feed app (its own domain) goes through MyDay's registered callback and is handed back. */
+const googleHref = (): string => (FEED_APP && elsewhere(APP_URL) ? `${APP_URL}/api/auth/google?to=feed` : '/api/auth/google');
 
 interface Methods {
   google: boolean;
@@ -37,7 +42,7 @@ export function SignInChoices({ primary = false }: { primary?: boolean }) {
   return (
     <div className="signin-choices" data-testid="signin-choices">
       {m.google && (
-        <a className="btn" href="/api/auth/google" data-testid={primary ? 'start-trial' : undefined}>
+        <a className="btn" href={googleHref()} data-testid={primary ? 'start-trial' : 'google-signin'}>
           {primary ? 'Start free with Google' : 'Continue with Google'}
         </a>
       )}

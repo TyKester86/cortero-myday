@@ -11,7 +11,8 @@ import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { ago } from '../../dates';
 import { count } from '../../format';
-import { SignInChoices } from '../../Login';
+import { LOGIN_ERRORS, SignInChoices } from '../../Login';
+import { APP_URL, elsewhere, FEED_APP, FEED_URL } from '../../apps';
 import { FeedHorn, NavIcon } from '../../components/NavIcon';
 import { AGE_KEY, FeedNav, FeedTitle, NEXT_KEY, store, stored } from './shell';
 
@@ -1156,18 +1157,23 @@ const FEATURES: Array<{ icon: string; name: string; line: string }> = [
  * The app's own address (the server puts it in the /feed page). On another domain that only shows this page
  * (conquermyday.app/feed), sign-up continues on the app's domain: sign-in and sessions belong to it.
  */
-function appHome(): { url: string; elsewhere: boolean } {
-  const url = (document.querySelector<HTMLMetaElement>('meta[name="myday-app-url"]')?.content ?? '').replace(/\/$/, '');
-  return { url, elsewhere: !!url && new URL(url).origin !== window.location.origin };
+/** Where joining continues: here, or (on another domain that only shows this page) the Feed app, else MyDay. */
+function appHome(): { url: string; elsewhere: boolean; join: string } {
+  const away = elsewhere(APP_URL) && !FEED_APP;
+  const feedApp = away && FEED_URL ? FEED_URL : '';
+  return { url: APP_URL, elsewhere: away, join: feedApp ? `${feedApp}/?join=1` : `${APP_URL}/feed?join=1` };
 }
 
 export function FeedLanding() {
   const { data } = useLoad<FeedPreview>('/api/public/feed-preview');
   const app = appHome();
   // Arrived from "Join the Feed" on the other domain (?join=1): they already said they're 18+; open sign-up.
-  const [arrived] = useState(() => new URLSearchParams(window.location.search).get('join') === '1' && !app.elsewhere);
+  const qs = new URLSearchParams(window.location.search);
+  const [arrived] = useState(() => qs.get('join') === '1' && !app.elsewhere);
+  // Sign-in came back with a problem (expired, cancelled): say so, with the choices open again.
+  const [error] = useState(() => LOGIN_ERRORS[qs.get('error') ?? ''] ?? null);
   const [age, setAge] = useState<'ok' | 'under' | null>(arrived || stored(AGE_KEY) === '1' ? 'ok' : null);
-  const [joining, setJoining] = useState(arrived);
+  const [joining, setJoining] = useState(arrived || !!error);
   const signin = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!arrived) return;
@@ -1177,7 +1183,7 @@ export function FeedLanding() {
   }, [arrived]);
   const join = (): void => {
     if (app.elsewhere) {
-      window.location.href = `${app.url}/feed?join=1`;
+      window.location.href = app.join;
       return;
     }
     store(NEXT_KEY, '/feed');
@@ -1204,9 +1210,15 @@ export function FeedLanding() {
             <a href="#safe">About</a>
           </nav>
           <span className="grow" />
-          <a href={appLink('/')} className="fl-signin">
-            Sign in
-          </a>
+          {FEED_APP ? (
+            <button type="button" className="link fl-signin" onClick={join} data-testid="feed-signin-top">
+              Sign in
+            </button>
+          ) : (
+            <a href={app.elsewhere && FEED_URL ? `${FEED_URL}/` : appLink('/')} className="fl-signin">
+              Sign in
+            </a>
+          )}
           <button type="button" className="btn ghost fl-join-top" onClick={join}>
             Join
           </button>
@@ -1221,7 +1233,12 @@ export function FeedLanding() {
           </button>
           <small className="fl-fine">Free for everyone. No subscription. Kids never see the Feed — or its ads.</small>
           <div ref={signin} className="fl-signin-box" hidden={!joining} data-testid="feed-signin">
-            <b>Create your free account</b>
+            <b>{FEED_APP ? 'Sign in or create your free account' : 'Create your free account'}</b>
+            {error && (
+              <p className="error-light" role="alert" data-testid="signin-error">
+                {error}
+              </p>
+            )}
             <SignInChoices />
           </div>
         </section>

@@ -13,6 +13,8 @@ export const config = {
   port: Number(opt('PORT', '4000')),
   tz: opt('TZ_HOUSEHOLD', 'America/Chicago'),
   publicUrl: opt('PUBLIC_URL', 'http://localhost:5173').replace(/\/$/, ''),
+  /** The Feed's own app (its own domain, same server and database). Empty: no separate Feed app. */
+  feedAppUrl: opt('FEED_APP_URL', opt('NODE_ENV') === 'production' ? 'https://thefeedsocial.com' : '').replace(/\/$/, ''),
   databaseUrl: req('DATABASE_URL'),
   /** Checked at server start (not here) so `migrate` runs without it. */
   sessionSecret: opt('SESSION_SECRET'),

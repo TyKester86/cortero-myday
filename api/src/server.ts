@@ -31,6 +31,7 @@ import { extraRouters, preHouseholdRouters, publicRoutes, uploadRoutes } from '.
 import { signinRouter } from './routes/signin.js';
 import { startSchedulers } from './lib/schedulers.js';
 import { readFileSync } from 'node:fs';
+import { onFeedApp } from './lib/hosts.js';
 
 if (!config.sessionSecret || config.sessionSecret.length < 32) {
   throw new Error('SESSION_SECRET must be set (32+ chars)');
@@ -40,14 +41,6 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1); // behind Caddy
 app.use(securityHeaders(config.production));
-
-/** The Feed's own domain. Until the standalone Feed app ships there, it sends people to the Feed in the app. */
-const FEED_APP_HOSTS = /^(www\.)?thefeedsocial\.com$/;
-app.use((req, res, next) => {
-  if (!FEED_APP_HOSTS.test(req.hostname)) return next();
-  const appUrl = config.publicUrl.replace(/\/$/, '');
-  res.redirect(302, req.path === '/' ? `${appUrl}/feed` : `${appUrl}${req.originalUrl}`);
-});
 
 app.get('/api/health', (_req, res: Response<HealthCheck>) => {
   res.json({ ok: true });
@@ -163,44 +156,58 @@ app.get('/sw.js', (_req, res) => {
 });
 // Hashed build files never change under the same name: cache them for a year.
 app.use('/assets', express.static(path.join(webDist, 'assets'), { index: false, maxAge: '365d', immutable: true }));
+// The Feed app's own manifest on its domain (an older cached link to /manifest.webmanifest gets it too).
+app.get('/manifest.webmanifest', (req, res, next) => {
+  if (onFeedApp(req)) res.sendFile(path.join(webDist, 'feed.webmanifest'), { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' } });
+  else next();
+});
 // redirect: false — /meals and /exercises are both app pages and picture folders; never bounce to "/meals/".
 app.use(express.static(webDist, { index: false, maxAge: '1h', redirect: false }));
-// The Feed's public landing page (/feed): real title, description and Open Graph tags in the HTML itself, so
-// search engines and link previews see them; indexable. Everything else in the app stays out of search.
+
+// Every page is the same app (index.html) with a head that fits where it's served: MyDay, the Feed's public
+// page (/feed; conquermyday.app/thefeed via Caddy) or the standalone Feed app on its own domain. Feed pages are
+// indexable with real title, description and Open Graph tags; everything else in the app stays out of search.
 const FEED_META = {
   title: 'The Feed — a calm community for ADHD adults · MyDay',
+  appTitle: 'The Feed — a calm community for ADHD adults',
   description: 'A calm, supportive community for ADHD adults: share, connect, and build routines that actually stick. Free to join, 18+.',
 };
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 let indexHtml: string | null = null;
-/** conquermyday.app (and www) serve this page too, at /thefeed, routed here by Caddy: its links and previews say so. */
+/** conquermyday.app (and www) serve the public page too, at /thefeed, routed here by Caddy: its links and previews say so. */
 const FEED_HOSTS = /^(www\.)?conquermyday\.app$/;
-app.get('/feed', (req, res, next) => {
-  // On the marketing domain the public page lives at /thefeed.
-  if (FEED_HOSTS.test(req.hostname)) res.redirect(301, `https://${req.hostname}/thefeed`);
-  else next();
-});
-app.get(['/feed', '/thefeed'], (req, res, next) => {
-  try {
-    indexHtml ??= readFileSync(path.join(webDist, 'index.html'), 'utf8');
-  } catch {
-    next();
-    return;
+/** iOS launch screens for the Feed app (portrait), by device size in CSS pixels. */
+const FEED_SPLASH: Array<[number, number, number]> = [
+  [390, 844, 3], [393, 852, 3], [430, 932, 3], [375, 812, 3], [414, 896, 3], [414, 896, 2], [375, 667, 2], [1024, 1366, 2],
+];
+
+function page(head: string[], feed: 'landing' | 'app' | null): string {
+  let html = indexHtml ?? '';
+  if (feed) {
+    // The Feed's own title, description and mark (the bulb horn), never the MyDay mark.
+    html = html
+      .replace(/<title>[^<]*<\/title>/, '')
+      .replace(/<meta name="description"[^>]*>/, '')
+      .replace(/\s*<link rel="(icon|apple-touch-icon)"[^>]*>/g, '');
   }
-  const appUrl = config.publicUrl.replace(/\/$/, '');
-  const apex = FEED_HOSTS.test(req.hostname);
-  const origin = apex ? `https://${req.hostname}` : appUrl;
-  const url = apex ? `${origin}/thefeed` : `${appUrl}/feed`;
-  const head = [
-    // Where the app itself lives: on another domain, "Join the Feed" continues there (sign-in is per domain).
-    `<meta name="myday-app-url" content="${esc(appUrl)}" />`,
-    `<title>${esc(FEED_META.title)}</title>`,
+  if (feed === 'app') {
+    // Installs as its own app: "The Feed", with its own manifest, colors and launch screens.
+    html = html
+      .replace(/\s*<link rel="manifest"[^>]*>/, '')
+      .replace(/\s*<meta name="(theme-color|apple-mobile-web-app-title)"[^>]*>/g, '')
+      .replace(/\s*<!--[^>]*-->\s*<link\s+rel="apple-touch-startup-image"[\s\S]*?\/>/g, '')
+      .replace(/\s*<link\s+rel="apple-touch-startup-image"[\s\S]*?\/>/g, '');
+  }
+  return html.replace('</head>', `    ${head.join('\n    ')}\n  </head>`);
+}
+
+function feedHead(url: string, origin: string): string[] {
+  return [
     `<meta name="description" content="${esc(FEED_META.description)}" />`,
     '<meta name="robots" content="index, follow" />',
     `<link rel="canonical" href="${esc(url)}" />`,
     '<meta property="og:type" content="website" />',
-    '<meta property="og:site_name" content="MyDay" />',
-    `<meta property="og:title" content="${esc(FEED_META.title)}" />`,
+    `<meta property="og:site_name" content="The Feed" />`,
     `<meta property="og:description" content="${esc(FEED_META.description)}" />`,
     `<meta property="og:url" content="${esc(url)}" />`,
     `<meta property="og:image" content="${esc(`${origin}/icons/feed-og.png`)}" />`,
@@ -208,20 +215,70 @@ app.get(['/feed', '/thefeed'], (req, res, next) => {
     '<meta property="og:image:height" content="630" />',
     '<meta property="og:image:alt" content="The Feed: the amber bulb horn on dark" />',
     '<meta name="twitter:card" content="summary_large_image" />',
-    // The Feed's own mark (the bulb horn), never the MyDay mark.
     '<link rel="icon" type="image/svg+xml" href="/icons/feed-horn.svg" />',
     '<link rel="icon" type="image/png" sizes="32x32" href="/icons/feed-favicon-32.png" />',
     '<link rel="apple-touch-icon" sizes="180x180" href="/icons/feed-icon-180.png" />',
-  ].join('\n    ');
-  const html = (indexHtml ?? '')
-    .replace(/<title>[^<]*<\/title>/, '')
-    .replace(/<meta name="description"[^>]*>/, '')
-    .replace(/\s*<link rel="(icon|apple-touch-icon)"[^>]*>/g, '')
-    .replace('</head>', `    ${head}\n  </head>`);
-  res.set('Cache-Control', 'no-cache').type('html').send(html);
+  ];
+}
+
+/** Where the two apps live: the page uses these for "Join", sign-in and the MyDay ⇄ Feed links. */
+const appMeta = (): string[] => [
+  `<meta name="myday-app-url" content="${esc(config.publicUrl)}" />`,
+  ...(config.feedAppUrl ? [`<meta name="myday-feed-url" content="${esc(config.feedAppUrl)}" />`] : []),
+];
+
+const loadIndex = (): boolean => {
+  try {
+    indexHtml ??= readFileSync(path.join(webDist, 'index.html'), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+app.get('/feed', (req, res, next) => {
+  // On the marketing domain the public page lives at /thefeed.
+  if (FEED_HOSTS.test(req.hostname)) res.redirect(301, `https://${req.hostname}/thefeed`);
+  else next();
 });
-app.get(/.*/, (_req, res) => {
-  res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });
+app.get(['/feed', '/thefeed'], (req, res, next) => {
+  if (onFeedApp(req) || !loadIndex()) {
+    next();
+    return;
+  }
+  const apex = FEED_HOSTS.test(req.hostname);
+  const origin = apex ? `https://${req.hostname}` : config.publicUrl;
+  const url = apex ? `${origin}/thefeed` : `${config.publicUrl}/feed`;
+  const head = [...appMeta(), `<title>${esc(FEED_META.title)}</title>`, `<meta property="og:title" content="${esc(FEED_META.title)}" />`, ...feedHead(url, origin)];
+  res.set('Cache-Control', 'no-cache').type('html').send(page(head, 'landing'));
+});
+app.get(/.*/, (req, res) => {
+  if (!loadIndex()) {
+    res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });
+    return;
+  }
+  if (!onFeedApp(req)) {
+    res.set('Cache-Control', 'no-cache').type('html').send(page(appMeta(), null));
+    return;
+  }
+  // The standalone Feed app (its own domain): every page.
+  const origin = config.feedAppUrl;
+  const head = [
+    ...appMeta(),
+    '<meta name="myday-app-mode" content="feed" />',
+    `<title>${esc(FEED_META.appTitle)}</title>`,
+    `<meta property="og:title" content="${esc(FEED_META.appTitle)}" />`,
+    ...feedHead(`${origin}/`, origin),
+    '<link rel="manifest" href="/feed.webmanifest" />',
+    '<meta name="theme-color" content="#1F1714" />',
+    '<meta name="apple-mobile-web-app-title" content="The Feed" />',
+    '<meta name="application-name" content="The Feed" />',
+    ...FEED_SPLASH.map(
+      ([w, h, r]) =>
+        `<link rel="apple-touch-startup-image" href="/icons/feed-splash-${w * r}x${h * r}.png" media="(device-width: ${w}px) and (device-height: ${h}px) and (-webkit-device-pixel-ratio: ${r}) and (orientation: portrait)" />`,
+    ),
+  ];
+  res.set('Cache-Control', 'no-cache').type('html').send(page(head, 'app'));
 });
 
 app.use(errorHandler);

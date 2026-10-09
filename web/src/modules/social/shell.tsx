@@ -2,11 +2,12 @@
  * The small, always-loaded part of the Feed: where to land after "Join the Feed", and the header for
  * people who joined just for the Feed (no household). The Feed itself loads lazily (Social.tsx).
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation } from 'react-router';
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
 import { FeedHorn } from '../../components/NavIcon';
+import { APP_URL, clearInstall, FEED_APP, iosSafari, pendingInstall, standalone } from '../../apps';
 import type { ReactNode } from 'react';
 
 export const AGE_KEY = 'myday.feed18';
@@ -43,13 +44,16 @@ export function SocialHeader() {
     navigator.serviceWorker?.controller?.postMessage('clear-api');
     window.location.href = '/';
   };
+  const { me } = useSession();
+  // In the Feed app, MyDay is the other app (the family planner): its door, for when they want it.
+  const myday = FEED_APP ? `${APP_URL}/${me.household ? '' : 'start'}` : '/start';
   return (
     <header className="top social-top" data-testid="social-shell">
       <FeedHorn tile size={30} className="mark-horn" />
       <b>The Feed</b>
       <span className="grow" />
-      <a href="/start" className="link light small" data-testid="setup-household">
-        Set up MyDay
+      <a href={myday} className="link light small" data-testid="setup-household">
+        {FEED_APP && me.household ? 'MyDay' : 'Set up MyDay'}
       </a>
       <button type="button" className="link light small" onClick={() => void signOut()}>
         Sign out
@@ -84,8 +88,8 @@ export function FeedNav() {
   const { me } = useSession();
   const inbox = useLoad<{ unread: number }>('/api/social/messages');
   const off = new Set(me.household?.modulesOff ?? []);
-  // Circles live with a household (people who joined just for the Feed don't have one).
-  const links = SECTIONS.filter((s) => !s.household || (me.household && !off.has('circles')));
+  // Circles live with a household (people who joined just for the Feed don't have one), inside MyDay.
+  const links = SECTIONS.filter((s) => !s.household || (!FEED_APP && me.household && !off.has('circles')));
   const unread = inbox.data?.unread ?? 0;
   const bar = useRef<HTMLElement>(null);
   const { pathname } = useLocation();
@@ -109,5 +113,79 @@ export function FeedNav() {
         </NavLink>
       ))}
     </nav>
+  );
+}
+
+/* ---------- the Feed app: Add to Home Screen ---------- */
+
+const INSTALL_KEY = 'feed.install.dismissed';
+
+/**
+ * "Put The Feed on your home screen": the browser's own install prompt where there is one (Chrome, Edge,
+ * Android); on iPhone/iPad Safari, the two steps from the Share menu. Gone once installed or dismissed.
+ */
+export function InstallFeed() {
+  const [offer, setOffer] = useState(pendingInstall);
+  const [hidden, setHidden] = useState(() => standalone() || stored(INSTALL_KEY) === '1');
+  const [steps, setSteps] = useState(false);
+  useEffect(() => {
+    const on = (): void => setOffer(pendingInstall());
+    window.addEventListener('feed-install-ready', on);
+    return () => window.removeEventListener('feed-install-ready', on);
+  }, []);
+  const ios = iosSafari();
+  if (hidden || (!offer && !ios)) return null;
+  const dismiss = (): void => {
+    store(INSTALL_KEY, '1');
+    setHidden(true);
+  };
+  const install = async (): Promise<void> => {
+    if (!offer) {
+      setSteps(true);
+      return;
+    }
+    await offer.prompt();
+    const choice = await offer.userChoice?.catch(() => null);
+    clearInstall();
+    setOffer(null);
+    if (choice?.outcome !== 'dismissed') setHidden(true);
+  };
+  return (
+    <section className="card feed-install" data-testid="feed-install" aria-label="Install The Feed">
+      <FeedHorn tile size={48} />
+      <div className="feed-install-text">
+        <b>Put The Feed on your home screen</b>
+        <span className="small muted">Opens like an app, with notifications when someone replies.</span>
+      </div>
+      <div className="feed-install-actions">
+        <button type="button" className="btn" onClick={() => void install()} data-testid="feed-install-go">
+          {offer ? 'Install' : 'How'}
+        </button>
+        <button type="button" className="link small" onClick={dismiss} aria-label="Not now">
+          Not now
+        </button>
+      </div>
+      {steps && (
+        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setSteps(false)}>
+          <div className="confirm" role="dialog" aria-modal="true" aria-labelledby="install-steps-title" data-testid="install-steps">
+            <h2 id="install-steps-title">Add The Feed to your home screen</h2>
+            <ol className="install-steps">
+              <li>
+                Tap <b>Share</b> (the square with an arrow) at the bottom of Safari.
+              </li>
+              <li>
+                Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.
+              </li>
+            </ol>
+            <p className="small muted">The horn icon opens The Feed full-screen, signed in.</p>
+            <div className="confirm-actions">
+              <button type="button" className="btn" onClick={() => setSteps(false)}>
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

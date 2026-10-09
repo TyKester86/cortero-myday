@@ -51,6 +51,8 @@ declare module 'express-session' {
     pendingInvite: string;
     /** Kroger account connect (OAuth state). */
     krogerState: string;
+    /** Google sign-in started on the Feed app's domain: hand the person back there afterwards. */
+    authTo: 'feed';
   }
 }
 
@@ -199,6 +201,9 @@ authRouter.get('/api/auth/google', (req, res) => {
   req.session.oauthState = state;
   req.session.oauthVerifier = verifier;
   if (typeof req.query.invite === 'string' && req.query.invite.length < 200) req.session.inviteToken = req.query.invite;
+  // The Feed app (its own domain) signs in through this registered callback, then gets the person handed back.
+  if (req.query.to === 'feed' && config.feedAppUrl) req.session.authTo = 'feed';
+  else delete req.session.authTo;
   const q = new URLSearchParams({
     client_id: config.googleClientId,
     redirect_uri: redirectUri(),
@@ -216,8 +221,10 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
   const { code, state } = req.query;
   const expected = req.session.oauthState;
   const verifier = req.session.oauthVerifier;
+  // Started on the Feed app: errors and the signed-in person go back there.
+  const back = req.session.authTo === 'feed' ? config.feedAppUrl : '';
   if (typeof code !== 'string' || typeof state !== 'string' || !expected || !verifier || state !== expected) {
-    res.redirect('/login?error=state');
+    res.redirect(`${back}/login?error=state`);
     return;
   }
   const tokenRes = await fetch(GOOGLE_TOKEN, {
@@ -239,28 +246,81 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
       : null;
   if (!tokenRes.ok || !accessToken) {
     console.error('google token exchange failed', tokenRes.status);
-    res.redirect('/login?error=google');
+    res.redirect(`${back}/login?error=google`);
     return;
   }
   const infoRes = await fetch(GOOGLE_USERINFO, { headers: { Authorization: `Bearer ${accessToken}` } });
   const info: unknown = await infoRes.json();
   if (!infoRes.ok || !isGoogleProfile(info) || info.email_verified !== true) {
-    res.redirect('/login?error=google');
+    res.redirect(`${back}/login?error=google`);
     return;
   }
+  let userId: number;
   try {
-    const { userId, pendingInvite } = await upsertUser(info, req.session.inviteToken);
+    const up = await upsertUser(info, req.session.inviteToken);
+    userId = up.userId;
     await startSession(req, userId);
     delete req.session.inviteToken;
-    if (pendingInvite) req.session.pendingInvite = pendingInvite;
+    if (up.pendingInvite) req.session.pendingInvite = up.pendingInvite;
   } catch (e) {
     if (e instanceof HttpError && e.status === 403) {
-      res.redirect('/login?error=roster');
+      res.redirect(`${back}/login?error=roster`);
       return;
     }
     throw e;
   }
-  req.session.save(() => res.redirect('/'));
+  const to = back ? `${back}/api/auth/handoff?token=${await createHandoff(userId, '/feed')}` : '/';
+  req.session.save(() => res.redirect(to));
+});
+
+/* ---------- handing a signed-in person to the other app (MyDay ⇄ the Feed) ---------- */
+
+/** A one-time token (2 minutes) that signs this person in on the other domain, then opens `next` there. */
+export async function createHandoff(userId: number, next: string): Promise<string> {
+  const token = b64url(randomBytes(32));
+  await asSystem(() =>
+    pool.query("INSERT INTO auth_handoffs (token_hash, user_id, next_path, expires_at) VALUES ($1, $2, $3, now() + interval '2 minutes')", [
+      hashToken(token),
+      userId,
+      safeNext(next),
+    ]),
+  );
+  return token;
+}
+
+/** Only a path on this same site (never another site: no open redirect). */
+export function safeNext(v: unknown): string {
+  return typeof v === 'string' && /^\/(?![/\\])[\w\-/.?=&%]*$/.test(v) && v.length <= 200 ? v : '/';
+}
+
+/** Signed in here → a one-time link that signs you in on the other app (MyDay's horn → the Feed app, and back). */
+authRouter.post('/api/auth/handoff', async (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) throw new HttpError(401, 'Sign in first');
+  const body = req.body as { to?: unknown; next?: unknown };
+  const to = body.to === 'myday' ? config.publicUrl : body.to === 'feed' ? config.feedAppUrl : '';
+  if (!to) throw new HttpError(400, 'No such app');
+  // The Feed is 18+: kids are never handed to it.
+  if (body.to === 'feed' && req.member && req.member.kind !== 'adult') throw new HttpError(403, 'The Feed is for grown-ups');
+  const next = safeNext(body.next ?? (body.to === 'feed' ? '/feed' : '/'));
+  res.json({ url: `${to}/api/auth/handoff?token=${await createHandoff(userId, next)}` });
+});
+
+authRouter.get('/api/auth/handoff', async (req, res) => {
+  const token = typeof req.query.token === 'string' ? req.query.token : '';
+  const row = await asSystem(async () => {
+    const { rows } = await pool.query<{ user_id: number; next_path: string }>(
+      'UPDATE auth_handoffs SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING user_id, next_path',
+      [hashToken(token)],
+    );
+    return rows[0] ?? null;
+  });
+  if (!row) {
+    res.redirect('/login?error=handoff');
+    return;
+  }
+  await startSession(req, row.user_id);
+  req.session.save(() => res.redirect(safeNext(row.next_path)));
 });
 
 authRouter.post('/api/auth/logout', (req, res) => {
