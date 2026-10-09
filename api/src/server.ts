@@ -41,6 +41,14 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1); // behind Caddy
 app.use(securityHeaders(config.production));
 
+/** The Feed's own domain. Until the standalone Feed app ships there, it sends people to the Feed in the app. */
+const FEED_APP_HOSTS = /^(www\.)?thefeedsocial\.com$/;
+app.use((req, res, next) => {
+  if (!FEED_APP_HOSTS.test(req.hostname)) return next();
+  const appUrl = config.publicUrl.replace(/\/$/, '');
+  res.redirect(302, req.path === '/' ? `${appUrl}/feed` : `${appUrl}${req.originalUrl}`);
+});
+
 app.get('/api/health', (_req, res: Response<HealthCheck>) => {
   res.json({ ok: true });
 });
@@ -165,9 +173,14 @@ const FEED_META = {
 };
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 let indexHtml: string | null = null;
-/** conquermyday.app (and www) serve this page too, routed here by Caddy: its links and previews say so. */
+/** conquermyday.app (and www) serve this page too, at /thefeed, routed here by Caddy: its links and previews say so. */
 const FEED_HOSTS = /^(www\.)?conquermyday\.app$/;
 app.get('/feed', (req, res, next) => {
+  // On the marketing domain the public page lives at /thefeed.
+  if (FEED_HOSTS.test(req.hostname)) res.redirect(301, `https://${req.hostname}/thefeed`);
+  else next();
+});
+app.get(['/feed', '/thefeed'], (req, res, next) => {
   try {
     indexHtml ??= readFileSync(path.join(webDist, 'index.html'), 'utf8');
   } catch {
@@ -175,8 +188,9 @@ app.get('/feed', (req, res, next) => {
     return;
   }
   const appUrl = config.publicUrl.replace(/\/$/, '');
-  const origin = FEED_HOSTS.test(req.hostname) ? `https://${req.hostname}` : appUrl;
-  const url = `${origin}/feed`;
+  const apex = FEED_HOSTS.test(req.hostname);
+  const origin = apex ? `https://${req.hostname}` : appUrl;
+  const url = apex ? `${origin}/thefeed` : `${appUrl}/feed`;
   const head = [
     // Where the app itself lives: on another domain, "Join the Feed" continues there (sign-in is per domain).
     `<meta name="myday-app-url" content="${esc(appUrl)}" />`,

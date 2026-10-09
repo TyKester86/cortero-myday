@@ -265,6 +265,8 @@ function Gate() {
     if (pendingNext && next) navigate(next, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (pendingNext) return null;
+  // The public page's address (conquermyday.app/thefeed): signed in, it's just the Feed.
+  if (location.pathname === '/thefeed') return <Navigate to="/feed" replace />;
   // Professionals (tutors, coaches, providers) use their portal with or without a household.
   if (window.location.pathname === '/pro') return <ProPortal />;
   // Staff can open the admin dashboard without a household of their own.
@@ -299,7 +301,7 @@ export default function App() {
       <ConfirmProvider>
       <SessionProvider
         signedOut={
-          path === '/feed' ? (
+          path === '/feed' || path === '/thefeed' ? (
             <Suspense fallback={<div className="center muted">Loading…</div>}>
               <FeedLanding />
             </Suspense>

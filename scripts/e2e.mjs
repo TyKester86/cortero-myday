@@ -3383,23 +3383,29 @@ async function socialSuite() {
   eq('preview needs no sign-in', [pre.status, typeof pre.data.members, pre.data.villages.length], [200, 'number', 3]);
   eq('…shows publisher headlines, never a member’s words', [JSON.stringify(pre.data).includes('Morning win'), JSON.stringify(pre.data).includes('label maker'), pre.data.web.every((w) => w.url.startsWith('https://'))], [false, false, true]);
   const lpHtml = (await anon.get('/feed')).data;
-  // conquermyday.app/feed is routed here by Caddy: links and previews name that domain; the page knows where the app lives.
-  const feedAs = (host) =>
+  // conquermyday.app/thefeed and thefeedsocial.com are routed here by Caddy: each host gets its own answer.
+  const feedAs = (host, path = '/thefeed') =>
     new Promise((resolve, reject) => {
       import('node:http').then(({ request }) => {
-        const q = request({ host: '127.0.0.1', port: PORT, path: '/feed', headers: { Host: host } }, (res) => {
+        const q = request({ host: '127.0.0.1', port: PORT, path, headers: { Host: host } }, (res) => {
           let b = '';
           res.on('data', (c) => (b += c));
-          res.on('end', () => resolve(b));
+          res.on('end', () => resolve({ status: res.statusCode, location: res.headers.location, body: b }));
         });
         q.on('error', reject);
         q.end();
       }, reject);
     });
-  const apex = await feedAs('conquermyday.app');
-  const lookalike = await feedAs('conquermyday.app.evil.example');
-  eq('on conquermyday.app the page’s canonical, og:url and og:image name that domain; the app’s own address is in the page', [/<link rel="canonical" href="https:\/\/conquermyday\.app\/feed"/.test(apex), /og:url" content="https:\/\/conquermyday\.app\/feed"/.test(apex), /og:image" content="https:\/\/conquermyday\.app\/icons\/feed-og\.png"/.test(apex), new RegExp(`<meta name="myday-app-url" content="${BASE}"`).test(apex)], [true, true, true, true]);
+  const apex = (await feedAs('conquermyday.app')).body;
+  const lookalike = (await feedAs('conquermyday.app.evil.example', '/feed')).body;
+  eq('on conquermyday.app/thefeed the page’s canonical, og:url and og:image name that domain; the app’s own address is in the page', [/<link rel="canonical" href="https:\/\/conquermyday\.app\/thefeed"/.test(apex), /og:url" content="https:\/\/conquermyday\.app\/thefeed"/.test(apex), /og:image" content="https:\/\/conquermyday\.app\/icons\/feed-og\.png"/.test(apex), new RegExp(`<meta name="myday-app-url" content="${BASE}"`).test(apex)], [true, true, true, true]);
+  const apexOld = await feedAs('conquermyday.app', '/feed');
+  eq('…conquermyday.app/feed moves permanently to /thefeed', [apexOld.status, apexOld.location], [301, 'https://conquermyday.app/thefeed']);
   eq('…a look-alike host gets the app’s own address, not its name', [new RegExp(`<link rel="canonical" href="${BASE}/feed"`).test(lookalike), /evil/.test(lookalike)], [true, false]);
+  const tfRoot = await feedAs('thefeedsocial.com', '/');
+  const tfDeep = await feedAs('www.thefeedsocial.com', '/people/7?x=1');
+  eq('thefeedsocial.com sends people to the Feed in the app (until the standalone app ships there)', [tfRoot.status, tfRoot.location, tfDeep.status, tfDeep.location], [302, `${BASE}/feed`, 302, `${BASE}/people/7?x=1`]);
+  eq('…while the app’s own host is untouched by those rules', [(await feedAs('localhost', '/feed')).status, (await feedAs('localhost', '/thefeed')).status], [200, 200]);
   eq('/feed wears the Feed’s bulb-horn mark: favicon + touch icon + OG card (never the MyDay mark)', [/<link rel="icon" type="image\/svg\+xml" href="\/icons\/feed-horn\.svg"/.test(lpHtml), /feed-icon-180\.png/.test(lpHtml), /og:image" content="[^"]*\/icons\/feed-og\.png"/.test(lpHtml), /summary_large_image/.test(lpHtml), /myday-favicon|apple-touch-icon\.png|myday-icon-512/.test(lpHtml)], [true, true, true, true, false]);
   eq('…and those files are served', await Promise.all(['/icons/feed-horn.svg', '/icons/feed-favicon-32.png', '/icons/feed-icon-180.png', '/icons/feed-og.png'].map(async (u) => (await fetch(BASE + u)).status)), [200, 200, 200, 200]);
   eq('/feed: real title, description, robots index, Open Graph tags in the HTML', [/<title>The Feed — a calm community for ADHD adults · MyDay<\/title>/.test(lpHtml), /<meta name="robots" content="index, follow"/.test(lpHtml), /property="og:title"/.test(lpHtml), /<link rel="canonical"/.test(lpHtml)], [true, true, true, true]);
@@ -3864,6 +3870,9 @@ async function uiGate() {
     await landing.getByRole('button', { name: 'Join' }).click();
     await landing.getByTestId('story-rail').waitFor({ timeout: 10000 });
     eq('…joins with a date of birth and lands in the Feed — no household, no subscription', [await landing.getByTestId('feed-nav').locator('a').allInnerTexts().then((t) => t.map((x) => x.replace(/\d+\s*$/, '').trim())), await landing.locator('nav.tabs').count()], [['Feed', 'Stories', 'Clips', 'Messages', 'Villages'], 0]);
+    await landing.goto(`${BASE}/thefeed`);
+    await landing.getByTestId('story-rail').waitFor({ timeout: 10000 });
+    eq('the public page’s address (/thefeed), signed in → just the Feed', new URL(landing.url()).pathname, '/feed');
     await landing.goto(`${BASE}/today`);
     await landing.getByTestId('create-household').waitFor({ timeout: 10000 });
     check('…the rest of MyDay is one tap away (“Set up MyDay”)', (await landing.getByTestId('feed-only').count()) === 1);
