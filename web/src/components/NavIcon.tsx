@@ -46,6 +46,27 @@ const P: Record<string, string> = {
   village: '<path d="M3.5 5.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3a2 2 0 0 1-2-2z"/><path d="M18 8.5h.5a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2v3l-3.5-3h-4a2 2 0 0 1-1.9-1.4"/>',
   feed: '<rect x="4" y="3.5" width="16" height="17" rx="2.5"/><circle cx="8.5" cy="8.3" r="1.6"/><path d="M11.5 7.5h5M11.5 9.5h3M7.5 13.5h9M7.5 16.5h6"/>',
   library: '<path d="M4 4.5h3.2v15H4z"/><path d="M8.6 4.5h3.2v15H8.6z"/><path d="m13.6 5.6 3-.8 3.6 13.9-3 .8z"/><path d="M4 8h3.2M8.6 8h3.2M4 16h3.2M8.6 16h3.2"/>',
+  // Row and card icons for the hybrid layouts (same style).
+  bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2H4.5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  chevron: '<path d="m9.5 5.5 6.5 6.5-6.5 6.5"/>',
+  back: '<path d="M14.5 5.5 8 12l6.5 6.5"/>',
+  flame: '<path d="M12 21c-3.6 0-6.5-2.6-6.5-6.2 0-3.4 2.6-5.6 3.8-8.8.4 1.8 1.4 3 2.7 3.6-.2-2.8 1-5.2 3.2-6.6-.4 3.2 3.3 5.4 3.3 10 0 4.6-3 8-6.5 8z"/><path d="M12 21c-1.6 0-2.8-1.2-2.8-2.8 0-1.8 1.6-2.6 2.2-4.4 1.6 1.2 3.4 2.2 3.4 4.4 0 1.6-1.2 2.8-2.8 2.8z"/>',
+  house: '<path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>',
+  bolt: '<path d="M13 2.8 5 13.5h6l-1 7.7 8-10.7h-6z"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  shield: '<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8 7.5 9.5 4.3-1.5 7.5-4.9 7.5-9.5V6z"/><path d="m8.8 12 2.3 2.3 4.3-4.6"/>',
+  star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 17l-5.2 2.7 1-5.9-4.3-4.1 5.9-.8z"/>',
+  camera: '<path d="M4 8h3l1.8-2.5h6.4L17 8h3v11H4z"/><circle cx="12" cy="13.2" r="3.4"/>',
+  'heart-hands': '<path d="M12 20.3 5.4 13.9a4 4 0 0 1 5.7-5.7l.9.9.9-.9a4 4 0 0 1 5.7 5.7z"/><path d="M4 18.5c2-1 4 0 5.5 1.5M20 18.5c-2-1-4 0-5.5 1.5"/>',
+  dumbbell: '<path d="M3.5 9.5v5M6.5 7.5v9M17.5 7.5v9M20.5 9.5v5M6.5 12h11"/>',
+  plate: '<circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="3.5"/><path d="M2.8 5v4.5a1.6 1.6 0 0 0 3 0V5M4.3 10.5V19M20.5 5c-1.5 1.2-2 3-2 5h2v9"/>',
+  receipt: '<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8h6M9 11.5h6M9 15h3.5"/>',
+  sparkle: '<path d="M12 3.5 13.8 10l6.7 2-6.7 2L12 20.5 10.2 14l-6.7-2 6.7-2z"/>',
+  message: '<path d="M4 5.5h16v10.5H9l-5 4z"/><path d="M8.5 10.8h.01M12 10.8h.01M15.5 10.8h.01"/>',
+  share: '<path d="M12 3.5v11"/><path d="M8 7.5 12 3.5l4 4"/><path d="M5.5 12.5V20h13v-7.5"/>',
+  more: '<circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/>',
+  license: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M6 15.5c.6-1.4 1.7-2 3-2s2.4.6 3 2M14 10h3.5M14 13h3.5"/>',
+  'calendar-check': '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M8 2.8v3.6M16 2.8v3.6"/><path d="m8.8 13.5 2.2 2.2 4.2-4.2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/><circle cx="12" cy="12" r="6.3"/>',
 };
 
@@ -58,8 +79,44 @@ export function HanaFace({ size = 20, className = '' }: { size?: number; classNa
   return <img className={`hana-face ${className}`.trim()} src={HANA_FACE} width={size} height={size} alt="" aria-hidden="true" decoding="async" />;
 }
 
+/**
+ * The Feed's mark: the vintage bulb horn ("ah-ooo-ga"). With `tile`, amber on its dark tile (hero, headers —
+ * same drawing as /icons/feed-horn.svg); without, a currentColor glyph that sits with the line icons.
+ * The Feed never uses the MyDay mark.
+ */
+export function FeedHorn({ size = 20, tile = false, className = '' }: { size?: number; tile?: boolean; className?: string }) {
+  const ink = tile ? '#e38a4a' : 'currentColor';
+  return (
+    <svg
+      className={`feed-horn ${className}`.trim()}
+      width={size}
+      height={size}
+      viewBox={tile ? '0 0 64 64' : '4 2 54 60'}
+      aria-hidden="true"
+      focusable="false"
+    >
+      {tile && <rect width="64" height="64" rx="14" fill="#1f1714" />}
+      <g fill={ink}>
+        <path d="M17 19.4C32 19.4 42.6 14.8 48.4 6.2L48.4 37.8C42.6 29.6 32 24.6 17 24.6Z" />
+        <rect x="49.6" y="3.2" width="4.9" height="37.6" rx="2.45" />
+        <path fill="none" stroke={ink} strokeWidth={5.2} strokeLinecap="round" d="M20 22C13 22 11 23.8 11 27C11 30.2 13 32 20 32L27 32C38.5 32 40 51 28.5 52.5L24.5 52.5" />
+        <rect x="20.2" y="48.4" width="4.6" height="8.2" rx="1.2" />
+        <ellipse cx="13.6" cy="52.5" rx="7.6" ry="8.2" />
+      </g>
+      {tile && (
+        <g fill="none" stroke="#1f1714" strokeWidth={1.15} strokeLinecap="round">
+          <path d="M9.4 46.5C12.5 49.5 12.5 55.5 9.4 58.5" />
+          <path d="M13.6 45C15.8 48.6 15.8 56.4 13.6 60" />
+          <path d="M17.6 46.3C19.6 49.5 19.6 55.5 17.6 58.7" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
 export function NavIcon({ name, size = 20 }: { name: string; size?: number }) {
   if (name === 'hana') return <HanaFace size={size} className="navicon" />;
+  if (name === 'feed') return <FeedHorn size={size} className="navicon" />;
   const body = P[name] ?? P.everything ?? '';
   return (
     <svg

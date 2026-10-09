@@ -650,7 +650,7 @@ communityRouter.delete('/api/village/posts/:id', async (req, res) => {
 
 /* ---------- The Feed ---------- */
 
-type FeedRow = AuthorCols & { id: number; body_enc: Buffer; key_id: string; image_id: number | null; img_status: string | null; status: CommunityStatus; created_at: Date; author_user_id: number; like_count: number; liked: boolean };
+type FeedRow = AuthorCols & { id: number; body_enc: Buffer; key_id: string; image_id: number | null; img_status: string | null; status: CommunityStatus; created_at: Date; author_user_id: number; like_count: number; liked: boolean; following: boolean };
 
 const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
   id: r.id,
@@ -662,6 +662,7 @@ const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
   mine: r.author_user_id === viewer,
   likes: r.like_count,
   likedByMe: r.liked,
+  following: r.following,
   check: null,
   isQuestion: isQuestion(openText(r.body_enc, r.key_id)),
   trusted: null,
@@ -730,7 +731,8 @@ export const sponsorHook: { feed: ((viewer: number) => Promise<SponsoredItem | n
 export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone'; author: number | null; before: number | null; id?: number }): Promise<FeedPage> {
   const { rows } = await pool.query<FeedRow>(
     `SELECT s.id, s.body_enc, s.key_id, s.image_id, i.status AS img_status, s.status, s.created_at, s.author_user_id, s.like_count, ${AUTHOR_COLS},
-            EXISTS (SELECT 1 FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS liked
+            EXISTS (SELECT 1 FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS liked,
+            EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id) AS following
        FROM social_posts s ${AUTHOR_JOIN('s.author_user_id')} LEFT JOIN community_images i ON i.id = s.image_id
       WHERE ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL
         AND ($2::text <> 'following' OR s.author_user_id = $1 OR EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id))

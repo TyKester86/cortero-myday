@@ -12,7 +12,8 @@ import { useConfirm } from '../../components/Confirm';
 import { ago } from '../../dates';
 import { count } from '../../format';
 import { SignInChoices } from '../../Login';
-import { AGE_KEY, FeedNav, NEXT_KEY, store, stored } from './shell';
+import { FeedHorn, NavIcon } from '../../components/NavIcon';
+import { AGE_KEY, FeedNav, FeedTitle, NEXT_KEY, store, stored } from './shell';
 
 export { FeedNav };
 import { blockedOf, BlockedNote, CrisisCard, Gate, ReportButton, ReviewBanner, SlipMenu, uploadImage, uploadPhoto, type Blocked } from '../community/Community';
@@ -83,7 +84,7 @@ const errText = (e: unknown, fallback: string): string => (e instanceof Error ? 
 function FeedSection({ title, testid, children }: { title: string; testid: string; children: (me: CommunityMe) => ReactNode }) {
   return (
     <section className="feed-page" data-testid={testid}>
-      <h1>{title}</h1>
+      <FeedTitle>{title}</FeedTitle>
       <FeedNav />
       <Gate>{children}</Gate>
     </section>
@@ -1145,13 +1146,10 @@ interface FeedPreview {
   villages: Array<{ name: string; description: string }>;
 }
 
-const FEATURES: Array<{ name: string; line: string }> = [
-  { name: 'Stories', line: 'Little moments that disappear after 24 hours.' },
-  { name: 'Clips', line: 'Short videos: the routine that finally stuck.' },
-  { name: 'Messages', line: 'One-to-one, grown-ups only, checked for safety.' },
-  { name: 'Circles', line: 'Small groups for the people you trust.' },
-  { name: 'Villages', line: 'Forums for ADHD parents, late diagnosis and partners.' },
-  { name: 'Providers', line: 'Licensed clinicians, verified by MyDay before they get a badge.' },
+const FEATURES: Array<{ icon: string; name: string; line: string }> = [
+  { icon: 'camera', name: 'Stories & Clips', line: 'Little moments that disappear after 24 hours, and short videos of the routine that finally stuck.' },
+  { icon: 'family', name: 'Villages & Circles', line: 'Forums for ADHD parents, late diagnosis and partners — and small groups for the people you trust.' },
+  { icon: 'shield', name: 'Safe, kind & verified', line: 'Every post, clip and message is checked first. Licensed clinicians are verified before they get a badge.' },
 ];
 
 export function FeedLanding() {
@@ -1164,78 +1162,105 @@ export function FeedLanding() {
     setJoining(true);
     setTimeout(() => signin.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   };
+  const web = data?.web ?? [];
   return (
     <div className="fl" data-testid="feed-landing">
       <div className="fl-page" aria-hidden={age !== 'ok'}>
         <header className="fl-top">
-          <img src="/icons/myday-mark.svg" alt="" className="mark-tile" width={26} height={26} />
-          <b>MyDay</b>
+          <a href="#top" className="fl-brand">
+            <FeedHorn tile size={40} />
+            <b>The Feed</b>
+          </a>
+          <nav className="fl-links" aria-label="The Feed">
+            <a href="/">Home</a>
+            <a href="#top" className="on">
+              Feed
+            </a>
+            <a href="#features">Community</a>
+            <a href="#preview">Resources</a>
+            <a href="#safe">About</a>
+          </nav>
           <span className="grow" />
           <a href="/" className="fl-signin">
             Sign in
           </a>
+          <button type="button" className="btn ghost fl-join-top" onClick={join}>
+            Join
+          </button>
         </header>
-        <section className="fl-hero">
-          <small className="fl-kicker">The Feed · 18+ · free</small>
-          <h1>A calm corner of the internet for ADHD adults.</h1>
-          <p>Share the wins and the wobbles, find your people, and pick up routines that actually stick — without the doom-scroll.</p>
+        <section className="fl-hero" id="top">
+          <FeedHorn tile size={96} className="fl-hero-mark" />
+          <span className="fl-pill">18+ adults only</span>
+          <h1>The Feed</h1>
+          <p>A calm, supportive community for ADHD adults — share, connect, and build routines that actually stick.</p>
           <button type="button" className="btn fl-cta" onClick={join} data-testid="feed-join">
             Join the Feed
           </button>
-          <small className="fl-fine">Free for everyone. No subscription, no ads for kids — kids never see the Feed at all.</small>
+          <small className="fl-fine">Free for everyone. No subscription. Kids never see the Feed — or its ads.</small>
           <div ref={signin} className="fl-signin-box" hidden={!joining} data-testid="feed-signin">
             <b>Create your free account</b>
             <SignInChoices />
           </div>
         </section>
-        <section className="fl-live" aria-label="Live from the Feed" data-testid="feed-preview">
-          <div className="fl-stats">
-            <span>
-              <b>{data ? data.members.toLocaleString() : '—'}</b>
-              <small>members</small>
-            </span>
-            <span>
-              <b>{data ? data.postsThisWeek.toLocaleString() : '—'}</b>
-              <small>posts this week</small>
-            </span>
-            <span>
-              <b>{data ? data.villages.length : '—'}</b>
-              <small>villages</small>
-            </span>
+        <section className="fl-section" id="features">
+          <h2 className="fl-eyebrow">Features designed for ADHD adults</h2>
+          <div className="fl-features">
+            {FEATURES.map((f) => (
+              <div key={f.name} className="fl-feature">
+                <span className="fl-feature-icon">
+                  <NavIcon name={f.icon} size={26} />
+                </span>
+                <b>{f.name}</b>
+                <small>{f.line}</small>
+              </div>
+            ))}
           </div>
-          {data && data.web.length > 0 && (
-            <div className="fl-card">
-              <small className="fl-label">Around the web today</small>
-              {data.web.map((w) => (
-                <a key={w.url} href={w.url} target="_blank" rel="noopener noreferrer" className="fl-web">
-                  <small>{w.publisher}</small>
-                  <b>{w.title}</b>
-                </a>
-              ))}
-            </div>
-          )}
-          {data && (
-            <div className="fl-card">
-              <small className="fl-label">Villages</small>
-              {data.villages.map((v) => (
-                <p key={v.name} className="fl-village">
-                  <b>{v.name}</b>
-                  <small>{v.description}</small>
-                </p>
-              ))}
-            </div>
-          )}
-          <p className="fl-fine">Members’ posts are only visible inside MyDay, to signed-in adults.</p>
         </section>
-        <section className="fl-features">
-          {FEATURES.map((f) => (
-            <div key={f.name} className="fl-feature">
-              <b>{f.name}</b>
-              <small>{f.line}</small>
+        <section className="fl-section" id="preview" aria-label="Live from the Feed" data-testid="feed-preview">
+          <h2 className="fl-eyebrow">Live feed preview</h2>
+          <div className="fl-live">
+            <div className="fl-card fl-stats-card">
+              <div className="fl-stats">
+                <span>
+                  <b>{data ? data.members.toLocaleString() : '—'}</b>
+                  <small>members</small>
+                </span>
+                <span>
+                  <b>{data ? data.postsThisWeek.toLocaleString() : '—'}</b>
+                  <small>posts this week</small>
+                </span>
+                <span>
+                  <b>{data ? data.villages.length : '—'}</b>
+                  <small>villages</small>
+                </span>
+              </div>
+              {data && (
+                <div className="fl-villages">
+                  {data.villages.map((v) => (
+                    <p key={v.name} className="fl-village">
+                      <b>{v.name}</b>
+                      <small>{v.description}</small>
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
+            {web.slice(0, 2).map((w) => (
+              <a key={w.url} href={w.url} target="_blank" rel="noopener noreferrer" className="fl-card fl-web">
+                <span className="fl-web-pub">
+                  <span className="fl-web-badge">{w.publisher.slice(0, 1)}</span>
+                  <small>
+                    {w.publisher} · {new Date(w.publishedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                  </small>
+                </span>
+                <b>{w.title}</b>
+                <small className="fl-web-more">Around the web ↗</small>
+              </a>
+            ))}
+          </div>
+          <p className="fl-fine fl-center">Members’ posts are only visible inside MyDay, to signed-in adults.</p>
         </section>
-        <section className="fl-safe">
+        <section className="fl-safe" id="safe">
           <h2>Kind by design</h2>
           <p>Every post, photo, clip and message is checked before it appears. Real people moderate, crisis posts go straight to the top, and anyone who needs help right away sees the 988 Suicide &amp; Crisis Lifeline.</p>
           <button type="button" className="btn fl-cta" onClick={join}>
@@ -1243,13 +1268,13 @@ export function FeedLanding() {
           </button>
         </section>
         <footer className="fl-foot">
-          <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <span>© {new Date().getFullYear()} MyDay</span>
+          <a href="#safe">Community guidelines</a> • <a href="/privacy">Privacy policy</a> • <a href="/terms">Terms</a> • <span>© {new Date().getFullYear()} MyDay</span>
         </footer>
       </div>
       {age !== 'ok' && (
         <div className="fl-gate" role="dialog" aria-modal="true" aria-labelledby="fl-gate-title" data-testid="age-gate">
           <div className="fl-gate-card">
-            <img src="/icons/myday-mark.svg" alt="" className="mark-tile" width={34} height={34} />
+            <FeedHorn tile size={64} className="fl-gate-mark" />
             {age === 'under' ? (
               <>
                 <h2 id="fl-gate-title">The Feed is for adults</h2>

@@ -8,7 +8,7 @@ import type { AdCampaign, BoostPackage, BusinessAnalytics, BusinessOverview, Cli
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { count } from '../../format';
-import { FeedNav } from './shell';
+import { FeedNav, FeedTitle } from './shell';
 
 const money = (cents: number): string => `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 const num = (n: number): string => n.toLocaleString('en-US');
@@ -49,7 +49,7 @@ export function BusinessPage() {
   const notProvider = error && /verified licensed providers/.test(error);
   return (
     <section className="feed-page business" data-testid="business">
-      <h1>Business</h1>
+      <FeedTitle>Business</FeedTitle>
       <FeedNav />
       {notProvider ? (
         <div className="card" data-testid="business-locked">

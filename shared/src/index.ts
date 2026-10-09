@@ -2674,6 +2674,8 @@ export interface FeedPost {
   mine: boolean;
   likes: number;
   likedByMe: boolean;
+  /** You follow the writer. */
+  following: boolean;
   check: PostCheck | null;
   isQuestion: boolean;
   trusted: TrustedAnswer | null;

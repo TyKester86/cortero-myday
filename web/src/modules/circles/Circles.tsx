@@ -6,7 +6,7 @@ import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 import { ago } from '../../dates';
 import { count } from '../../format';
-import { FeedNav } from '../social/shell';
+import { FeedNav, FeedTitle } from '../social/shell';
 
 const SAFETY = 'Small groups for grown-ups (18+). Every post is checked before it appears; report anything that feels off.';
 
@@ -21,7 +21,7 @@ export default function Circles() {
   const reload = async (): Promise<void> => setData(await api<{ circles: CircleSummary[] }>('/api/circles'));
   return (
     <section className="feed-page" data-testid="circles">
-      <h1>Circles</h1>
+      <FeedTitle>Circles</FeedTitle>
       <FeedNav />
       <p className="muted small">{SAFETY}</p>
       {isAdult && (

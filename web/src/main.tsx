@@ -5,6 +5,7 @@ import './styles.css';
 import './feed.css';
 import './social.css';
 import './theme.css';
+import './layout.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('#root missing');

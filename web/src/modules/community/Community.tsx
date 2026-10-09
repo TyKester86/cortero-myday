@@ -29,12 +29,13 @@ import {
 } from '@myday/shared';
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
-import { HanaFace } from '../../components/NavIcon';
+import { HanaFace, NavIcon } from '../../components/NavIcon';
 import { ago } from '../../dates';
 import { shrink } from '../health/ProgressPhotos';
 import { count } from '../../format';
 import { useSession } from '../../session';
 import { BookConsult, FeedNav, SponsoredCard, StoryRail } from '../social/Social';
+import { FeedTitle } from '../social/shell';
 
 /* ---------- shared pieces ---------- */
 
@@ -317,7 +318,7 @@ export function Gate({ children }: { children: (me: CommunityMe) => ReactNode })
 export function Village() {
   return (
     <section data-testid="village" className="feed-page">
-      <h1>Villages</h1>
+      <FeedTitle>Villages</FeedTitle>
       <FeedNav />
       <Gate>{(me) => <VillageList me={me} />}</Gate>
     </section>
@@ -593,7 +594,7 @@ export function EmptySheet({ title, children }: { title: string; children?: Reac
 export function Feed() {
   return (
     <section data-testid="feed" className="feed-page">
-      <h1>The Feed</h1>
+      <FeedTitle>The Feed</FeedTitle>
       <FeedNav />
       <Gate>{(me) => <FeedBody me={me} />}</Gate>
     </section>
@@ -610,6 +611,14 @@ function FeedBody({ me }: { me: CommunityMe }) {
   const [msg, setMsg] = useState<string | null>(null);
   return (
     <>
+      <nav className="desk-tabs" aria-label="Feed">
+        {(['following', 'everyone', 'web'] as const).map((t) => (
+          <button key={t} className={tab === t ? 'desk-tab on' : 'desk-tab'} aria-pressed={tab === t} onClick={() => setTab(t)} data-testid={`feed-tab-${t}`}>
+            {TAB_LABEL[t]}
+          </button>
+        ))}
+      </nav>
+      <StoryRail me={me} />
       <p className="feed-links">
         <Link to={`/people/${me.profile?.userId ?? ''}`}>Your card →</Link>
         {me.isModerator && (
@@ -619,15 +628,8 @@ function FeedBody({ me }: { me: CommunityMe }) {
           </>
         )}
       </p>
-      <StoryRail me={me} />
       <div className="fdesk" data-testid="feed-desk">
-        <nav className="desk-tabs" aria-label="Feed">
-          {(['following', 'everyone', 'web'] as const).map((t) => (
-            <button key={t} className={tab === t ? 'desk-tab on' : 'desk-tab'} aria-pressed={tab === t} onClick={() => setTab(t)} data-testid={`feed-tab-${t}`}>
-              {TAB_LABEL[t]}
-            </button>
-          ))}
-        </nav>
+        <h2 className="eyebrow centered">{tab === 'web' ? 'Around the web' : 'Community'}</h2>
         {tab !== 'web' && !me.mutedUntil && (
           <Composer
             onPosted={(r) => {
@@ -788,9 +790,11 @@ function Stamp({ p, onChange }: { p: FeedPost; onChange: (p: FeedPost) => void }
       }}
     >
       <span className="stamp-face" aria-hidden="true">
-        ♥
+        <svg viewBox="0 0 24 24" width="24" height="24" fill={p.likedByMe ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.9} strokeLinejoin="round">
+          <path d="M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2z" />
+        </svg>
       </span>
-      {p.likes > 0 && <span className="stamp-count">{p.likes}</span>}
+      <span className="stamp-count">{p.likes}</span>
     </button>
   );
 }
@@ -808,18 +812,38 @@ export function SlipMenu({ children }: { children: ReactNode }) {
 export function FeedCard({ p, onChange, onMsg, onGone }: { p: FeedPost; onChange: (p: FeedPost) => void; onMsg: (m: string) => void; onGone: (id: number) => void }) {
   const confirm = useConfirm();
   return (
-    <article className="slip" style={{ ['--tilt' as string]: tilt(p.id) }} data-testid="feed-post">
-      <header className="slip-head">
-        <Who a={p.author} />
-        <small className="muted">{ago(p.at)}</small>
+    <article className="slip post-card" style={{ ['--tilt' as string]: tilt(p.id) }} data-testid="feed-post">
+      <header className="post-head">
+        <Link to={`/people/${p.author.userId}`} className="post-avatar" aria-hidden="true" tabIndex={-1}>
+          {p.author.avatarUrl ? <img src={p.author.avatarUrl} alt="" /> : p.author.displayName.slice(0, 1)}
+        </Link>
+        <span className="post-who">
+          <Link to={`/people/${p.author.userId}`} className="post-name">
+            {p.author.displayName}
+          </Link>
+          {p.author.parentBadge && <span className="pill">parent</span>}
+          <small>
+            {ago(p.at)}
+            {p.following && !p.mine ? ' • Following' : ''}
+          </small>
+        </span>
         {p.status !== 'visible' && <span className="pill sun">under review</span>}
+        {!p.mine && !p.following && p.status === 'visible' && (
+          <button
+            type="button"
+            className="btn small ghost post-follow"
+            onClick={() => void api(`/api/community/people/${p.author.userId}/follow`, 'POST').then(() => onChange({ ...p, following: true }), (e: unknown) => onMsg(e instanceof Error ? e.message : 'Could not follow'))}
+          >
+            Follow
+          </button>
+        )}
       </header>
       {p.body && <p className="slip-body">{p.body}</p>}
-      {p.imageUrl && <img src={p.imageUrl} alt="" className="feed-photo taped" loading="lazy" />}
+      {p.imageUrl && <img src={p.imageUrl} alt="" className="feed-photo" loading="lazy" />}
       {p.trusted && <TrustedCard t={p.trusted} />}
       {p.isQuestion && !p.trusted && p.status === 'visible' && <p className="small muted">Hana is looking for a trusted answer…</p>}
       {p.check && <CheckNote c={p.check} />}
-      <footer className="slip-foot">
+      <footer className="slip-foot post-actions">
         {p.status === 'visible' && <Stamp p={p} onChange={onChange} />}
         {p.status === 'visible' && !p.check && p.body && <VerifyButton kind="feed" id={p.id} onCheck={(c) => onChange({ ...p, check: c })} />}
         <span className="grow" />
@@ -849,10 +873,7 @@ export function FeedCard({ p, onChange, onMsg, onGone }: { p: FeedPost; onChange
 export function PersonPage() {
   const { id } = useParams();
   return (
-    <section data-testid="person" className="feed-page">
-      <p>
-        <Link to="/feed">← The Feed</Link>
-      </p>
+    <section data-testid="person" className="feed-page person-page">
       <Gate>{() => <Person id={id ?? ''} />}</Gate>
     </section>
   );
@@ -895,99 +916,147 @@ function Person({ id }: { id: string }) {
   const since = new Date(`${data.joinedOn}T12:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   const pro = data.provider;
   const verifiedOn = pro ? new Date(pro.verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const stats = (
+    <ul className="profile-stats" data-testid="follow-counts">
+      <li>
+        <button type="button" onClick={() => setList(list === 'followers' ? null : 'followers')} aria-expanded={list === 'followers'}>
+          <b>{data.followers}</b>
+          <small>Followers</small>
+        </button>
+      </li>
+      <li>
+        <span>
+          <b>{data.posts + data.clips}</b>
+          <small>Posts</small>
+        </span>
+      </li>
+      <li>
+        <span data-testid="profile-streak">
+          <b>{data.streak}</b>
+          <small>Day streak</small>
+        </span>
+      </li>
+    </ul>
+  );
+  const follow = data.followedByMe ? (
+    <button className="btn ghost" onClick={() => void api<CommunityProfile>(`/api/community/people/${data.userId}/follow`, 'DELETE').then(setData)}>
+      Following ✓
+    </button>
+  ) : (
+    <button className="btn gold" onClick={() => void api<CommunityProfile>(`/api/community/people/${data.userId}/follow`, 'POST').then(setData)}>
+      Follow
+    </button>
+  );
+  const message = (
+    <Link className="btn ghost" to={`/messages/${data.userId}`} data-testid="profile-message">
+      {pro && <NavIcon name="message" size={20} />} Message
+    </Link>
+  );
+  const more = (
+    <SlipMenu>
+      <ReportButton path={`/api/community/people/${data.userId}/report`} onDone={setMsg} />
+      <button
+        className="link danger small"
+        onClick={() =>
+          void confirm({ title: `Block ${data.displayName}?`, body: 'You won’t see each other’s posts, and neither of you can follow or message the other.', confirmLabel: 'Block', danger: true }).then(
+            (y) => void (y && api(`/api/community/people/${data.userId}/block`, 'POST').then(() => setMsg(`Blocked ${data.displayName}. You won’t see each other’s posts.`))),
+          )
+        }
+      >
+        Block
+      </button>
+    </SlipMenu>
+  );
+  const mineActions = (
+    <div className="profile-actions">
+      {pro && (
+        <Link className="btn gold" to="/business" data-testid="business-link">
+          Business suite
+        </Link>
+      )}
+      <button className="btn ghost" onClick={() => setEditing(!editing)} data-testid="edit-profile">
+        Edit profile
+      </button>
+    </div>
+  );
   return (
-    <>
+    <div className={pro ? 'profile-page provider-page' : 'profile-page'}>
+      <nav className="profile-top">
+        <Link to="/feed" className="profile-back">
+          <NavIcon name="back" size={26} /> The Feed
+        </Link>
+        {!data.me && more}
+      </nav>
       <article className={pro ? 'profile-hero provider' : 'profile-hero'} data-testid="profile-card">
-        <div className="profile-band" aria-hidden="true" />
+        {pro && (
+          <span className="provider-badge" data-testid="provider-badge">
+            <NavIcon name="shield" size={26} />
+            <span>Verified · licensed provider</span>
+          </span>
+        )}
         <div className="profile-avatar">
           {data.avatarUrl ? <img src={data.avatarUrl} alt={`${data.displayName}’s photo`} /> : <span>{data.displayName.slice(0, 1)}</span>}
         </div>
         <h1 className="profile-name">{data.displayName}</h1>
-        {pro && (
-          <>
-            <span className="provider-badge" data-testid="provider-badge">
-              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z" fill="currentColor" />
-                <path d="m8.5 12 2.4 2.4L15.8 9.6" fill="none" stroke="#1b1205" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Verified licensed provider
-            </span>
-            <p className="provider-type">{pro.licenseType}</p>
-          </>
-        )}
         {!pro && data.parentBadge && <span className="badge-stamp">Parent</span>}
         {data.bio ? <p className="profile-bio">{data.bio}</p> : data.me && <p className="profile-bio muted">Add a line about you — no kids’ names or schools.</p>}
-        <ul className="profile-stats" data-testid="follow-counts">
-          <li>
-            <button type="button" onClick={() => setList(list === 'followers' ? null : 'followers')} aria-expanded={list === 'followers'}>
-              <b>{data.followers}</b>
-              <small>Followers</small>
-            </button>
-          </li>
-          <li>
-            <span>
-              <b>{data.posts + data.clips}</b>
-              <small>Posts</small>
-            </span>
-          </li>
-          <li>
-            <span data-testid="profile-streak">
-              <b>{data.streak}</b>
-              <small>Day streak</small>
-            </span>
-          </li>
-        </ul>
-        <div className="profile-actions">
-          {data.me ? (
-            <>
-              {pro && (
-                <Link className="btn small gold" to="/business" data-testid="business-link">
-                  Business suite
-                </Link>
-              )}
-              <button className="btn small ghost" onClick={() => setEditing(!editing)} data-testid="edit-profile">
-                Edit profile
-              </button>
-            </>
-          ) : (
-            <>
-              {pro && (
-                <button type="button" className="btn small gold" onClick={() => setBooking(true)} data-testid="book-consult">
-                  Book consult
+        {pro ? (
+          <section className="provider-creds" data-testid="provider-credentials">
+            <ul className="cred-rows">
+              <li>
+                <NavIcon name="license" size={26} />
+                <span>{pro.licenseType}</span>
+              </li>
+              <li>
+                <NavIcon name="card" size={26} />
+                <span>
+                  {pro.licenseState} License #{pro.licenseNumber}
+                </span>
+              </li>
+              <li>
+                <NavIcon name="calendar-check" size={26} />
+                <span>Verified • {verifiedOn}</span>
+              </li>
+            </ul>
+            {pro.specialties.length > 0 && (
+              <>
+                <small className="label">Specialties</small>
+                <p className="spec-chips">
+                  {pro.specialties.map((s) => (
+                    <span key={s} className="spec-chip">
+                      {s}
+                    </span>
+                  ))}
+                </p>
+              </>
+            )}
+            {data.me ? (
+              mineActions
+            ) : (
+              <div className="profile-actions two">
+                <button type="button" className="btn gold" onClick={() => setBooking(true)} data-testid="book-consult">
+                  <NavIcon name="calendar" size={20} /> Book consult
                 </button>
-              )}
-              {data.followedByMe ? (
-                <button className="btn small ghost" onClick={() => void api<CommunityProfile>(`/api/community/people/${data.userId}/follow`, 'DELETE').then(setData)}>
-                  Following ✓
-                </button>
-              ) : (
-                <button className="btn small" onClick={() => void api<CommunityProfile>(`/api/community/people/${data.userId}/follow`, 'POST').then(setData)}>
-                  Follow
-                </button>
-              )}
-              <Link className="btn small ghost" to={`/messages/${data.userId}`} data-testid="profile-message">
-                Message
-              </Link>
-              <SlipMenu>
-                <ReportButton path={`/api/community/people/${data.userId}/report`} onDone={setMsg} />
-                <button
-                  className="link danger small"
-                  onClick={() =>
-                    void confirm({ title: `Block ${data.displayName}?`, body: 'You won’t see each other’s posts, and neither of you can follow or message the other.', confirmLabel: 'Block', danger: true }).then(
-                      (y) =>
-                        void (
-                          y &&
-                          api(`/api/community/people/${data.userId}/block`, 'POST').then(() => setMsg(`Blocked ${data.displayName}. You won’t see each other’s posts.`))
-                        ),
-                    )
-                  }
-                >
-                  Block
-                </button>
-              </SlipMenu>
-            </>
-          )}
-        </div>
+                {message}
+              </div>
+            )}
+            {stats}
+            <small className="muted cred-note">MyDay checked this license before the badge appeared. Posts are general information, not medical advice for you.</small>
+          </section>
+        ) : (
+          <>
+            {stats}
+            {data.me ? (
+              mineActions
+            ) : (
+              <div className="profile-actions two">
+                {follow}
+                {message}
+              </div>
+            )}
+          </>
+        )}
+        {pro && !data.me && <div className="profile-actions">{follow}</div>}
         {data.shopUrl && (
           <a className="price-tag" href={data.shopUrl} target="_blank" rel="noopener noreferrer" data-testid="shop-slot">
             <span className="tag-hole" aria-hidden="true" />
@@ -998,42 +1067,6 @@ function Person({ id }: { id: string }) {
           </a>
         )}
       </article>
-      {pro && (
-        <section className="provider-creds" data-testid="provider-credentials">
-          <small className="label">Credentials</small>
-          <dl>
-            <div>
-              <dt>License</dt>
-              <dd>{pro.licenseType}</dd>
-            </div>
-            <div>
-              <dt>State</dt>
-              <dd>{pro.licenseState}</dd>
-            </div>
-            <div>
-              <dt>License #</dt>
-              <dd>{pro.licenseNumber}</dd>
-            </div>
-            <div>
-              <dt>Verified</dt>
-              <dd>{verifiedOn}</dd>
-            </div>
-          </dl>
-          {pro.specialties.length > 0 && (
-            <>
-              <small className="label">Specialties</small>
-              <p className="spec-chips">
-                {pro.specialties.map((s) => (
-                  <span key={s} className="spec-chip">
-                    {s}
-                  </span>
-                ))}
-              </p>
-            </>
-          )}
-          <small className="muted">MyDay checked this license before the badge appeared. Posts are general information, not medical advice for you.</small>
-        </section>
-      )}
       {list && (
         <div className="slip people-list" data-testid="people-list">
           <div className="row">
@@ -1093,48 +1126,55 @@ function Person({ id }: { id: string }) {
       )}
       {tab === 'about' && (
         <section className="profile-about" data-testid="profile-about">
-          <dl>
+          <small className="label">About</small>
+          <ul className="about-rows">
             {data.age !== null && (
-              <div>
-                <dt>Age</dt>
-                <dd data-testid="about-age">{data.age}</dd>
-              </div>
+              <li>
+                <span>Age</span>
+                <b data-testid="about-age">{data.age}</b>
+              </li>
             )}
             {data.heightIn !== null && (
-              <div>
-                <dt>Height</dt>
-                <dd data-testid="about-height">{feetInches(data.heightIn)}</dd>
-              </div>
+              <li>
+                <span>Height</span>
+                <b data-testid="about-height">{feetInches(data.heightIn)}</b>
+              </li>
             )}
             {data.location && (
-              <div>
-                <dt>Location</dt>
-                <dd>{data.location}</dd>
-              </div>
+              <li>
+                <span>Location</span>
+                <b>{data.location}</b>
+              </li>
             )}
-            <div>
-              <dt>Member since</dt>
-              <dd>{since}</dd>
-            </div>
-          </dl>
+            <li>
+              <span>Member since</span>
+              <b>{since}</b>
+            </li>
+          </ul>
           {data.achievements.length > 0 && (
             <>
               <small className="label">Achievements</small>
-              <p className="spec-chips" data-testid="achievements">
+              <ul className="achievement-tiles" data-testid="achievements">
                 {data.achievements.map((a) => (
-                  <span key={a.key} className="achievement">
+                  <li key={a.key} className="achievement">
+                    <span className="achievement-icon">
+                      <NavIcon name={ACHIEVEMENT_ICON[a.key] ?? 'star'} size={30} />
+                    </span>
                     {a.label}
-                  </span>
+                  </li>
                 ))}
-              </p>
+              </ul>
             </>
           )}
           {data.me && <small className="muted">Only your age shows here — never your date of birth.</small>}
         </section>
       )}
-    </>
+    </div>
   );
 }
+
+/** An icon for each achievement (the About tab's tiles). */
+const ACHIEVEMENT_ICON: Record<string, string> = { early: 'star', streak: 'flame', photo: 'camera', clips: 'share', helper: 'heart-hands', provider: 'shield' };
 
 const LICENSE_TYPES = [
   'Psychiatrist (MD/DO)',

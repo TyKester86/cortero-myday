@@ -3145,7 +3145,8 @@ async function householdJoin() {
 function copyGlitches(text) {
   const out = [];
   const ok = new Set(['min', 'mins', 'sec', 'secs', 'hrs', 'yrs', 'kcal', 'cal', 'lbs', 'mph', 'kph', 'mos', 'wks', 'px']);
-  for (const m of text.matchAll(/(?<![\w.#/:-])\d+(?:st|nd|rd|th)?([a-zA-Z]{3,})\b/g)) if (!ok.has(m[1].toLowerCase())) out.push(m[0]);
+  // An all-caps letters-and-digits token ("4MKFUV") is a code (family code, invite), not glued copy.
+  for (const m of text.matchAll(/(?<![\w.#/:-])\d+(?:st|nd|rd|th)?([a-zA-Z]{3,})\b/g)) if (!ok.has(m[1].toLowerCase()) && !/^[0-9A-Z]{6,8}$/.test(m[0])) out.push(m[0]);
   for (const m of text.matchAll(/\b[a-zA-Z]{3,}(?:19|20)\d{2}\b/g)) out.push(m[0]);
   for (const m of text.matchAll(/\b([A-Z])\1[a-z]{2,}/g)) out.push(m[0]);
   return out;
@@ -3382,6 +3383,8 @@ async function socialSuite() {
   eq('preview needs no sign-in', [pre.status, typeof pre.data.members, pre.data.villages.length], [200, 'number', 3]);
   eq('…shows publisher headlines, never a member’s words', [JSON.stringify(pre.data).includes('Morning win'), JSON.stringify(pre.data).includes('label maker'), pre.data.web.every((w) => w.url.startsWith('https://'))], [false, false, true]);
   const lpHtml = (await anon.get('/feed')).data;
+  eq('/feed wears the Feed’s bulb-horn mark: favicon + touch icon + OG card (never the MyDay mark)', [/<link rel="icon" type="image\/svg\+xml" href="\/icons\/feed-horn\.svg"/.test(lpHtml), /feed-icon-180\.png/.test(lpHtml), /og:image" content="[^"]*\/icons\/feed-og\.png"/.test(lpHtml), /summary_large_image/.test(lpHtml), /myday-favicon|apple-touch-icon\.png|myday-icon-512/.test(lpHtml)], [true, true, true, true, false]);
+  eq('…and those files are served', await Promise.all(['/icons/feed-horn.svg', '/icons/feed-favicon-32.png', '/icons/feed-icon-180.png', '/icons/feed-og.png'].map(async (u) => (await fetch(BASE + u)).status)), [200, 200, 200, 200]);
   eq('/feed: real title, description, robots index, Open Graph tags in the HTML', [/<title>The Feed — a calm community for ADHD adults · MyDay<\/title>/.test(lpHtml), /<meta name="robots" content="index, follow"/.test(lpHtml), /property="og:title"/.test(lpHtml), /<link rel="canonical"/.test(lpHtml)], [true, true, true, true]);
   eq('…while the rest of the app stays out of search', /index, follow/.test((await anon.get('/today')).data), false);
 }
@@ -3661,6 +3664,7 @@ async function uiGate() {
     await page.getByRole('button', { name: 'Menu' }).click();
     const cmenu = await page.getByTestId('menu').innerText();
     check('grown-up menu: one door — The Feed (no separate Village or Circles entries)', cmenu.includes('The Feed') && !cmenu.includes('The Village') && !/\bCircles\b/.test(cmenu), cmenu);
+    eq('…and its menu entry wears the bulb horn (not a generic icon)', await page.getByTestId('menu').getByRole('link', { name: 'The Feed' }).locator('svg.feed-horn').count(), 1);
     await page.getByRole('button', { name: 'Menu' }).click();
 
     section('UI: the Feed — one section bar, Stories, Clips, Profiles, Providers, Messages');
@@ -3668,6 +3672,7 @@ async function uiGate() {
     const samUser = (await sql("SELECT id FROM users WHERE email = 'sam@example.com'"))[0].id;
     await page.goto(`${BASE}/feed`);
     await page.getByTestId('story-rail').waitFor({ timeout: 10000 });
+    eq('Feed pages wear the bulb horn: page title, section bar, header — not the MyDay mark', [await page.locator('.feed-head svg.feed-horn').count(), await page.getByTestId('feed-nav').locator('a').first().locator('svg.feed-horn').count(), await page.locator('header.top svg.feed-horn').count(), await page.locator('header.top img[src*="myday-mark"]').count()], [1, 1, 1, 0]);
     eq('one section bar: Feed · Stories · Clips · Messages · Circles · Villages', (await page.getByTestId('feed-nav').locator('a').allInnerTexts()).map((t) => t.replace(/\d+\s*$/, '').trim()), ['Feed', 'Stories', 'Clips', 'Messages', 'Circles', 'Villages']);
     await page.getByTestId('story-add').click();
     await page.getByTestId('story-text').fill('UI story: water bottle filled before 9am');
@@ -3713,7 +3718,7 @@ async function uiGate() {
     await page.goto(`${BASE}/people/${samUser}`);
     await page.getByTestId('provider-badge').waitFor({ timeout: 10000 });
     const creds = await page.getByTestId('provider-credentials').innerText();
-    eq('provider page: teal header, gold VERIFIED LICENSED PROVIDER badge, credentials, specialties, Book consult + Message', [/verified licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.locator('.profile-hero.provider').count(), /CSW-10420/.test(creds) && /OK/.test(creds), await page.locator('.spec-chip').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
+    eq('provider page: teal header, gold VERIFIED LICENSED PROVIDER badge, credentials, specialties, Book consult + Message', [/verified\W+licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.locator('.profile-hero.provider').count(), /CSW-10420/.test(creds) && /OK/.test(creds), await page.locator('.spec-chip').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
     await page.getByTestId('book-consult').click();
     await page.getByTestId('book-sheet').waitFor({ timeout: 10000 });
     await page.getByTestId('book-sheet').getByRole('link', { name: /Send .* a message/ }).click();
@@ -3819,7 +3824,8 @@ async function uiGate() {
     await landing.getByTestId('feed-preview').waitFor({ timeout: 10000 });
     await landing.locator('.fl-village').first().waitFor({ timeout: 10000 });
     const landingText = await landing.locator('body').innerText();
-    eq('18+ → hero, live preview (members, villages), free — no subscription', [/A calm corner of the internet/.test(landingText), /members/i.test(await landing.getByTestId('feed-preview').innerText()), /Late Diagnosis/.test(landingText), /No subscription/i.test(landingText), await landing.getByTestId('age-gate').count()], [true, true, true, true, 0]);
+    eq('18+ → hero, live preview (members, villages), free — no subscription', [/The Feed/.test(await landing.locator('.fl-hero h1').innerText()) && /calm, supportive community for ADHD adults/.test(landingText), /members/i.test(await landing.getByTestId('feed-preview').innerText()), /Late Diagnosis/.test(landingText), /No subscription/i.test(landingText), await landing.getByTestId('age-gate').count()], [true, true, true, true, 0]);
+    eq('the landing wears the bulb horn (top bar, hero, age gate) — no MyDay mark anywhere on it', [await landing.locator('.fl-brand svg.feed-horn').count(), await landing.locator('.fl-hero svg.feed-horn').count(), await landing.locator('img[src*="myday-mark"]').count()], [1, 1, 0]);
     eq('…the sign-up choices wait for “Join the Feed”', await landing.getByTestId('feed-signin').isVisible(), false);
     await landing.getByTestId('feed-join').first().click();
     await landing.getByTestId('feed-signin').waitFor({ state: 'visible', timeout: 10000 });

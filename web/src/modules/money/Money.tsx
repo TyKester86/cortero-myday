@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import type { ExchangeRequest, LinkTokenResponse, MoneyResponse, MoneyTransaction } from '@myday/shared';
+import type { BillsResponse, ExchangeRequest, LinkTokenResponse, MoneyResponse, MoneyTransaction } from '@myday/shared';
+import { NavIcon } from '../../components/NavIcon';
+import { useSession } from '../../session';
 import { api, useLoad } from '../../api';
 import { useToast } from '../../components/useToast';
 import { useConfirm } from '../../components/Confirm';
@@ -54,8 +56,99 @@ function Txn({ t }: { t: MoneyTransaction }) {
 }
 
 /** Read-only money view: balances, safe to spend, subscription radar, transactions. */
+/** A bill's line icon, from its name (rent, power, internet, phone, insurance, …). */
+function billIcon(name: string): string {
+  const n = name.toLowerCase();
+  if (/rent|mortgage|hoa|home|house/.test(n)) return 'house';
+  if (/electric|power|energy|gas|utility|water/.test(n)) return 'bolt';
+  if (/card|loan|credit/.test(n)) return 'card';
+  return 'receipt';
+}
+
+/** The next date a monthly bill falls due (from its day of the month). */
+function nextDue(dueDay: number | null): Date | null {
+  if (!dueDay) return null;
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), Math.min(dueDay, 28));
+  if (d < new Date(now.getFullYear(), now.getMonth(), now.getDate())) d.setMonth(d.getMonth() + 1);
+  return d;
+}
+
+/** Bills (they work without a bank), as row cards: icon, name, due date, amount. */
+function BillRows({ bills }: { bills: BillsResponse | null }) {
+  if (!bills) return null;
+  const rows = bills.bills
+    .map((b) => ({ b, due: nextDue(b.dueDay) }))
+    .sort((x, y) => (x.due?.getTime() ?? Infinity) - (y.due?.getTime() ?? Infinity))
+    .slice(0, 5);
+  return (
+    <>
+      <h2 className="eyebrow">Bills</h2>
+      <ul className="row-list" data-testid="money-bills">
+        {rows.map(({ b, due }) => (
+          <li key={b.id}>
+            <Link to="/bills" className="row-card">
+              <span className="row-icon">
+                <NavIcon name={billIcon(b.name)} />
+              </span>
+              <span>
+                <b className="row-title">{b.name}</b>
+                <span className="row-sub">
+                  {due ? `Due ${due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'No due day set'}
+                  {b.autopay ? ' • Autopay' : ''}
+                </span>
+              </span>
+              <span className="row-trail">{Number.isInteger(b.amount) ? `$${b.amount.toLocaleString('en-US')}` : usd(b.amount)}</span>
+            </Link>
+          </li>
+        ))}
+        {!rows.length && (
+          <li className="muted small">
+            No bills yet. <Link to="/bills">Add the ones that repeat →</Link>
+          </li>
+        )}
+      </ul>
+    </>
+  );
+}
+
+/** The next 14 days: today's checking balance minus what's coming out, day by day. */
+function Forecast({ checking, upcoming }: { checking: number; upcoming: Array<{ date: string; amount: number }> }) {
+  const start = new Date();
+  const pts: number[] = [];
+  let bal = checking;
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    bal -= upcoming.filter((u) => u.date === key).reduce((n, u) => n + u.amount, 0);
+    pts.push(bal);
+  }
+  const lo = Math.min(...pts);
+  const hi = Math.max(...pts);
+  const y = (v: number): number => 80 - ((v - lo) / (hi - lo || 1)) * 60;
+  const line = pts.map((v, i) => `${i ? 'L' : 'M'}${((i / 13) * 300).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 13);
+  return (
+    <>
+      <h2 className="eyebrow">Forecast</h2>
+      <div className="card forecast" data-testid="money-forecast">
+        <small>Next 14 days</small>
+        <svg viewBox="0 0 300 90" preserveAspectRatio="none" role="img" aria-label="Projected checking balance over the next 14 days">
+          <path className="fc-fill" d={`${line} L300,90 L0,90 Z`} />
+          <path className="fc-line" d={line} />
+        </svg>
+        <p>
+          Projected balance on {end.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}: ~{usd(pts[13] ?? checking)}
+        </p>
+      </div>
+    </>
+  );
+}
+
 export default function Money() {
+  const { me } = useSession();
   const { data, error, setData } = useLoad<MoneyResponse>('/api/money');
+  const bills = useLoad<BillsResponse>('/api/bills');
   const [q, setQ] = useState('');
   const [found, setFound] = useState<MoneyTransaction[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -100,19 +193,47 @@ export default function Money() {
     setFound(r.transactions);
   };
 
+  const s = data.safeToSpend;
+  const synced = data.items.map((i) => i.lastSyncedAt).filter(Boolean).sort().at(-1) ?? null;
+  const head = (
+    <>
+      <header className="page-head">
+        <h1 className="page-title">Money</h1>
+        <p className="money-meta">
+          {[me.household?.name, new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' }), synced ? `Updated ${ago(synced)}` : null].filter(Boolean).join(' · ')}
+        </p>
+      </header>
+      <div className="sage-card money-hero" data-testid={s ? 'safe-to-spend' : 'safe-to-spend-empty'}>
+        <span className="label">Safe to spend</span>
+        <div className="sage-big">{s ? usd(s.amount) : '—'}</div>
+        <span>
+          {s
+            ? `Available until ${new Date(`${s.until}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} (${s.basis === 'paycheck' ? 'next paycheck' : 'next 2 weeks'}), after bills`
+            : data.provider === 'none'
+              ? 'Bank connections aren’t switched on yet — bills still work.'
+              : 'Link a bank to see what’s safe to spend.'}
+        </span>
+        <span className="wallet" aria-hidden="true">
+          <NavIcon name="money" size={24} />
+        </span>
+      </div>
+      <BillRows bills={bills.data} />
+      {s && <Forecast checking={s.checking} upcoming={s.upcoming} />}
+    </>
+  );
+
   if (data.provider === 'none') {
     return (
-      <section>
-        <h1>Money</h1>
-        <p className="muted">Money isn't set up on this server yet — a grown-up needs to add the bank connection keys.</p>
+      <section className="money">
+        {head}
+        <p className="muted small">Money isn't set up on this server yet — a grown-up needs to add the bank connection keys.</p>
       </section>
     );
   }
 
-  const s = data.safeToSpend;
   return (
-    <section>
-      <h1>Money</h1>
+    <section className="money">
+      {head}
       {data.provider === 'fake' && <p className="warn small">Demo data — not a real bank.</p>}
       {data.items.length === 0 ? (
         <div className="card" data-testid="money-empty">
@@ -134,14 +255,6 @@ export default function Money() {
         </div>
       ) : (
         <>
-          {s && (
-            <div className="bigscore" data-testid="safe-to-spend">
-              <b>{usd(s.amount)}</b>
-              <small>
-                safe to spend until {s.until} ({s.basis === 'paycheck' ? 'next paycheck' : 'next 2 weeks'})
-              </small>
-            </div>
-          )}
           {s && s.upcoming.length > 0 && (
             <div className="card">
               <h2>Coming out before then</h2>

@@ -4,6 +4,8 @@ import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { day } from '../../dates';
 import { useSession } from '../../session';
+import { Link } from 'react-router';
+import { NavIcon } from '../../components/NavIcon';
 
 /** "15:30" → "3:30 PM". */
 export function clock(t: string | null): string {
@@ -351,16 +353,20 @@ export function TodayOnCalendar() {
   const { data } = useLoad<CalendarResponse>(`/api/calendar?from=${t}&to=${t}`);
   if (!data || !data.occurrences.length) return null;
   return (
-    <div className="card" data-testid="today-calendar">
-      <h2>On the calendar today</h2>
-      <ul className="plain rows">
+    <div className="today-cal" data-testid="today-calendar">
+      <ul className="row-list" aria-label="On the calendar today">
         {data.occurrences.map((o) => (
           <li key={o.eventId}>
-            <span>
-              <b>{o.title}</b>
-              {o.people.length > 0 && <small className="muted"> · {o.people.map((p) => p.name).join(', ')}</small>}
-            </span>
-            <small className="muted">{timeLabel(o)}</small>
+            <Link to="/calendar" className="row-card event-card">
+              <span className="event-top">
+                <span className="icon-chip">
+                  <NavIcon name="calendar" />
+                </span>
+                <span className="row-trail">{timeLabel(o)}</span>
+              </span>
+              <b className="row-title">{o.title}</b>
+              <span className="row-sub">{['On the calendar today', o.location, o.people.map((p) => p.name).join(', ')].filter(Boolean).join(' • ')}</span>
+            </Link>
           </li>
         ))}
       </ul>

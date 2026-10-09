@@ -18,7 +18,7 @@ import Login from './Login';
 import { navFor } from './modules/nav';
 import { MODULES } from './modules';
 import { SocialHeader, takeNext } from './modules/social/shell';
-import { HanaFace, NavIcon } from './components/NavIcon';
+import { FeedHorn, HanaFace, NavIcon } from './components/NavIcon';
 import { useKeyboardLayout } from './components/useKeyboard';
 import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
@@ -135,8 +135,18 @@ function Shell() {
     <div className={sidebar ? 'app wide sidebar' : 'app'}>
       <OfflineBar />
       <header className="top">
-        <img src="/icons/myday-mark.svg" alt="" className="mark" />
-        <b>MyDay</b>
+        {/* Feed pages wear the Feed's own mark (the bulb horn), never the MyDay mark. */}
+        {FEED_ROUTE.test(location.pathname) ? (
+          <>
+            <FeedHorn tile size={30} className="mark-horn" />
+            <b>The Feed</b>
+          </>
+        ) : (
+          <>
+            <img src="/icons/myday-mark.svg" alt="" className="mark" />
+            <b>MyDay</b>
+          </>
+        )}
         {isAdult && viewable.length > 1 ? (
           <select aria-label="Whose day" value={viewing?.key ?? ''} onChange={(e) => setViewing(e.target.value)}>
             {viewable.map((m) => (
@@ -217,6 +227,8 @@ const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ 
 /** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
 const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business'];
 const SOCIAL = /^\/(feed|clips|messages|people|village|business)(\/|$)/;
+/** Every page that belongs to the Feed (Circles too). */
+const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles)(\/|$)/;
 
 /** A Feed-only account: the social pages, with a way to set up the rest of MyDay later. */
 function SocialShell() {

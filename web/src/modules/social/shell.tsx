@@ -6,6 +6,8 @@ import { useEffect, useRef } from 'react';
 import { NavLink, useLocation } from 'react-router';
 import { api, useLoad } from '../../api';
 import { useSession } from '../../session';
+import { FeedHorn } from '../../components/NavIcon';
+import type { ReactNode } from 'react';
 
 export const AGE_KEY = 'myday.feed18';
 export const NEXT_KEY = 'myday.next';
@@ -43,8 +45,8 @@ export function SocialHeader() {
   };
   return (
     <header className="top social-top" data-testid="social-shell">
-      <img src="/icons/myday-mark.svg" alt="" className="mark" />
-      <b>MyDay</b>
+      <FeedHorn tile size={30} className="mark-horn" />
+      <b>The Feed</b>
       <span className="grow" />
       <a href="/start" className="link light small" data-testid="setup-household">
         Set up MyDay
@@ -52,6 +54,16 @@ export function SocialHeader() {
       <button type="button" className="link light small" onClick={() => void signOut()}>
         Sign out
       </button>
+    </header>
+  );
+}
+
+/** A Feed page's title, with the Feed's own mark (the bulb horn — never the MyDay mark). */
+export function FeedTitle({ children }: { children: ReactNode }) {
+  return (
+    <header className="page-head feed-head">
+      <FeedHorn tile size={52} className="feed-head-mark" />
+      <h1 className="page-title">{children}</h1>
     </header>
   );
 }
@@ -87,6 +99,7 @@ export function FeedNav() {
     <nav className="feed-nav" aria-label="The Feed" data-testid="feed-nav" ref={bar}>
       {links.map((s) => (
         <NavLink key={s.to} to={s.to} end={s.end} className="feed-nav-link">
+          {s.to === '/feed' && <FeedHorn size={16} />}
           {s.label}
           {s.to === '/messages' && unread > 0 && (
             <span className="feed-nav-badge" data-testid="dm-unread" aria-label={`${unread} unread`}>

@@ -183,10 +183,21 @@ app.get('/feed', (_req, res, next) => {
     `<meta property="og:title" content="${esc(FEED_META.title)}" />`,
     `<meta property="og:description" content="${esc(FEED_META.description)}" />`,
     `<meta property="og:url" content="${esc(url)}" />`,
-    `<meta property="og:image" content="${esc(`${config.publicUrl.replace(/\/$/, '')}/icons/myday-icon-512.png`)}" />`,
-    '<meta name="twitter:card" content="summary" />',
+    `<meta property="og:image" content="${esc(`${config.publicUrl.replace(/\/$/, '')}/icons/feed-og.png`)}" />`,
+    '<meta property="og:image:width" content="1200" />',
+    '<meta property="og:image:height" content="630" />',
+    '<meta property="og:image:alt" content="The Feed: the amber bulb horn on dark" />',
+    '<meta name="twitter:card" content="summary_large_image" />',
+    // The Feed's own mark (the bulb horn), never the MyDay mark.
+    '<link rel="icon" type="image/svg+xml" href="/icons/feed-horn.svg" />',
+    '<link rel="icon" type="image/png" sizes="32x32" href="/icons/feed-favicon-32.png" />',
+    '<link rel="apple-touch-icon" sizes="180x180" href="/icons/feed-icon-180.png" />',
   ].join('\n    ');
-  const html = (indexHtml ?? '').replace(/<title>[^<]*<\/title>/, '').replace(/<meta name="description"[^>]*>/, '').replace('</head>', `    ${head}\n  </head>`);
+  const html = (indexHtml ?? '')
+    .replace(/<title>[^<]*<\/title>/, '')
+    .replace(/<meta name="description"[^>]*>/, '')
+    .replace(/\s*<link rel="(icon|apple-touch-icon)"[^>]*>/g, '')
+    .replace('</head>', `    ${head}\n  </head>`);
   res.set('Cache-Control', 'no-cache').type('html').send(html);
 });
 app.get(/.*/, (_req, res) => {

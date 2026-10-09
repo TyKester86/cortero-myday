@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="The Feed">
+  <rect width="64" height="64" rx="14" fill="#1f1714"/>
+  <g fill="#e38a4a">
+    <path d="M17 19.4C32 19.4 42.6 14.8 48.4 6.2L48.4 37.8C42.6 29.6 32 24.6 17 24.6Z"/>
+    <rect x="49.6" y="3.2" width="4.9" height="37.6" rx="2.45"/>
+    <path fill="none" stroke="#e38a4a" stroke-width="5.2" stroke-linecap="round" d="M20 22C13 22 11 23.8 11 27C11 30.2 13 32 20 32L27 32C38.5 32 40 51 28.5 52.5L24.5 52.5"/>
+    <rect x="20.2" y="48.4" width="4.6" height="8.2" rx="1.2"/>
+    <ellipse cx="13.6" cy="52.5" rx="7.6" ry="8.2"/>
+  </g>
+  <g fill="none" stroke="#1f1714" stroke-width="1.15" stroke-linecap="round">
+    <path d="M9.4 46.5C12.5 49.5 12.5 55.5 9.4 58.5"/>
+    <path d="M13.6 45C15.8 48.6 15.8 56.4 13.6 60"/>
+    <path d="M17.6 46.3C19.6 49.5 19.6 55.5 17.6 58.7"/>
+  </g>
+</svg>

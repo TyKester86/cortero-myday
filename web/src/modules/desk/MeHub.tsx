@@ -3,23 +3,43 @@ import { useSession } from '../../session';
 import { navFor } from '../nav';
 import { NavIcon } from '../../components/NavIcon';
 
-/** Everything in one calm, grouped place (the phone's "Me" tab). */
+/** Everything in one calm, grouped place (the phone's "Me" tab): you, then every page as a row. */
 export default function MeHub() {
   const { me } = useSession();
   const nav = navFor(me);
+  const name = me.member?.name ?? me.name;
+  const role = [me.member?.kind === 'adult' ? (me.household?.hasKids ? 'Parent' : 'Grown-up') : 'Kid', me.household?.name].filter(Boolean).join(' • ');
   return (
-    <section data-testid="me-hub">
-      <h1>Hi, {me.member?.name ?? me.name}</h1>
+    <section data-testid="me-hub" className="me">
+      <header className="page-head centered">
+        <h1 className="page-title">Me</h1>
+      </header>
+      <Link to="/settings" className="card me-card" data-testid="me-card">
+        <span className="ring-avatar" style={{ width: 112, height: 112, fontSize: 46 }} aria-hidden="true">
+          {name.slice(0, 1)}
+        </span>
+        <span>
+          <b className="me-name">{name}</b>
+          <span className="me-role" style={{ display: 'block' }}>
+            {role}
+          </span>
+        </span>
+      </Link>
       {nav.groups
         .filter((g) => g.key !== 'today')
         .map((g) => (
           <div key={g.key} className="hubgroup">
-            <h2>{g.label}</h2>
-            <div className="hubtiles">
+            <h2 className="eyebrow">{g.label}</h2>
+            <div className="row-list">
               {g.items.map((i) => (
-                <Link key={i.path} to={i.path} className="hubtile">
-                  <NavIcon name={i.icon} size={28} />
-                  {i.label}
+                <Link key={i.path} to={i.path} className="row-card hubtile">
+                  <span className="row-icon">
+                    <NavIcon name={i.icon} size={28} />
+                  </span>
+                  <b className="row-title">{i.label}</b>
+                  <span className="row-chev">
+                    <NavIcon name="chevron" />
+                  </span>
                 </Link>
               ))}
             </div>
