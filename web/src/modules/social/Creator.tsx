@@ -105,9 +105,13 @@ function Earnings() {
   };
   const save = async (patch: { tipsEnabled?: boolean; subCents?: number | null }): Promise<void> => {
     setMsg(null);
+    // The switch moves the moment it's tapped; the server confirms (or puts it back).
+    const before = data;
+    setData({ ...data, ...patch });
     try {
       setData(await api<CreatorInfo>('/api/creator', 'PUT', patch));
     } catch (e) {
+      setData(before);
       setMsg(e instanceof Error ? e.message : 'Could not save');
     }
   };
