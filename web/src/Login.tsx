@@ -17,7 +17,7 @@ interface Methods {
 }
 
 /** Google, Apple, or a one-time email link — whichever the server has turned on. */
-function SignInChoices({ primary = false }: { primary?: boolean }) {
+export function SignInChoices({ primary = false }: { primary?: boolean }) {
   const { data } = useLoad<Methods>('/api/auth/methods');
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState<string | null>(null);

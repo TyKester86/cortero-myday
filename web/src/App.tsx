@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useState } from 'react';
-import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from 'react-router';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router';
 import type { ModuleKey } from '@myday/shared';
 import { api, useOffline } from './api';
 import FirstRun from './components/FirstRun';
@@ -16,6 +16,8 @@ import Join from './Join';
 import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
+import { MODULES } from './modules';
+import { SocialHeader, takeNext } from './modules/social/shell';
 import { HanaFace, NavIcon } from './components/NavIcon';
 import { useKeyboardLayout } from './components/useKeyboard';
 import GroceryPopout from './modules/meals/GroceryPopout';
@@ -191,7 +193,7 @@ function Shell() {
       </main>
       <FirstRun />
       <Shortcuts enabled={wide} />
-      {nav.hana && location.pathname !== '/hana' && (
+      {nav.hana && location.pathname !== '/hana' && !location.pathname.startsWith('/messages/') && (
         <Link to="/hana" className="hana-fab" aria-label="Ask Hana" data-testid="hana-fab">
           <HanaFace size={52} />
         </Link>
@@ -210,16 +212,54 @@ function Shell() {
   );
 }
 
-/** Signed in with no household yet → create one (signup funnel). */
+const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ default: m.FeedLanding })));
+
+/** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
+const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id'];
+const SOCIAL = /^\/(feed|clips|messages|people|village)(\/|$)/;
+
+/** A Feed-only account: the social pages, with a way to set up the rest of MyDay later. */
+function SocialShell() {
+  useKeyboardLayout();
+  useEffect(() => {
+    applyLook('system', 'navy');
+  }, []);
+  return (
+    <div className="app social-only">
+      <SocialHeader />
+      <main>
+        <Suspense fallback={<p className="muted">Loading…</p>}>
+          <Routes>
+            {MODULES.filter((m) => SOCIAL_PATHS.includes(m.path)).map((m) => (
+              <Route key={m.path} path={m.path} element={m.element} />
+            ))}
+            <Route path="*" element={<Navigate to="/feed" replace />} />
+          </Routes>
+        </Suspense>
+      </main>
+    </div>
+  );
+}
+
+/** Signed in with no household yet → create one (signup funnel), or the Feed for Feed-only accounts. */
 function Gate() {
   const { me } = useSession();
+  const location = useLocation();
+  const navigate = useNavigate();
+  // "Join the Feed" on the public page: land back in the Feed after signing in.
+  const [next] = useState(takeNext);
+  const pendingNext = !!next && location.pathname === '/' && next !== '/';
+  useEffect(() => {
+    if (pendingNext && next) navigate(next, { replace: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (pendingNext) return null;
   // Professionals (tutors, coaches, providers) use their portal with or without a household.
   if (window.location.pathname === '/pro') return <ProPortal />;
   // Staff can open the admin dashboard without a household of their own.
   if (!me.household && me.isAdmin && (window.location.pathname === '/admin' || window.location.pathname === '/circles/moderation')) {
     return <main className="page">{window.location.pathname === '/admin' ? <Admin /> : <Moderation />}</main>;
   }
-  if (!me.household) return <CreateHousehold />;
+  if (!me.household) return SOCIAL.test(location.pathname) ? <SocialShell /> : <CreateHousehold />;
   return (
     <>
       <Shell />
@@ -245,7 +285,17 @@ export default function App() {
   return (
     <BrowserRouter>
       <ConfirmProvider>
-      <SessionProvider signedOut={<Login />}>
+      <SessionProvider
+        signedOut={
+          path === '/feed' ? (
+            <Suspense fallback={<div className="center muted">Loading…</div>}>
+              <FeedLanding />
+            </Suspense>
+          ) : (
+            <Login />
+          )
+        }
+      >
         {/* The side-by-side grocery list opens in its own small window: no app chrome. */}
         {path === '/grocery-list' ? <GroceryPopout /> : <Gate />}
       </SessionProvider>

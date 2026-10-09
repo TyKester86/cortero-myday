@@ -54,7 +54,9 @@ function who(req: Request, staffOk = false): Who {
   const me = self(req);
   if (!req.householdId) throw new HttpError(409, 'No household');
   const teen = me.kind === 'kid';
-  if (teen && (me.age ?? 0) < TEEN_AGE) throw new HttpError(403, 'Circles are for teens and grown-ups');
+  // Circles live under the Feed now, and kids (teens included) never see social surfaces (Oct 2026).
+  if (teen) throw new HttpError(403, 'Circles are for grown-ups (18+)', 'adults_only');
+  void TEEN_AGE;
   return { me, householdId: req.householdId, teen, admin };
 }
 

@@ -18,6 +18,10 @@ const Village = lazy(() => import('./community/Community').then((m) => ({ defaul
 const VillageThreadPage = lazy(() => import('./community/Community').then((m) => ({ default: m.VillageThreadPage })));
 const Feed = lazy(() => import('./community/Community').then((m) => ({ default: m.Feed })));
 const PersonPage = lazy(() => import('./community/Community').then((m) => ({ default: m.PersonPage })));
+const StoriesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.StoriesPage })));
+const ClipsPage = lazy(() => import('./social/Social').then((m) => ({ default: m.ClipsPage })));
+const MessagesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessagesPage })));
+const MessageThreadPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessageThreadPage })));
 const CommunityModeration = lazy(() => import('./community/Community').then((m) => ({ default: m.CommunityModeration })));
 const HealthPlan = lazy(() => import('./health/HealthPlan'));
 const Meals = lazy(() => import('./meals/Meals'));
@@ -153,12 +157,18 @@ export const MODULES: ModuleRoute[] = [
   { path: '/command', element: <CommandCenter />, audience: 'adult' },
   { path: '/setup', element: <Setup />, audience: 'adult' },
   { path: '/invest', element: <Invest />, audience: 'adult', module: 'invest', nav: { label: 'Investments', icon: 'investments', group: 'money' } },
-  { path: '/circles', element: <Circles />, audience: 'all', minKidAge: 13, module: 'circles', nav: { label: 'Circles', icon: 'circles', group: 'connect' } },
-  { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },
-  { path: '/circles/:id', element: <Circle />, audience: 'all', minKidAge: 13, module: 'circles' },
-  { path: '/village', element: <Village />, audience: 'adult', nav: { label: 'The Village', icon: 'village', group: 'connect' } },
-  { path: '/village/:id', element: <VillageThreadPage />, audience: 'adult' },
+  // The Feed is the one door to everything social (grown-ups only, free): Feed · Stories · Clips ·
+  // Messages · Circles · Villages share its section bar instead of having menu entries of their own.
   { path: '/feed', element: <Feed />, audience: 'adult', nav: { label: 'The Feed', icon: 'feed', group: 'connect' } },
+  { path: '/feed/stories', element: <StoriesPage />, audience: 'adult' },
+  { path: '/clips', element: <ClipsPage />, audience: 'adult' },
+  { path: '/messages', element: <MessagesPage />, audience: 'adult' },
+  { path: '/messages/:id', element: <MessageThreadPage />, audience: 'adult' },
+  { path: '/circles', element: <Circles />, audience: 'adult', module: 'circles' },
+  { path: '/circles/moderation', element: <Moderation />, audience: 'adult' },
+  { path: '/circles/:id', element: <Circle />, audience: 'adult', module: 'circles' },
+  { path: '/village', element: <Village />, audience: 'adult' },
+  { path: '/village/:id', element: <VillageThreadPage />, audience: 'adult' },
   { path: '/people/:id', element: <PersonPage />, audience: 'adult' },
   { path: '/community/moderation', element: <CommunityModeration />, audience: 'admin' },
   { path: '/care', element: <Care />, audience: 'adult', module: 'care', nav: { label: 'Care team', icon: 'care', group: 'connect' } },

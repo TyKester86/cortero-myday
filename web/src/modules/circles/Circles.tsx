@@ -6,8 +6,9 @@ import { useConfirm } from '../../components/Confirm';
 import { useSession } from '../../session';
 import { ago } from '../../dates';
 import { count } from '../../format';
+import { FeedNav } from '../social/shell';
 
-const SAFETY = 'No direct messages, ever. Kids under 13 can’t join; teens appear as “Teen member” and a parent approves what they post.';
+const SAFETY = 'Small groups for grown-ups (18+). Every post is checked before it appears; report anything that feels off.';
 
 /** Circle list: join family-safe groups. */
 export default function Circles() {
@@ -19,12 +20,13 @@ export default function Circles() {
   if (!data) return <p className="muted">Loading…</p>;
   const reload = async (): Promise<void> => setData(await api<{ circles: CircleSummary[] }>('/api/circles'));
   return (
-    <section>
+    <section className="feed-page" data-testid="circles">
       <h1>Circles</h1>
+      <FeedNav />
       <p className="muted small">{SAFETY}</p>
       {isAdult && (
         <p>
-          <Link to="/circles/moderation">Moderation &amp; teen activity →</Link>
+          <Link to="/circles/moderation">Moderation →</Link>
         </p>
       )}
       {msg && <p className="muted" role="status">{msg}</p>}
@@ -35,7 +37,6 @@ export default function Circles() {
               <h2 className="grow" style={{ margin: 0 }}>
                 {c.joined ? <Link to={`/circles/${c.id}`}>{c.name}</Link> : c.name}
               </h2>
-              {c.teenOk && <span className="pill">teens welcome</span>}
             </div>
             <p className="small">{c.description}</p>
             <div className="row">
@@ -73,9 +74,6 @@ export default function Circles() {
           >
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Circle name" required maxLength={60} />
             <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="What it’s for" maxLength={300} />
-            <label className="inline-label">
-              <input type="checkbox" checked={form.teenOk} onChange={(e) => setForm({ ...form, teenOk: e.target.checked })} /> Teens (13+) may join
-            </label>
             <button className="btn small">Start circle</button>
           </form>
         </details>
@@ -165,7 +163,8 @@ export function Circle() {
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   return (
-    <section>
+    <section className="feed-page">
+      <FeedNav />
       <p>
         <Link to="/circles">← Circles</Link>
       </p>

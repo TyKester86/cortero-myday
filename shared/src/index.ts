@@ -2361,6 +2361,118 @@ export interface CommunityProfile {
   me: boolean;
   followedByMe: boolean;
   blockedByMe: boolean;
+  /** About (the feed shows AGE only — never the date of birth). */
+  age: number | null;
+  heightIn: number | null;
+  location: string | null;
+  /** Days in a row with a post, clip or story (counting today or yesterday). */
+  streak: number;
+  clips: number;
+  achievements: Array<{ key: string; label: string }>;
+  /** A verified licensed provider (null = not a provider, or not verified yet). */
+  provider: ProviderInfo | null;
+  /** Your own profile only: your date of birth (private), and where your provider credentials stand. */
+  dob?: string | null;
+  providerStatus?: ProviderSubmission | null;
+}
+
+/** Shown on a provider page only after MyDay has verified the license. */
+export interface ProviderInfo {
+  licenseType: string;
+  licenseState: string;
+  licenseNumber: string;
+  verifiedAt: string;
+  specialties: string[];
+}
+
+export interface ProviderSubmission {
+  status: 'submitted' | 'verified' | 'rejected';
+  licenseType: string;
+  licenseState: string;
+  licenseNumber: string;
+  specialties: string[];
+  submittedAt: string;
+  rejectReason: string | null;
+}
+
+/* ---------- Stories, Clips, Messages, Villages (all under the Feed) ---------- */
+
+export interface StoryRailItem {
+  author: CommunityAuthor;
+  count: number;
+  /** Something in there you haven't seen. */
+  unseen: boolean;
+  latestAt: string;
+  me: boolean;
+}
+
+export interface StoryItem {
+  id: number;
+  imageUrl: string | null;
+  text: string | null;
+  bg: string;
+  at: string;
+  expiresAt: string;
+  status: CommunityStatus;
+  /** Your own stories: how many people saw it. */
+  views: number | null;
+}
+
+export interface ClipItem {
+  id: number;
+  author: CommunityAuthor;
+  videoUrl: string;
+  posterUrl: string | null;
+  caption: string;
+  hashtags: string[];
+  durationS: number | null;
+  likes: number;
+  likedByMe: boolean;
+  comments: number;
+  views: number;
+  shares: number;
+  at: string;
+  status: CommunityStatus;
+  mine: boolean;
+}
+
+export interface ClipComment {
+  id: number;
+  author: CommunityAuthor;
+  body: string;
+  at: string;
+  status: CommunityStatus;
+  mine: boolean;
+}
+
+export interface DmThreadSummary {
+  other: CommunityAuthor;
+  last: { body: string; at: string; mine: boolean } | null;
+  unread: number;
+  muted: boolean;
+}
+
+export interface DmMessage {
+  id: number;
+  mine: boolean;
+  body: string;
+  at: string;
+  status: CommunityStatus;
+}
+
+export interface DmThread {
+  other: CommunityAuthor;
+  messages: DmMessage[];
+  muted: boolean;
+  /** You blocked them, or they blocked you: no sending. */
+  blocked: boolean;
+}
+
+export interface VillageInfo {
+  slug: string;
+  name: string;
+  description: string;
+  threads: number;
 }
 
 export interface CommunityMe {
@@ -2495,7 +2607,7 @@ export interface WebItem {
 }
 
 export interface CommunityQueueItem {
-  kind: 'village' | 'feed' | 'image' | 'profile';
+  kind: 'village' | 'feed' | 'image' | 'profile' | 'story' | 'clip' | 'clip-comment' | 'message';
   id: number;
   author: { userId: number; displayName: string; email: string; strikes: number };
   title: string | null;

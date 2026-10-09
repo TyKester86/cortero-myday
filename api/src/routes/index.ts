@@ -14,6 +14,7 @@ import { inboundRouter, inboxRouter } from './inbox.js';
 import { calendarFeedRouter, calendarRouter } from './calendar.js';
 import { circlesRouter, circlesStaffRouter } from './circles.js';
 import { communityRouter, communityStaffRouter, communityUploadRouter } from './community.js';
+import { socialPublicRouter, socialRouter, socialStaffRouter, socialUploadRouter } from './social.js';
 import { engagementRouter } from './engagement.js';
 import { identityRouter } from './identity.js';
 import { joinRouter } from './join.js';
@@ -31,13 +32,14 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, communityRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
-export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, communityStaffRouter, proRouter, joinRouter];
+// The Feed is open to anyone with the app (no household needed): community + social routes do their own 18+ checks.
+export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, communityStaffRouter, socialStaffRouter, proRouter, joinRouter, communityRouter, socialRouter];
 
 /** Public, outside /api and sign-in: the calendar subscription feed (its secret is in the URL). */
-export const publicRoutes: Router[] = [calendarFeedRouter, inboundRouter];
+export const publicRoutes: Router[] = [calendarFeedRouter, inboundRouter, socialPublicRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
-export const uploadRoutes: Router[] = [lectureUploadRouter, meetingUploadRouter, chatUploadRouter, photoUploadRouter, communityUploadRouter, billingWebhookRouter, appleCallbackRouter];
+export const uploadRoutes: Router[] = [lectureUploadRouter, meetingUploadRouter, chatUploadRouter, photoUploadRouter, communityUploadRouter, socialUploadRouter, billingWebhookRouter, appleCallbackRouter];

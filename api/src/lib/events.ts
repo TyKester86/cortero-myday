@@ -47,6 +47,12 @@ export type EventName =
   | 'community_post'
   | 'community_held'
   | 'community_crisis'
+  | 'community_underage'
+  | 'social_story'
+  | 'social_clip'
+  | 'social_message'
+  | 'provider_submitted'
+  | 'provider_reviewed'
   | 'community_moderation'
   | 'community_strike';
 

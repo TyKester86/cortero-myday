@@ -63,6 +63,13 @@ export function CreateHousehold() {
         <i />
       </div>
       <h1>Set up your household</h1>
+      <p className="small">
+        Just here for the community?{' '}
+        <a href="/feed" data-testid="feed-only">
+          Go straight to the Feed →
+        </a>{' '}
+        <span className="muted">(free, 18+ — you can set up MyDay any time)</span>
+      </p>
       <JoinBox />
       <h2>Or start a new household</h2>
       <p className="muted">Your free 30-day trial starts now. No card needed.</p>

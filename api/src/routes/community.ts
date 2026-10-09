@@ -64,16 +64,32 @@ interface Adult {
   admin: boolean;
 }
 
-/** Grown-ups (18+) only. Kids and teens stop here with a 403. */
-async function adult(req: Request): Promise<Adult> {
+/**
+ * Grown-ups (18+) only. Kids and teens in a household stop here with a 403. The Feed is free and open to
+ * anyone with the app: an account without a household gets in too — its age is checked by date of birth
+ * when it sets up its Feed profile (18+), and every route after that needs the profile.
+ */
+export async function adult(req: Request): Promise<Adult> {
   const me = req.member;
   if (!req.user) throw new HttpError(401, 'Not signed in');
-  if (!me || me.kind !== 'adult' || (await isTeen(me.id))) throw new HttpError(403, 'The Village and the Feed are for grown-ups (18+) only', 'adults_only');
-  if (typeof req.query.member === 'string' && req.query.member !== me.key) throw new HttpError(403, 'The community is always you, never someone you act for');
+  if (me) {
+    if (me.kind !== 'adult' || (await isTeen(me.id))) throw new HttpError(403, 'The Feed is for grown-ups (18+) only', 'adults_only');
+    if (typeof req.query.member === 'string' && req.query.member !== me.key) throw new HttpError(403, 'The community is always you, never someone you act for');
+  }
   return { userId: req.user.id, admin: isAdmin(req) };
 }
 
-interface ProfileRow {
+/** Whole years between a date of birth and today. */
+export function ageFrom(dob: string | Date | null): number | null {
+  if (!dob) return null;
+  const d = typeof dob === 'string' ? new Date(`${dob}T12:00:00Z`) : dob;
+  const now = new Date();
+  let a = now.getUTCFullYear() - d.getUTCFullYear();
+  if (now.getUTCMonth() < d.getUTCMonth() || (now.getUTCMonth() === d.getUTCMonth() && now.getUTCDate() < d.getUTCDate())) a -= 1;
+  return a;
+}
+
+export interface ProfileRow {
   user_id: number;
   display_name: string;
   bio_enc: Buffer | null;
@@ -84,6 +100,9 @@ interface ProfileRow {
   banned_at: Date | null;
   shop_slug: string | null;
   created_at: Date;
+  dob: string | null;
+  height_in: string | null;
+  location: string | null;
 }
 
 /** Where MonetizeMe storefronts live (a creator's shop is <base>/creator/?slug=<slug>). */
@@ -95,13 +114,13 @@ const SHOP_SLUG = /^[a-z0-9][a-z0-9-]{1,59}$/;
 const FEED_WINDOW_DAYS = 7;
 const FEED_MAX = 60;
 
-async function profileRow(userId: number): Promise<ProfileRow | null> {
-  const { rows } = await pool.query<ProfileRow>('SELECT * FROM social_profiles WHERE user_id = $1', [userId]);
+export async function profileRow(userId: number): Promise<ProfileRow | null> {
+  const { rows } = await pool.query<ProfileRow>('SELECT *, dob::text AS dob FROM social_profiles WHERE user_id = $1', [userId]);
   return rows[0] ?? null;
 }
 
 /** Signed-up member (profile + guidelines accepted), not banned. Muted people can still read. */
-async function member(req: Request): Promise<Adult & { profile: ProfileRow }> {
+export async function member(req: Request): Promise<Adult & { profile: ProfileRow }> {
   const a = await adult(req);
   const profile = await profileRow(a.userId);
   if (!profile) throw new HttpError(409, 'Set up your community profile first', 'no_profile');
@@ -109,14 +128,19 @@ async function member(req: Request): Promise<Adult & { profile: ProfileRow }> {
   return { ...a, profile };
 }
 
-async function poster(req: Request): Promise<Adult & { profile: ProfileRow }> {
+/** Someone allowed to post: not muted, and under the hourly limit (messages have their own limit: `limit = false`). */
+export async function poster(req: Request, limit = true): Promise<Adult & { profile: ProfileRow }> {
   const m = await member(req);
   if (m.profile.muted_until && m.profile.muted_until > new Date()) {
     throw new HttpError(403, `You’re muted until ${m.profile.muted_until.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`, 'muted');
   }
+  if (!limit) return m;
   const { rows } = await pool.query<{ n: number }>(
     `SELECT (SELECT COUNT(*) FROM forum_posts WHERE author_user_id = $1 AND created_at > now() - interval '1 hour')
-          + (SELECT COUNT(*) FROM social_posts WHERE author_user_id = $1 AND created_at > now() - interval '1 hour') AS n`,
+          + (SELECT COUNT(*) FROM social_posts WHERE author_user_id = $1 AND created_at > now() - interval '1 hour')
+          + (SELECT COUNT(*) FROM social_stories WHERE author_user_id = $1 AND created_at > now() - interval '1 hour')
+          + (SELECT COUNT(*) FROM social_clips WHERE author_user_id = $1 AND created_at > now() - interval '1 hour')
+          + (SELECT COUNT(*) FROM social_clip_comments WHERE author_user_id = $1 AND created_at > now() - interval '1 hour') AS n`,
     [m.userId],
   );
   if (Number(rows[0]?.n ?? 0) >= POSTS_PER_HOUR) throw new HttpError(429, 'That’s a lot of posts this hour — take a breather and come back.', 'post_limit');
@@ -125,35 +149,35 @@ async function poster(req: Request): Promise<Adult & { profile: ProfileRow }> {
 
 /* ---------- shared bits ---------- */
 
-const imageUrl = (id: number | null): string | null => (id ? `/api/community/images/${id}` : null);
+export const imageUrl = (id: number | null): string | null => (id ? `/api/community/images/${id}` : null);
 
-const AUTHOR_COLS = `p.user_id AS a_id, p.display_name AS a_name, p.parent_badge AS a_badge,
+export const AUTHOR_COLS = `p.user_id AS a_id, p.display_name AS a_name, p.parent_badge AS a_badge,
   CASE WHEN ai.status = 'visible' THEN p.avatar_id END AS a_avatar`;
-const AUTHOR_JOIN = (col: string): string => `JOIN social_profiles p ON p.user_id = ${col} LEFT JOIN community_images ai ON ai.id = p.avatar_id`;
+export const AUTHOR_JOIN = (col: string): string => `JOIN social_profiles p ON p.user_id = ${col} LEFT JOIN community_images ai ON ai.id = p.avatar_id`;
 
-interface AuthorCols {
+export interface AuthorCols {
   a_id: number;
   a_name: string;
   a_badge: boolean;
   a_avatar: number | null;
 }
-const author = (r: AuthorCols): CommunityAuthor => ({ userId: r.a_id, displayName: r.a_name, parentBadge: r.a_badge, avatarUrl: imageUrl(r.a_avatar) });
+export const author = (r: AuthorCols): CommunityAuthor => ({ userId: r.a_id, displayName: r.a_name, parentBadge: r.a_badge, avatarUrl: imageUrl(r.a_avatar) });
 
 /** Neither side has blocked the other. $1 = the viewer. */
-const NOT_BLOCKED = (col: string): string =>
+export const NOT_BLOCKED = (col: string): string =>
   `NOT EXISTS (SELECT 1 FROM social_blocks b WHERE (b.blocker_user_id = $1 AND b.blocked_user_id = ${col}) OR (b.blocker_user_id = ${col} AND b.blocked_user_id = $1))`;
 
 /** What a viewer may see: visible items, plus their own held ones ("under review"). $1 = the viewer. */
-const SEEN = (alias: string): string => `(${alias}.status = 'visible' OR (${alias}.author_user_id = $1 AND ${alias}.status IN ('pending', 'hidden')))`;
+export const SEEN = (alias: string): string => `(${alias}.status = 'visible' OR (${alias}.author_user_id = $1 AND ${alias}.status IN ('pending', 'hidden')))`;
 
-interface Decision {
+export interface Decision {
   status: CommunityStatus;
   priority: number;
   flags: ScreenReason[];
   note: ReviewNote;
 }
 
-async function decide(r: ScreenResult, where: string): Promise<Decision> {
+export async function decide(r: ScreenResult, where: string): Promise<Decision> {
   // Blocked (telling others to change medication, dangerous advice): never saved; say why and how to rephrase.
   if (r.block) {
     await logEvent('community_blocked', { where, reasons: r.reasons.join(',') }, null, null);
@@ -175,7 +199,7 @@ async function decide(r: ScreenResult, where: string): Promise<Decision> {
   return { status: r.hold ? 'pending' : 'visible', priority: r.crisis ? 2 : r.hold ? 1 : 0, flags: r.reasons, note };
 }
 
-async function block(viewer: number, other: number): Promise<boolean> {
+export async function block(viewer: number, other: number): Promise<boolean> {
   const { rowCount } = await pool.query(
     'SELECT 1 FROM social_blocks WHERE (blocker_user_id = $1 AND blocked_user_id = $2) OR (blocker_user_id = $2 AND blocked_user_id = $1)',
     [viewer, other],
@@ -185,7 +209,7 @@ async function block(viewer: number, other: number): Promise<boolean> {
 
 /* ---------- me + profile ---------- */
 
-async function profileView(viewer: number, userId: number): Promise<CommunityProfile> {
+export async function profileView(viewer: number, userId: number): Promise<CommunityProfile> {
   const p = await profileRow(userId);
   if (!p || p.banned_at || (viewer !== userId && (await block(viewer, userId)))) throw new HttpError(404, 'No such person');
   const { rows } = await pool.query<{ followers: number; following: number; posts: number; followed: boolean; blocked: boolean; avatar: number | null }>(
@@ -198,6 +222,57 @@ async function profileView(viewer: number, userId: number): Promise<CommunityPro
     [viewer, userId, p.avatar_id],
   );
   const c = rows[0];
+  // Date of birth + height: the Feed profile's own, else the person's household record (health section).
+  const { rows: hm } = await asSystem(() =>
+    pool.query<{ dob: string | null; height_in: string | null }>(
+      'SELECT m.dob::text AS dob, m.height_in FROM users u JOIN household_members m ON m.id = u.member_id WHERE u.id = $1',
+      [userId],
+    ),
+  );
+  const dob = p.dob ?? hm[0]?.dob ?? null;
+  const heightRaw = p.height_in ?? hm[0]?.height_in ?? null;
+  const { rows: ex } = await pool.query<{ clips: number; days: string[]; photos: number; helpful: number; today: string }>(
+    `SELECT (now() AT TIME ZONE $2)::date::text AS today,
+            (SELECT COUNT(*)::int FROM social_clips WHERE author_user_id = $1 AND status = 'visible') AS clips,
+            (SELECT COUNT(*)::int FROM social_posts WHERE author_user_id = $1 AND status = 'visible' AND image_id IS NOT NULL) AS photos,
+            (SELECT COALESCE(SUM(helpful_count), 0)::int FROM forum_posts WHERE author_user_id = $1 AND status = 'visible') AS helpful,
+            ARRAY(SELECT DISTINCT d::text FROM (
+               SELECT (created_at AT TIME ZONE $2)::date AS d FROM social_posts WHERE author_user_id = $1 AND status <> 'removed' AND created_at > now() - interval '400 days'
+               UNION SELECT (created_at AT TIME ZONE $2)::date FROM social_clips WHERE author_user_id = $1 AND status <> 'removed' AND created_at > now() - interval '400 days'
+               UNION SELECT (created_at AT TIME ZONE $2)::date FROM social_stories WHERE author_user_id = $1 AND status <> 'removed' AND created_at > now() - interval '400 days'
+               UNION SELECT (created_at AT TIME ZONE $2)::date FROM forum_posts WHERE author_user_id = $1 AND status <> 'removed' AND created_at > now() - interval '400 days'
+             ) x) AS days`,
+    [userId, config.tz],
+  );
+  const e = ex[0];
+  const days = new Set(e?.days ?? []);
+  // Day by day back from today (the database's today, in the app's time zone — the same clock that dated the posts).
+  const ymd = (d: Date): string => d.toISOString().slice(0, 10);
+  let streak = 0;
+  const cursor = new Date(`${e?.today ?? ymd(new Date())}T12:00:00Z`);
+  if (!days.has(ymd(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+  while (days.has(ymd(cursor))) {
+    streak += 1;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  const { rows: prov } = await pool.query<{ license_type: string; license_state: string; license_number: string; specialties: string[]; status: string; submitted_at: Date; verified_at: Date | null; reject_reason: string | null }>(
+    'SELECT license_type, license_state, license_number, specialties, status, submitted_at, verified_at, reject_reason FROM provider_credentials WHERE user_id = $1',
+    [userId],
+  );
+  const pc = prov[0];
+  const provider =
+    pc && pc.status === 'verified' && pc.verified_at
+      ? { licenseType: pc.license_type, licenseState: pc.license_state, licenseNumber: pc.license_number, verifiedAt: pc.verified_at.toISOString().slice(0, 10), specialties: pc.specialties }
+      : null;
+  const achievements: Array<{ key: string; label: string }> = [];
+  if (p.created_at < new Date('2027-01-01T00:00:00Z')) achievements.push({ key: 'early', label: 'Early Member' });
+  if (streak >= 21) achievements.push({ key: 'streak', label: '21-Day Streak' });
+  else if (streak >= 7) achievements.push({ key: 'streak', label: '7-Day Streak' });
+  if ((e?.photos ?? 0) > 0) achievements.push({ key: 'photo', label: 'Photo Pick' });
+  if ((e?.clips ?? 0) > 0) achievements.push({ key: 'clips', label: 'Clip Creator' });
+  if ((e?.helpful ?? 0) >= 3) achievements.push({ key: 'helper', label: 'Community Helper' });
+  if (provider) achievements.push({ key: 'provider', label: 'Verified Provider' });
+  const me = viewer === userId;
   return {
     userId,
     displayName: p.display_name,
@@ -210,9 +285,25 @@ async function profileView(viewer: number, userId: number): Promise<CommunityPro
     shopSlug: p.shop_slug,
     shopUrl: shopUrl(p.shop_slug),
     joinedOn: p.created_at.toISOString().slice(0, 10),
-    me: viewer === userId,
+    me,
     followedByMe: c?.followed ?? false,
     blockedByMe: c?.blocked ?? false,
+    // The feed shows AGE only, never the date of birth.
+    age: ageFrom(dob),
+    heightIn: heightRaw === null ? null : Number(heightRaw),
+    location: p.location,
+    streak,
+    clips: e?.clips ?? 0,
+    achievements,
+    provider,
+    ...(me
+      ? {
+          dob,
+          providerStatus: pc
+            ? { status: pc.status as 'submitted' | 'verified' | 'rejected', licenseType: pc.license_type, licenseState: pc.license_state, licenseNumber: pc.license_number, specialties: pc.specialties, submittedAt: pc.submitted_at.toISOString(), rejectReason: pc.reject_reason }
+            : null,
+        }
+      : {}),
   };
 }
 
@@ -264,20 +355,52 @@ communityRouter.put('/api/community/profile', async (req, res) => {
     if (!SHOP_SLUG.test(v)) throw new HttpError(400, 'Your shop name is the part after ?slug= in your MonetizeMe link — letters, numbers and dashes.', 'shop_slug');
     shopSlug = v;
   }
+  // About: date of birth (private — the feed shows age only), height, location. Omitted = unchanged.
+  let dob: string | null = existing?.dob ?? null;
+  if (b.dob === null || b.dob === '') dob = null;
+  else if (b.dob !== undefined) {
+    const v = String(b.dob);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) throw new HttpError(400, 'Date of birth is a date (yyyy-mm-dd)');
+    const age = ageFrom(v);
+    if (age === null || age > 120) throw new HttpError(400, 'Check your date of birth');
+    if (age < 18) {
+      await logEvent('community_underage', {}, null, null);
+      throw new HttpError(403, 'The Feed is for grown-ups 18 and older.', 'under_18');
+    }
+    dob = v;
+  }
+  // Joined just for the Feed (no household behind the account): the date of birth is the 18+ check.
+  if (!existing && !req.member && !dob) throw new HttpError(400, 'Add your date of birth — the Feed is for grown-ups 18 and older.', 'dob_required');
+  let heightIn: number | null = existing?.height_in == null ? null : Number(existing.height_in);
+  if (b.heightIn === null || b.heightIn === '') heightIn = null;
+  else if (b.heightIn !== undefined) {
+    const h = Number(b.heightIn);
+    if (!Number.isFinite(h) || h < 36 || h > 96) throw new HttpError(400, 'Height is in inches (36–96)');
+    heightIn = Math.round(h * 10) / 10;
+  }
+  let location: string | null = existing?.location ?? null;
+  if (b.location !== undefined) {
+    location = str(b.location, 'location', 60) || null;
+    if (location) {
+      const s = await screenText(location);
+      if (s.hold) throw new HttpError(422, 'Keep your location general — a city or state.', 'location_held');
+    }
+  }
   const keyId = currentKeyId();
   await pool.query(
-    `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at, shop_slug)
-     VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7)
+    `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at, shop_slug, dob, height_in, location)
+     VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7, $8, $9, $10)
      ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, bio_enc = EXCLUDED.bio_enc, key_id = EXCLUDED.key_id,
-       avatar_id = EXCLUDED.avatar_id, parent_badge = EXCLUDED.parent_badge, shop_slug = EXCLUDED.shop_slug`,
-    [a.userId, displayName, bio ? sealText(bio, keyId) : null, keyId, avatarId, b.parentBadge === true, shopSlug],
+       avatar_id = EXCLUDED.avatar_id, parent_badge = EXCLUDED.parent_badge, shop_slug = EXCLUDED.shop_slug,
+       dob = EXCLUDED.dob, height_in = EXCLUDED.height_in, location = EXCLUDED.location`,
+    [a.userId, displayName, bio ? sealText(bio, keyId) : null, keyId, avatarId, b.parentBadge === true, shopSlug, dob, heightIn, location],
   );
   res.json(await profileView(a.userId, a.userId));
 });
 
 /* ---------- photos (avatars + feed photos), sealed at rest ---------- */
 
-function imageType(b: Buffer): 'image/jpeg' | 'image/png' | 'image/webp' | null {
+export function imageType(b: Buffer): 'image/jpeg' | 'image/png' | 'image/webp' | null {
   if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
   if (b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
@@ -326,17 +449,38 @@ const categoryOf = (v: unknown): VillageCategory => {
   return c;
 };
 
+/** Villages: topic forums under the Feed (ADHD Parents, Late Diagnosis, Partners…). */
+communityRouter.get('/api/villages', async (req, res) => {
+  const m = await member(req);
+  const { rows } = await pool.query<{ slug: string; name: string; description: string; threads: number }>(
+    `SELECT v.slug, v.name, v.description,
+            (SELECT COUNT(*)::int FROM forum_threads t WHERE t.village_id = v.id AND ${SEEN('t')}) AS threads
+       FROM villages v ORDER BY v.sort, v.id`,
+    [m.userId],
+  );
+  res.json({ villages: rows });
+});
+
+/** The village a request is about (?village=slug; default ADHD Parents, the original Village). */
+async function villageId(slug: unknown): Promise<number> {
+  const s = typeof slug === 'string' && slug ? slug : 'adhd-parents';
+  const { rows } = await pool.query<{ id: number }>('SELECT id FROM villages WHERE slug = $1', [s]);
+  if (!rows[0]) throw new HttpError(404, 'No such village');
+  return rows[0].id;
+}
+
 communityRouter.get('/api/village', async (req, res) => {
   const m = await member(req);
   const cat = typeof req.query.category === 'string' && req.query.category ? categoryOf(req.query.category) : null;
+  const vid = await villageId(req.query.village);
   const { rows } = await pool.query<AuthorCols & { id: number; category: VillageCategory; title_enc: Buffer; key_id: string; status: CommunityStatus; last_activity_at: Date; replies: number; author_user_id: number; answered: boolean }>(
     `SELECT t.id, t.category, t.title_enc, t.key_id, t.status, t.last_activity_at, t.author_user_id, ${AUTHOR_COLS},
             (SELECT COUNT(*)::int FROM forum_posts x WHERE x.thread_id = t.id AND NOT x.opening AND x.status = 'visible') AS replies,
             EXISTS (SELECT 1 FROM trusted_answers a WHERE a.kind = 'village' AND a.target_id = t.id) AS answered
        FROM forum_threads t ${AUTHOR_JOIN('t.author_user_id')}
-      WHERE ${SEEN('t')} AND ${NOT_BLOCKED('t.author_user_id')} AND ($2::text IS NULL OR t.category = $2)
+      WHERE ${SEEN('t')} AND ${NOT_BLOCKED('t.author_user_id')} AND ($2::text IS NULL OR t.category = $2) AND t.village_id = $3
       ORDER BY t.last_activity_at DESC LIMIT 100`,
-    [m.userId, cat],
+    [m.userId, cat, vid],
   );
   const threads: VillageThreadSummary[] = rows.map((r) => ({
     id: r.id,
@@ -404,14 +548,15 @@ communityRouter.post('/api/village/threads', async (req, res) => {
   const m = await poster(req);
   const b = req.body as Record<string, unknown>;
   const category = categoryOf(b.category);
+  const vid = await villageId(b.village);
   const title = str(b.title, 'title', 120, true);
   const body = str(b.body, 'body', 5000, true);
   const d = await decide(await screenText(`${title}\n\n${body}`), 'village');
   const keyId = currentKeyId();
   const id = await tx(async (c) => {
     const { rows } = await c.query<{ id: number }>(
-      'INSERT INTO forum_threads (category, author_user_id, title_enc, key_id, status) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [category, m.userId, sealText(title, keyId), keyId, d.status],
+      'INSERT INTO forum_threads (category, author_user_id, title_enc, key_id, status, village_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [category, m.userId, sealText(title, keyId), keyId, d.status, vid],
     );
     const tid = rows[0]?.id ?? 0;
     await c.query('INSERT INTO forum_posts (thread_id, author_user_id, opening, body_enc, key_id, status, priority, flags) VALUES ($1, $2, true, $3, $4, $5, $6, $7)', [
@@ -818,7 +963,7 @@ communityRouter.post('/api/community/people/:id/report', async (req, res) => {
 
 /* ---------- moderation (MyDay admins) ---------- */
 
-function staff(req: Request): string {
+export function staff(req: Request): string {
   if (!req.user) throw new HttpError(401, 'Not signed in');
   if (!isAdmin(req)) throw new HttpError(403, 'Moderators only');
   return req.user.email;
@@ -892,6 +1037,33 @@ async function queue(): Promise<CommunityQueue> {
       GROUP BY q.user_id, sp.display_name, u.email, sp.bio_enc, sp.key_id, sp.avatar_id`,
   );
   for (const r of profs) push('profile', r);
+  // The Feed's other sections: stories, clips (+ comments), messages.
+  const { rows: stories } = await pool.query<QueueRow>(
+    `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.text_enc AS body_enc, q.key_id, q.image_id, q.status, q.priority, q.flags, q.created_at, NULL::text[] AS reports
+       FROM (SELECT s.*, s.author_user_id AS user_id FROM social_stories s) q ${WHO}
+      WHERE q.status IN ('pending', 'hidden') AND q.expires_at > now()`,
+  );
+  for (const r of stories) push('story', r);
+  const { rows: clips } = await pool.query<QueueRow>(
+    `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.caption_enc AS body_enc, q.key_id, q.poster_id AS image_id, q.status, q.priority, q.flags, q.created_at,
+            (SELECT array_agg(r.reason ORDER BY r.id) FROM social_clip_reports r WHERE r.clip_id = q.id AND r.status = 'open') AS reports
+       FROM (SELECT c.*, c.author_user_id AS user_id FROM social_clips c) q ${WHO}
+      WHERE q.status IN ('pending', 'hidden') OR EXISTS (SELECT 1 FROM social_clip_reports r WHERE r.clip_id = q.id AND r.status = 'open')`,
+  );
+  for (const r of clips) push('clip', r);
+  const { rows: ccom } = await pool.query<QueueRow>(
+    `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.body_enc, q.key_id, NULL::int AS image_id, q.status, q.priority, q.flags, q.created_at, NULL::text[] AS reports
+       FROM (SELECT x.*, x.author_user_id AS user_id FROM social_clip_comments x) q ${WHO}
+      WHERE q.status IN ('pending', 'hidden')`,
+  );
+  for (const r of ccom) push('clip-comment', r);
+  const { rows: dms } = await pool.query<QueueRow>(
+    `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.body_enc, q.key_id, NULL::int AS image_id, q.status, q.priority, q.flags, q.created_at,
+            (SELECT array_agg(r.reason ORDER BY r.id) FROM dm_reports r WHERE r.message_id = q.id AND r.status = 'open') AS reports
+       FROM (SELECT m.*, m.sender_user_id AS user_id FROM dm_messages m) q ${WHO}
+      WHERE q.status IN ('pending', 'hidden') OR EXISTS (SELECT 1 FROM dm_reports r WHERE r.message_id = q.id AND r.status = 'open')`,
+  );
+  for (const r of dms) push('message', r);
   items.sort((a, b) => b.priority - a.priority || a.at.localeCompare(b.at));
   return { items };
 }
@@ -902,7 +1074,7 @@ communityStaffRouter.get('/api/community/moderation/queue', async (req, res) => 
 });
 
 /** warn → 7-day mute → ban, by how many strikes they already have. */
-async function strike(userId: number, reason: string, source: string, by: string): Promise<'warn' | 'mute' | 'ban'> {
+export async function strike(userId: number, reason: string, source: string, by: string): Promise<'warn' | 'mute' | 'ban'> {
   const { rows } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM social_strikes WHERE user_id = $1', [userId]);
   const n = rows[0]?.n ?? 0;
   const kind = n === 0 ? 'warn' : n === 1 ? 'mute' : 'ban';
@@ -919,10 +1091,30 @@ communityStaffRouter.post('/api/community/moderation/:kind/:id/:action', async (
   const kind = req.params.kind;
   const action = ['approve', 'remove', 'strike', 'dismiss'].find((a) => a === req.params.action);
   const id = idParam(req.params.id);
-  if (!action || !['village', 'feed', 'image', 'profile'].includes(kind)) throw new HttpError(404, 'Not found');
+  if (!action || !['village', 'feed', 'image', 'profile', 'story', 'clip', 'clip-comment', 'message'].includes(kind)) throw new HttpError(404, 'Not found');
   const reason = str((req.body as Record<string, unknown> | undefined)?.reason, 'reason', 200) || 'Broke the community guidelines';
   let author: number | null = null;
-  if (kind === 'village' || kind === 'feed') {
+  const SOCIAL: Record<string, { table: string; by: string; reports?: [string, string] }> = {
+    story: { table: 'social_stories', by: 'author_user_id' },
+    clip: { table: 'social_clips', by: 'author_user_id', reports: ['social_clip_reports', 'clip_id'] },
+    'clip-comment': { table: 'social_clip_comments', by: 'author_user_id' },
+    message: { table: 'dm_messages', by: 'sender_user_id', reports: ['dm_reports', 'message_id'] },
+  };
+  const sk = SOCIAL[kind];
+  if (sk) {
+    const { rows } = await pool.query<{ author: number }>(`SELECT ${sk.by} AS author FROM ${sk.table} WHERE id = $1`, [id]);
+    author = rows[0]?.author ?? null;
+    if (author === null) throw new HttpError(404, 'Not found');
+    if (action === 'approve') await pool.query(`UPDATE ${sk.table} SET status = 'visible', priority = 0 WHERE id = $1`, [id]);
+    if (action === 'remove' || action === 'strike') await pool.query(`UPDATE ${sk.table} SET status = 'removed', priority = 0 WHERE id = $1`, [id]);
+    if (sk.reports) await pool.query(`UPDATE ${sk.reports[0]} SET status = 'resolved' WHERE ${sk.reports[1]} = $1 AND status = 'open'`, [id]);
+    if (action === 'approve' && kind === 'clip') await pool.query("UPDATE community_images i SET status = 'visible' FROM social_clips c WHERE c.id = $1 AND i.id = c.poster_id AND i.status = 'pending'", [id]);
+    if (action === 'approve' && kind === 'story') await pool.query("UPDATE community_images i SET status = 'visible' FROM social_stories s WHERE s.id = $1 AND i.id = s.image_id AND i.status = 'pending'", [id]);
+    if (kind === 'clip-comment') {
+      await pool.query("UPDATE social_clips c SET comment_count = (SELECT COUNT(*) FROM social_clip_comments x WHERE x.clip_id = c.id AND x.status = 'visible') FROM social_clip_comments y WHERE y.id = $1 AND c.id = y.clip_id", [id]);
+    }
+    if (action === 'approve' && kind === 'message') await pool.query('UPDATE dm_threads t SET last_at = now() FROM dm_messages m WHERE m.id = $1 AND t.id = m.thread_id', [id]);
+  } else if (kind === 'village' || kind === 'feed') {
     const [table, reports] = kind === 'village' ? ['forum_posts', 'forum_reports'] : ['social_posts', 'social_reports'];
     const { rows } = await pool.query<{ author_user_id: number }>(`SELECT author_user_id FROM ${table} WHERE id = $1`, [id]);
     author = rows[0]?.author_user_id ?? null;

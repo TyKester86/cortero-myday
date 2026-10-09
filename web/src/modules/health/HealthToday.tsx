@@ -141,6 +141,72 @@ function BaselineForm({ initial, onSave }: { initial: HealthHistory['baseline'];
   );
 }
 
+/** About you: date of birth and height (your Feed profile shows your age, never the date). */
+function AboutYou({ memberKey }: { memberKey: string }) {
+  const { data, setData } = useLoad<{ dob: string | null; heightIn: number | null }>(withMember('/api/health/about', memberKey));
+  const [f, setF] = useState<{ dob: string; feet: string; inches: string } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  if (!data) return null;
+  const form = f ?? { dob: data.dob ?? '', feet: data.heightIn ? String(Math.floor(data.heightIn / 12)) : '', inches: data.heightIn ? String(Math.round(data.heightIn % 12)) : '' };
+  const shown = data.heightIn ? `${Math.floor(data.heightIn / 12)}′ ${Math.round(data.heightIn % 12)}″` : null;
+  return (
+    <div className="card" data-testid="about-you">
+      <h2>About you</h2>
+      {f === null ? (
+        <>
+          <p className="small">
+            {data.dob ? `Born ${new Date(`${data.dob}T12:00:00`).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}` : 'Date of birth not set'}
+            {' · '}
+            {shown ? `${shown} tall` : 'Height not set'}
+          </p>
+          <button type="button" className="btn small ghost" onClick={() => setF(form)} data-testid="about-edit">
+            Edit
+          </button>
+        </>
+      ) : (
+        <form
+          className="form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const heightIn = f.feet ? Number(f.feet) * 12 + Number(f.inches || 0) : null;
+            void api<{ dob: string | null; heightIn: number | null }>(withMember('/api/health/about', memberKey), 'PUT', { dob: f.dob || null, heightIn })
+              .then((r) => {
+                setData(r);
+                setF(null);
+                setMsg('Saved ✓');
+              })
+              .catch((e2: unknown) => setMsg(e2 instanceof Error ? e2.message : 'Could not save'));
+          }}
+        >
+          <label>
+            Date of birth
+            <input type="date" value={f.dob} onChange={(e) => setF({ ...f, dob: e.target.value })} max={new Date().toISOString().slice(0, 10)} data-testid="about-dob" />
+          </label>
+          <div className="row">
+            <label className="grow">
+              Height (feet)
+              <input type="number" inputMode="numeric" min={2} max={8} value={f.feet} onChange={(e) => setF({ ...f, feet: e.target.value })} data-testid="about-feet" />
+            </label>
+            <label className="grow">
+              Inches
+              <input type="number" inputMode="numeric" min={0} max={11} value={f.inches} onChange={(e) => setF({ ...f, inches: e.target.value })} data-testid="about-inches" />
+            </label>
+          </div>
+          <div className="row">
+            <button className="btn small" data-testid="about-save">
+              Save
+            </button>
+            <button type="button" className="link" onClick={() => setF(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      {msg && <p className="small muted">{msg}</p>}
+    </div>
+  );
+}
+
 export default function HealthToday() {
   const { viewing, me } = useSession();
   const path = viewing ? withMember('/api/workouts/today', viewing.key) : null;
@@ -224,7 +290,8 @@ export default function HealthToday() {
         )}
         {habits}
         {photos}
-        <Records memberKey={viewing.key} />
+        <AboutYou memberKey={viewing.key} />
+      <Records memberKey={viewing.key} />
         {toast}
       </section>
     );
@@ -341,6 +408,7 @@ export default function HealthToday() {
         </div>
       )}
       {photos}
+      <AboutYou memberKey={viewing.key} />
       <Records memberKey={viewing.key} />
       {toast}
     </section>

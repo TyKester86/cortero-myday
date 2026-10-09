@@ -30,6 +30,7 @@ import { moneyRouter } from './routes/money.js';
 import { extraRouters, preHouseholdRouters, publicRoutes, uploadRoutes } from './routes/index.js';
 import { signinRouter } from './routes/signin.js';
 import { startSchedulers } from './lib/schedulers.js';
+import { readFileSync } from 'node:fs';
 
 if (!config.sessionSecret || config.sessionSecret.length < 32) {
   throw new Error('SESSION_SECRET must be set (32+ chars)');
@@ -156,6 +157,38 @@ app.get('/sw.js', (_req, res) => {
 app.use('/assets', express.static(path.join(webDist, 'assets'), { index: false, maxAge: '365d', immutable: true }));
 // redirect: false — /meals and /exercises are both app pages and picture folders; never bounce to "/meals/".
 app.use(express.static(webDist, { index: false, maxAge: '1h', redirect: false }));
+// The Feed's public landing page (/feed): real title, description and Open Graph tags in the HTML itself, so
+// search engines and link previews see them; indexable. Everything else in the app stays out of search.
+const FEED_META = {
+  title: 'The Feed — a calm community for ADHD adults · MyDay',
+  description: 'A calm, supportive community for ADHD adults: share, connect, and build routines that actually stick. Free to join, 18+.',
+};
+const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+let indexHtml: string | null = null;
+app.get('/feed', (_req, res, next) => {
+  try {
+    indexHtml ??= readFileSync(path.join(webDist, 'index.html'), 'utf8');
+  } catch {
+    next();
+    return;
+  }
+  const url = `${config.publicUrl.replace(/\/$/, '')}/feed`;
+  const head = [
+    `<title>${esc(FEED_META.title)}</title>`,
+    `<meta name="description" content="${esc(FEED_META.description)}" />`,
+    '<meta name="robots" content="index, follow" />',
+    `<link rel="canonical" href="${esc(url)}" />`,
+    '<meta property="og:type" content="website" />',
+    '<meta property="og:site_name" content="MyDay" />',
+    `<meta property="og:title" content="${esc(FEED_META.title)}" />`,
+    `<meta property="og:description" content="${esc(FEED_META.description)}" />`,
+    `<meta property="og:url" content="${esc(url)}" />`,
+    `<meta property="og:image" content="${esc(`${config.publicUrl.replace(/\/$/, '')}/icons/myday-icon-512.png`)}" />`,
+    '<meta name="twitter:card" content="summary" />',
+  ].join('\n    ');
+  const html = (indexHtml ?? '').replace(/<title>[^<]*<\/title>/, '').replace(/<meta name="description"[^>]*>/, '').replace('</head>', `    ${head}\n  </head>`);
+  res.set('Cache-Control', 'no-cache').type('html').send(html);
+});
 app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(webDist, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } });
 });

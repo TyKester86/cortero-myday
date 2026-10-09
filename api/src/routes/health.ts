@@ -531,3 +531,39 @@ healthRouter.post('/api/habits/:habit', async (req, res) => {
   const out: ToggleHabitResponse = { ...earn, habits: await habitsFor(member.id, t) };
   res.json(out);
 });
+
+/* ---------- About you: date of birth + height (the health section; also feeds the Feed profile's age) ---------- */
+
+healthRouter.get('/api/health/about', async (req, res) => {
+  const member = await targetMember(req);
+  const { rows } = await pool.query<{ dob: string | null; height_in: string | null }>('SELECT dob::text AS dob, height_in FROM household_members WHERE id = $1', [member.id]);
+  res.json({ dob: rows[0]?.dob ?? null, heightIn: rows[0]?.height_in == null ? null : Number(rows[0].height_in) });
+});
+
+healthRouter.put('/api/health/about', async (req, res) => {
+  const member = await targetMember(req);
+  const b = req.body as Record<string, unknown>;
+  let dob: string | null | undefined;
+  if (b.dob === null || b.dob === '') dob = null;
+  else if (b.dob !== undefined) {
+    const v = String(b.dob);
+    const d = Date.parse(`${v}T12:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(d) || d > Date.now() || d < Date.parse('1900-01-01')) throw new HttpError(400, 'Date of birth is a date (yyyy-mm-dd)');
+    dob = v;
+  }
+  let heightIn: number | null | undefined;
+  if (b.heightIn === null || b.heightIn === '') heightIn = null;
+  else if (b.heightIn !== undefined) {
+    const h = Number(b.heightIn);
+    if (!Number.isFinite(h) || h < 24 || h > 96) throw new HttpError(400, 'Height is in inches (24–96)');
+    heightIn = Math.round(h * 10) / 10;
+  }
+  if (dob !== undefined) await pool.query('UPDATE household_members SET dob = $2 WHERE id = $1', [member.id, dob]);
+  if (heightIn !== undefined) {
+    await pool.query('UPDATE household_members SET height_in = $2 WHERE id = $1', [member.id, heightIn]);
+    // The body program's own height (its calorie math) follows, when there is a program.
+    if (heightIn !== null) await pool.query('UPDATE health_profiles SET height_in = $2 WHERE member_id = $1', [member.id, heightIn]);
+  }
+  const { rows } = await pool.query<{ dob: string | null; height_in: string | null }>('SELECT dob::text AS dob, height_in FROM household_members WHERE id = $1', [member.id]);
+  res.json({ dob: rows[0]?.dob ?? null, heightIn: rows[0]?.height_in == null ? null : Number(rows[0].height_in) });
+});

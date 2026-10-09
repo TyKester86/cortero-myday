@@ -100,8 +100,17 @@ self.addEventListener('fetch', (event) => {
   const p = url.pathname;
 
   if (p.startsWith('/api/')) {
-    // Progress photos are never stored on the device (shared family phones).
-    if (p.startsWith('/api/auth/') || p.endsWith('.csv') || p.startsWith('/api/progress-photos') || p.startsWith('/api/community/images')) return;
+    // Progress photos, Feed videos and private messages are never stored on the device (shared family phones);
+    // videos also stream in ranges (206), which the cache can't hold.
+    if (
+      p.startsWith('/api/auth/') ||
+      p.endsWith('.csv') ||
+      p.startsWith('/api/progress-photos') ||
+      p.startsWith('/api/community/images') ||
+      p.startsWith('/api/social/videos') ||
+      p.startsWith('/api/social/messages')
+    )
+      return;
     event.respondWith(
       networkFirst(req, API).catch(
         () => new Response(JSON.stringify({ error: 'You’re offline and this hasn’t been opened on this device yet.' }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
