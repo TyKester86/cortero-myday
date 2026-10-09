@@ -165,15 +165,21 @@ const FEED_META = {
 };
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 let indexHtml: string | null = null;
-app.get('/feed', (_req, res, next) => {
+/** conquermyday.app (and www) serve this page too, routed here by Caddy: its links and previews say so. */
+const FEED_HOSTS = /^(www\.)?conquermyday\.app$/;
+app.get('/feed', (req, res, next) => {
   try {
     indexHtml ??= readFileSync(path.join(webDist, 'index.html'), 'utf8');
   } catch {
     next();
     return;
   }
-  const url = `${config.publicUrl.replace(/\/$/, '')}/feed`;
+  const appUrl = config.publicUrl.replace(/\/$/, '');
+  const origin = FEED_HOSTS.test(req.hostname) ? `https://${req.hostname}` : appUrl;
+  const url = `${origin}/feed`;
   const head = [
+    // Where the app itself lives: on another domain, "Join the Feed" continues there (sign-in is per domain).
+    `<meta name="myday-app-url" content="${esc(appUrl)}" />`,
     `<title>${esc(FEED_META.title)}</title>`,
     `<meta name="description" content="${esc(FEED_META.description)}" />`,
     '<meta name="robots" content="index, follow" />',
@@ -183,7 +189,7 @@ app.get('/feed', (_req, res, next) => {
     `<meta property="og:title" content="${esc(FEED_META.title)}" />`,
     `<meta property="og:description" content="${esc(FEED_META.description)}" />`,
     `<meta property="og:url" content="${esc(url)}" />`,
-    `<meta property="og:image" content="${esc(`${config.publicUrl.replace(/\/$/, '')}/icons/feed-og.png`)}" />`,
+    `<meta property="og:image" content="${esc(`${origin}/icons/feed-og.png`)}" />`,
     '<meta property="og:image:width" content="1200" />',
     '<meta property="og:image:height" content="630" />',
     '<meta property="og:image:alt" content="The Feed: the amber bulb horn on dark" />',

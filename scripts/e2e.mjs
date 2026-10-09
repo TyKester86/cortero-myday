@@ -3383,6 +3383,23 @@ async function socialSuite() {
   eq('preview needs no sign-in', [pre.status, typeof pre.data.members, pre.data.villages.length], [200, 'number', 3]);
   eq('…shows publisher headlines, never a member’s words', [JSON.stringify(pre.data).includes('Morning win'), JSON.stringify(pre.data).includes('label maker'), pre.data.web.every((w) => w.url.startsWith('https://'))], [false, false, true]);
   const lpHtml = (await anon.get('/feed')).data;
+  // conquermyday.app/feed is routed here by Caddy: links and previews name that domain; the page knows where the app lives.
+  const feedAs = (host) =>
+    new Promise((resolve, reject) => {
+      import('node:http').then(({ request }) => {
+        const q = request({ host: '127.0.0.1', port: PORT, path: '/feed', headers: { Host: host } }, (res) => {
+          let b = '';
+          res.on('data', (c) => (b += c));
+          res.on('end', () => resolve(b));
+        });
+        q.on('error', reject);
+        q.end();
+      }, reject);
+    });
+  const apex = await feedAs('conquermyday.app');
+  const lookalike = await feedAs('conquermyday.app.evil.example');
+  eq('on conquermyday.app the page’s canonical, og:url and og:image name that domain; the app’s own address is in the page', [/<link rel="canonical" href="https:\/\/conquermyday\.app\/feed"/.test(apex), /og:url" content="https:\/\/conquermyday\.app\/feed"/.test(apex), /og:image" content="https:\/\/conquermyday\.app\/icons\/feed-og\.png"/.test(apex), new RegExp(`<meta name="myday-app-url" content="${BASE}"`).test(apex)], [true, true, true, true]);
+  eq('…a look-alike host gets the app’s own address, not its name', [new RegExp(`<link rel="canonical" href="${BASE}/feed"`).test(lookalike), /evil/.test(lookalike)], [true, false]);
   eq('/feed wears the Feed’s bulb-horn mark: favicon + touch icon + OG card (never the MyDay mark)', [/<link rel="icon" type="image\/svg\+xml" href="\/icons\/feed-horn\.svg"/.test(lpHtml), /feed-icon-180\.png/.test(lpHtml), /og:image" content="[^"]*\/icons\/feed-og\.png"/.test(lpHtml), /summary_large_image/.test(lpHtml), /myday-favicon|apple-touch-icon\.png|myday-icon-512/.test(lpHtml)], [true, true, true, true, false]);
   eq('…and those files are served', await Promise.all(['/icons/feed-horn.svg', '/icons/feed-favicon-32.png', '/icons/feed-icon-180.png', '/icons/feed-og.png'].map(async (u) => (await fetch(BASE + u)).status)), [200, 200, 200, 200]);
   eq('/feed: real title, description, robots index, Open Graph tags in the HTML', [/<title>The Feed — a calm community for ADHD adults · MyDay<\/title>/.test(lpHtml), /<meta name="robots" content="index, follow"/.test(lpHtml), /property="og:title"/.test(lpHtml), /<link rel="canonical"/.test(lpHtml)], [true, true, true, true]);
@@ -3830,6 +3847,13 @@ async function uiGate() {
     await landing.getByTestId('feed-join').first().click();
     await landing.getByTestId('feed-signin').waitFor({ state: 'visible', timeout: 10000 });
     eq('Join the Feed → sign-up, and the app will bring you back to the Feed', [await landing.getByTestId('signin-choices').count(), await landing.evaluate(() => localStorage.getItem('myday.next'))], [1, '/feed']);
+    const arrive = await browser.newContext(phone);
+    const arrivePage = await arrive.newPage();
+    watch(arrivePage);
+    await arrivePage.goto(`${BASE}/feed?join=1`);
+    await arrivePage.getByTestId('feed-signin').waitFor({ state: 'visible', timeout: 10000 });
+    eq('arriving from “Join the Feed” on conquermyday.app (?join=1): no second 18+ gate, sign-up already open, back to the Feed after', [await arrivePage.getByTestId('age-gate').count(), await arrivePage.getByTestId('signin-choices').count(), await arrivePage.evaluate(() => localStorage.getItem('myday.next'))], [0, 1, '/feed']);
+    await arrive.close();
     await landing.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=feed-join-ui@example.test`);
     await landing.getByTestId('community-setup').waitFor({ timeout: 10000 });
     eq('signed in with no household → straight to the Feed (not household setup)', [new URL(landing.url()).pathname, await landing.getByTestId('social-shell').count(), await landing.getByTestId('create-household').count()], ['/feed', 1, 0]);

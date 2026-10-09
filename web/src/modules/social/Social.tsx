@@ -1152,16 +1152,39 @@ const FEATURES: Array<{ icon: string; name: string; line: string }> = [
   { icon: 'shield', name: 'Safe, kind & verified', line: 'Every post, clip and message is checked first. Licensed clinicians are verified before they get a badge.' },
 ];
 
+/**
+ * The app's own address (the server puts it in the /feed page). On another domain that only shows this page
+ * (conquermyday.app/feed), sign-up continues on the app's domain: sign-in and sessions belong to it.
+ */
+function appHome(): { url: string; elsewhere: boolean } {
+  const url = (document.querySelector<HTMLMetaElement>('meta[name="myday-app-url"]')?.content ?? '').replace(/\/$/, '');
+  return { url, elsewhere: !!url && new URL(url).origin !== window.location.origin };
+}
+
 export function FeedLanding() {
   const { data } = useLoad<FeedPreview>('/api/public/feed-preview');
-  const [age, setAge] = useState<'ok' | 'under' | null>(stored(AGE_KEY) === '1' ? 'ok' : null);
-  const [joining, setJoining] = useState(false);
+  const app = appHome();
+  // Arrived from "Join the Feed" on the other domain (?join=1): they already said they're 18+; open sign-up.
+  const [arrived] = useState(() => new URLSearchParams(window.location.search).get('join') === '1' && !app.elsewhere);
+  const [age, setAge] = useState<'ok' | 'under' | null>(arrived || stored(AGE_KEY) === '1' ? 'ok' : null);
+  const [joining, setJoining] = useState(arrived);
   const signin = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!arrived) return;
+    store(AGE_KEY, '1');
+    store(NEXT_KEY, '/feed');
+    setTimeout(() => signin.current?.scrollIntoView({ block: 'center' }), 50);
+  }, [arrived]);
   const join = (): void => {
+    if (app.elsewhere) {
+      window.location.href = `${app.url}/feed?join=1`;
+      return;
+    }
     store(NEXT_KEY, '/feed');
     setJoining(true);
     setTimeout(() => signin.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   };
+  const appLink = (p: string): string => (app.elsewhere ? `${app.url}${p}` : p);
   const web = data?.web ?? [];
   return (
     <div className="fl" data-testid="feed-landing">
@@ -1181,7 +1204,7 @@ export function FeedLanding() {
             <a href="#safe">About</a>
           </nav>
           <span className="grow" />
-          <a href="/" className="fl-signin">
+          <a href={appLink('/')} className="fl-signin">
             Sign in
           </a>
           <button type="button" className="btn ghost fl-join-top" onClick={join}>
@@ -1268,7 +1291,7 @@ export function FeedLanding() {
           </button>
         </section>
         <footer className="fl-foot">
-          <a href="#safe">Community guidelines</a> • <a href="/privacy">Privacy policy</a> • <a href="/terms">Terms</a> • <span>© {new Date().getFullYear()} MyDay</span>
+          <a href="#safe">Community guidelines</a> • <a href={appLink('/privacy')}>Privacy policy</a> • <a href={appLink('/terms')}>Terms</a> • <span>© {new Date().getFullYear()} MyDay</span>
         </footer>
       </div>
       {age !== 'ok' && (
