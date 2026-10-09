@@ -53,6 +53,10 @@ export type EventName =
   | 'social_message'
   | 'provider_submitted'
   | 'provider_reviewed'
+  | 'ad_created'
+  | 'ad_rejected'
+  | 'ad_paid'
+  | 'consult_booked'
   | 'community_moderation'
   | 'community_strike';
 

@@ -22,6 +22,7 @@ const StoriesPage = lazy(() => import('./social/Social').then((m) => ({ default:
 const ClipsPage = lazy(() => import('./social/Social').then((m) => ({ default: m.ClipsPage })));
 const MessagesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessagesPage })));
 const MessageThreadPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessageThreadPage })));
+const BusinessPage = lazy(() => import('./social/Business').then((m) => ({ default: m.BusinessPage })));
 const CommunityModeration = lazy(() => import('./community/Community').then((m) => ({ default: m.CommunityModeration })));
 const HealthPlan = lazy(() => import('./health/HealthPlan'));
 const Meals = lazy(() => import('./meals/Meals'));
@@ -170,6 +171,8 @@ export const MODULES: ModuleRoute[] = [
   { path: '/village', element: <Village />, audience: 'adult' },
   { path: '/village/:id', element: <VillageThreadPage />, audience: 'adult' },
   { path: '/people/:id', element: <PersonPage />, audience: 'adult' },
+  // The Provider Business Suite (verified providers; the page explains itself to everyone else).
+  { path: '/business', element: <BusinessPage />, audience: 'adult' },
   { path: '/community/moderation', element: <CommunityModeration />, audience: 'admin' },
   { path: '/care', element: <Care />, audience: 'adult', module: 'care', nav: { label: 'Care team', icon: 'care', group: 'connect' } },
   { path: '/billing', element: <Billing />, audience: 'adult', nav: { label: 'Billing', icon: 'card', group: 'account' } },

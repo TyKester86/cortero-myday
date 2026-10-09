@@ -2,8 +2,8 @@
  * The Village (parents forum) and The Feed (social), grown-ups 18+ only.
  * Kids and teens have no nav entry and the API answers them 403.
  */
-import { useState, type ReactNode } from 'react';
-import { Link, useParams } from 'react-router';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router';
 import {
   COMMUNITY_SAFETY_LINE,
   CRISIS_RESOURCES,
@@ -34,7 +34,7 @@ import { ago } from '../../dates';
 import { shrink } from '../health/ProgressPhotos';
 import { count } from '../../format';
 import { useSession } from '../../session';
-import { FeedNav, StoryRail } from '../social/Social';
+import { BookConsult, FeedNav, SponsoredCard, StoryRail } from '../social/Social';
 
 /* ---------- shared pieces ---------- */
 
@@ -649,16 +649,29 @@ function Posts({ tab, onMsg }: { tab: 'following' | 'everyone'; onMsg: (m: strin
   if (!data) return <p className="muted desk-note">Laying out the desk…</p>;
   const replace = (p: FeedPost): void => setData({ ...data, posts: data.posts.map((x) => (x.id === p.id ? p : x)) });
   if (!data.posts.length) {
-    return tab === 'following' ? (
-      <EmptySheet title="Nobody you follow has written this week">Tap a name on Everyone to follow people — their notes land here.</EmptySheet>
-    ) : (
-      <EmptySheet title="Fresh sheet — be the first to write">A win, a strategy, a laugh. Someone out there needs it today.</EmptySheet>
+    return (
+      <>
+        {tab === 'following' ? (
+          <EmptySheet title="Nobody you follow has written this week">Tap a name on Everyone to follow people — their notes land here.</EmptySheet>
+        ) : (
+          <EmptySheet title="Fresh sheet — be the first to write">A win, a strategy, a laugh. Someone out there needs it today.</EmptySheet>
+        )}
+        {data.sponsored && (
+          <div className="slips">
+            <SponsoredCard s={data.sponsored} />
+          </div>
+        )}
+      </>
     );
   }
   return (
     <div className="slips" data-testid="feed-posts">
-      {data.posts.map((p) => (
-        <FeedCard key={p.id} p={p} onChange={replace} onMsg={onMsg} onGone={() => reload()} />
+      {data.posts.map((p, i) => (
+        <Fragment key={p.id}>
+          <FeedCard p={p} onChange={replace} onMsg={onMsg} onGone={() => reload()} />
+          {/* At most one paid placement, after the second post, always labelled. */}
+          {i === Math.min(1, data.posts.length - 1) && data.sponsored && <SponsoredCard s={data.sponsored} />}
+        </Fragment>
       ))}
       <CaughtUp days={data.windowDays} />
     </div>
@@ -863,7 +876,20 @@ function Person({ id }: { id: string }) {
   const people = useLoad<{ people: CommunityAuthor[] }>(list ? `/api/community/people/${encodeURIComponent(id)}/${list}` : null);
   const [msg, setMsg] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const [booking, setBooking] = useState(params.get('book') === '1');
   const confirm = useConfirm();
+  // Back from paying for a consult: confirm with Stripe (the webhook may still be on its way).
+  useEffect(() => {
+    if (params.get('paid') !== 'consult') return;
+    const sid = params.get('session_id');
+    const done = (): void => {
+      setMsg('Booked ✓ — they’ll message you about the call.');
+      setParams({}, { replace: true });
+    };
+    if (sid) void api(`/api/business/checkout/confirm?session_id=${encodeURIComponent(sid)}`).then(done, done);
+    else done();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   const since = new Date(`${data.joinedOn}T12:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
@@ -913,15 +939,22 @@ function Person({ id }: { id: string }) {
         </ul>
         <div className="profile-actions">
           {data.me ? (
-            <button className="btn small ghost" onClick={() => setEditing(!editing)} data-testid="edit-profile">
-              Edit profile
-            </button>
+            <>
+              {pro && (
+                <Link className="btn small gold" to="/business" data-testid="business-link">
+                  Business suite
+                </Link>
+              )}
+              <button className="btn small ghost" onClick={() => setEditing(!editing)} data-testid="edit-profile">
+                Edit profile
+              </button>
+            </>
           ) : (
             <>
               {pro && (
-                <Link className="btn small gold" to={`/messages/${data.userId}?consult=1`} data-testid="book-consult">
+                <button type="button" className="btn small gold" onClick={() => setBooking(true)} data-testid="book-consult">
                   Book consult
-                </Link>
+                </button>
               )}
               {data.followedByMe ? (
                 <button className="btn small ghost" onClick={() => void api<CommunityProfile>(`/api/community/people/${data.userId}/follow`, 'DELETE').then(setData)}>
@@ -1018,6 +1051,9 @@ function Person({ id }: { id: string }) {
         </div>
       )}
       {msg && <p className="desk-note" role="status">{msg}</p>}
+      {booking && pro && !data.me && (
+        <BookConsult provider={{ userId: data.userId, displayName: data.displayName, parentBadge: data.parentBadge, avatarUrl: data.avatarUrl }} onClose={() => setBooking(false)} />
+      )}
       {editing && (
         <EditProfile
           p={data}

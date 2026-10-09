@@ -42,6 +42,17 @@ export async function stripe<T>(path: string, params: Record<string, unknown> = 
   return body;
 }
 
+/** Read an object back from Stripe (e.g. a Checkout session, to confirm it's paid). */
+export async function stripeGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${base()}/v1/${path}`, { headers: { Authorization: `Bearer ${key()}` } });
+  const body = (await res.json().catch(() => ({}))) as T & { error?: { message?: string } };
+  if (!res.ok) {
+    console.error('stripe error', path, res.status, body.error?.message);
+    throw new HttpError(502, 'The payment service didn’t answer — try again in a minute');
+  }
+  return body;
+}
+
 /** Verify a Stripe-Signature header (t=…,v1=…) over the raw body; 5-minute tolerance. */
 export function verifyWebhook(payload: Buffer, header: string | undefined, secret: string, now = Date.now()): boolean {
   if (!header || !secret) return false;

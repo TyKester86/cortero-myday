@@ -208,3 +208,88 @@ export async function screenImage(data: Buffer, mime: 'image/jpeg' | 'image/png'
   if (ai === 'unavailable') return { hold: true, crisis: false, reasons: ['screen_unavailable'] };
   return { hold: ai.hold, crisis: ai.crisis, reasons: ai.hold && !ai.reasons.length ? ['image'] : ai.reasons };
 }
+
+/* ---------- ads (the Provider Business Suite): no medical claims, ever ---------- */
+
+/** Medical claims an ad may never make. Describing a service ("ADHD evaluations", "parent coaching") is fine. */
+const AD_CLAIMS: Array<[string, string, RegExp]> = [
+  ['cure_claim', 'Promises to cure, heal or reverse a condition', /\b(cure[sd]?|curing|heal(s|ed|ing)?|reverse[sd]?|eliminate[sd]?|get rid of)\b[^.!?]{0,40}\b(adhd|add|autism|anxiety|depression|symptoms?)\b|\b(adhd|add)\b[^.!?]{0,30}\b(cured|gone for good)\b/i],
+  ['guarantee', 'Guaranteed or permanent results', /\b(guarantee[ds]?|100%|risk[- ]free|permanent(ly)?)\b/i],
+  ['proven_claim', '“Clinically proven” / “FDA approved” style claims', /\b(clinically|scientifically|medically|doctor)[- ](proven|tested|approved|recommended)\b|\bfda[- ]?(approved|cleared)\b/i],
+  ['medication_advice', 'Telling people to stop, cut or replace medication', /\b(stop|quit|replace|ditch|skip|reduce|wean off|get off|no (more )?need for|instead of)\b[^.!?]{0,30}\b(meds?|medications?|adderall|ritalin|vyvanse|concerta|stimulants?|prescriptions?)\b/i],
+  ['miracle_claim', 'Miracle, detox or “natural cure” claims', /\b(miracle|natural cure|detox|secret (cure|remedy))\b/i],
+  ['dosage', 'Doses or dosage instructions', /\b\d+(\.\d+)?\s?(mg|mcg|milligrams?|micrograms?)\b/i],
+];
+
+const AD_POLICY = `You review ad copy that licensed clinicians run in MyDay's adults-only community for people with ADHD.
+REJECT the ad if it makes a medical claim: promising to cure, heal, reverse or eliminate ADHD or another condition; guaranteed or permanent results;
+"clinically proven", "FDA approved" or similar claims; telling people to stop, cut, replace or change medication; miracle, detox or natural-cure claims;
+before/after promises; dosage instructions; or anything aimed at children. Describing a service is fine ("ADHD evaluations for adults",
+"parent coaching", "accepting new patients", "telehealth in Ohio"). Be strict about claims and generous about plain service descriptions.
+Reply with JSON only: {"decision": "allow"|"reject", "reasons": ["short reason", ...]}`;
+
+export interface AdScreen {
+  /** Empty = the ad may run. */
+  reasons: string[];
+  /** Plain-language labels for the person writing the ad. */
+  labels: string[];
+  explain: string;
+}
+
+async function askAdReview(text: string): Promise<{ reject: boolean; reasons: string[] } | 'unavailable' | 'skip'> {
+  const c = claude();
+  if (!c) return config.production ? 'unavailable' : 'skip';
+  try {
+    const res = await c.beta.messages.create({
+      model: process.env.SCREEN_MODEL || process.env.CHAT_MODEL || 'claude-opus-5-5',
+      max_tokens: 200,
+      system: AD_POLICY,
+      messages: [{ role: 'user', content: [{ type: 'text', text: `Ad to review:\n<ad>\n${text}\n</ad>` }] }],
+      output_config: { effort: 'low' },
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+    });
+    if (res.stop_reason === 'refusal') return { reject: true, reasons: ['Our reviewer couldn’t approve this ad'] };
+    const out = res.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+    const v = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)) as { decision?: unknown; reasons?: unknown };
+    const reasons = (Array.isArray(v.reasons) ? v.reasons : []).filter((r): r is string => typeof r === 'string' && !!r.trim()).map((r) => r.trim().slice(0, 120)).slice(0, 4);
+    return { reject: v.decision === 'reject', reasons };
+  } catch (e) {
+    console.error('ad screen: model unavailable', e instanceof Error ? e.message : e);
+    return 'unavailable';
+  }
+}
+
+/**
+ * Ad copy: refused (never held) if it makes a medical claim — rules first (always on), then Claude in
+ * context when ANTHROPIC_KEY is set. Personal details and crisis words are refused too. Fails closed:
+ * if the reviewer can't be asked in production, the ad doesn't run yet.
+ */
+export async function screenAd(text: string): Promise<AdScreen> {
+  const reasons: string[] = [];
+  const labels: string[] = [];
+  for (const [key, label, re] of AD_CLAIMS) {
+    if (re.test(text)) {
+      reasons.push(key);
+      labels.push(label);
+    }
+  }
+  for (const r of ruleScreen(text)) {
+    if (r === 'crisis' || r === 'personal_info' || r === 'personal_attack') {
+      reasons.push(r);
+      labels.push(SCREEN_REASONS[r]);
+    }
+  }
+  if (!reasons.length) {
+    const ai = await askAdReview(text);
+    if (ai === 'unavailable') {
+      reasons.push('screen_unavailable');
+      labels.push('Our ad reviewer is unavailable right now — try again in a few minutes');
+    } else if (ai !== 'skip' && ai.reject) {
+      reasons.push('medical_claim');
+      labels.push(...(ai.reasons.length ? ai.reasons : ['Makes a medical claim']));
+    }
+  }
+  const explain = labels.length ? `${labels.join('; ')}. Ads can describe your services, but they can’t promise medical results.` : '';
+  return { reasons, labels, explain };
+}

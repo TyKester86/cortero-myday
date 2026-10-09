@@ -12,7 +12,7 @@ import { logEvent } from '../lib/events.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { screenText } from '../lib/screen.js';
 import { currentKeyId, openBytes, openText, sealBytes, sealText } from '../lib/seal.js';
-import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, block, decide, imageUrl, member, NOT_BLOCKED, poster, profileRow, SEEN, staff, type AuthorCols } from './community.js';
+import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, sponsorHook, block, decide, imageUrl, member, NOT_BLOCKED, poster, profileRow, SEEN, staff, type AuthorCols } from './community.js';
 
 export const socialRouter = Router();
 /** Video uploads take a raw body. */
@@ -256,7 +256,7 @@ socialRouter.post('/api/social/clips', async (req, res) => {
   res.status(201).json({ clip: await clipFor(m.userId, rows[0]?.id ?? 0), review: heldNote(d?.note, held, imagesHeld ? (posterImg ? 'photo' : 'video') : null) });
 });
 
-async function clipFor(viewer: number, id: number): Promise<ClipItem> {
+export async function clipFor(viewer: number, id: number): Promise<ClipItem> {
   const { rows } = await pool.query<ClipRow>(
     `SELECT ${CLIP_COLS} FROM social_clips c ${AUTHOR_JOIN('c.author_user_id')} WHERE c.id = $2 AND ${SEEN('c')} AND ${NOT_BLOCKED('c.author_user_id')} AND p.banned_at IS NULL`,
     [viewer, id],
@@ -278,7 +278,9 @@ socialRouter.get('/api/social/clips', async (req, res) => {
       ORDER BY c.id DESC LIMIT 10`,
     [m.userId, before, user, tag],
   );
-  res.json({ clips: rows.map((r) => toClip(m.userId, r)), next: rows.length === 10 ? rows[rows.length - 1]?.id ?? null : null });
+  // One sponsored clip on the first, unfiltered page (labelled; grown-ups only, like everything here).
+  const sponsored = before === null && user === null && tag === null && sponsorHook.clips ? await sponsorHook.clips(m.userId) : null;
+  res.json({ clips: rows.map((r) => toClip(m.userId, r)), next: rows.length === 10 ? rows[rows.length - 1]?.id ?? null : null, sponsored });
 });
 
 socialRouter.get('/api/social/clips/:id', async (req, res) => {

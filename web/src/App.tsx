@@ -215,8 +215,8 @@ function Shell() {
 const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ default: m.FeedLanding })));
 
 /** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
-const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id'];
-const SOCIAL = /^\/(feed|clips|messages|people|village)(\/|$)/;
+const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business'];
+const SOCIAL = /^\/(feed|clips|messages|people|village|business)(\/|$)/;
 
 /** A Feed-only account: the social pages, with a way to set up the rest of MyDay later. */
 function SocialShell() {

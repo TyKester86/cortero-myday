@@ -29,6 +29,7 @@ import {
   type FeedPage,
   type FeedPost,
   type ReviewNote,
+  type SponsoredItem,
   type VillageCategory,
   type VillagePost,
   type VillageThread,
@@ -723,7 +724,10 @@ function verifyAllowed(userId: number): boolean {
   return true;
 }
 
-async function feedPage(viewer: number, o: { tab: 'following' | 'everyone'; author: number | null; before: number | null; id?: number }): Promise<FeedPage> {
+/** The Business Suite (routes/business.ts) plugs its sponsored item in here, so this module never imports it (no cycle). */
+export const sponsorHook: { feed: ((viewer: number) => Promise<SponsoredItem | null>) | null; clips: ((viewer: number) => Promise<SponsoredItem | null>) | null } = { feed: null, clips: null };
+
+export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone'; author: number | null; before: number | null; id?: number }): Promise<FeedPage> {
   const { rows } = await pool.query<FeedRow>(
     `SELECT s.id, s.body_enc, s.key_id, s.image_id, i.status AS img_status, s.status, s.created_at, s.author_user_id, s.like_count, ${AUTHOR_COLS},
             EXISTS (SELECT 1 FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS liked
@@ -752,7 +756,15 @@ communityRouter.get('/api/feed', async (req, res) => {
   const tab = req.query.tab === 'following' ? 'following' : 'everyone';
   const authorId = typeof req.query.author === 'string' && req.query.author ? idParam(req.query.author) : null;
   const before = typeof req.query.before === 'string' && req.query.before ? idParam(req.query.before) : null;
-  res.json(await feedPage(m.userId, { tab, author: authorId, before }));
+  const page = await feedPage(m.userId, { tab, author: authorId, before });
+  // Seen: once per person per day (the writers' analytics). Not your own.
+  const others = page.posts.filter((p) => !p.mine && p.status === 'visible').map((p) => p.id);
+  if (others.length) {
+    await pool.query('INSERT INTO social_post_views (post_id, viewer_user_id) SELECT unnest($1::int[]), $2 ON CONFLICT DO NOTHING', [others, m.userId]);
+  }
+  // One sponsored item on the Feed's tabs (never on a person's profile list).
+  if (authorId === null && before === null && sponsorHook.feed) page.sponsored = await sponsorHook.feed(m.userId);
+  res.json(page);
 });
 
 /** "Verify with Hana": a shared, inline fact-check of a visible post (made once, then everyone sees it). */
@@ -901,7 +913,11 @@ communityRouter.delete('/api/feed/posts/:id', async (req, res) => {
 
 communityRouter.get('/api/community/people/:id', async (req, res) => {
   const m = await member(req);
-  res.json(await profileView(m.userId, idParam(req.params.id)));
+  const id = idParam(req.params.id);
+  const view = await profileView(m.userId, id);
+  // A profile view (once per person per day) for the provider's analytics.
+  if (id !== m.userId) await pool.query('INSERT INTO social_profile_views (profile_user_id, viewer_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [id, m.userId]);
+  res.json(view);
 });
 
 communityRouter.post('/api/community/people/:id/follow', async (req, res) => {

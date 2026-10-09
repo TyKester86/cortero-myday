@@ -4,9 +4,9 @@
  * kids and teens have no route here and the API answers them 403. The Feed is free: nothing here
  * checks a subscription.
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
-import type { ClipComment, ClipItem, CommunityAuthor, CommunityMe, DmThread, DmThreadSummary, ReviewNote, StoryItem, StoryRailItem } from '@myday/shared';
+import type { ClipComment, ClipItem, CommunityAuthor, CommunityMe, ConsultSlot, DmThread, DmThreadSummary, ReviewNote, SponsoredItem, StoryItem, StoryRailItem } from '@myday/shared';
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { ago } from '../../dates';
@@ -395,6 +395,7 @@ function ClipsBody({ me }: { me: CommunityMe }) {
   const user = params.get('user');
   const focus = params.get('c');
   const [clips, setClips] = useState<ClipItem[]>([]);
+  const [sponsored, setSponsored] = useState<SponsoredItem | null>(null);
   const [next, setNext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -406,13 +407,14 @@ function ClipsBody({ me }: { me: CommunityMe }) {
     let live = true;
     setLoading(true);
     void Promise.all([
-      api<{ clips: ClipItem[]; next: number | null }>(`/api/social/clips?${filter.slice(1)}`),
+      api<{ clips: ClipItem[]; next: number | null; sponsored?: SponsoredItem | null }>(`/api/social/clips?${filter.slice(1)}`),
       focus ? api<{ clip: ClipItem }>(`/api/social/clips/${encodeURIComponent(focus)}`).catch(() => null) : Promise.resolve(null),
     ])
       .then(([page, one]) => {
         if (!live) return;
         const list = one ? [one.clip, ...page.clips.filter((c) => c.id !== one.clip.id)] : page.clips;
         setClips(list);
+        setSponsored(page.sponsored ?? null);
         setNext(page.next);
         setErr(null);
       })
@@ -459,8 +461,11 @@ function ClipsBody({ me }: { me: CommunityMe }) {
       )}
       {err && <p className="error">{err}</p>}
       <div className="clip-feed" data-testid="clip-feed">
-        {clips.map((c) => (
-          <ClipCard key={c.id} c={c} onChange={swap} onGone={(id) => setClips((l) => l.filter((x) => x.id !== id))} onMsg={setMsg} onTag={(t) => setParams({ tag: t })} />
+        {clips.map((c, i) => (
+          <Fragment key={c.id}>
+            <ClipCard c={c} onChange={swap} onGone={(id) => setClips((l) => l.filter((x) => x.id !== id))} onMsg={setMsg} onTag={(t) => setParams({ tag: t })} />
+            {i === 0 && sponsored?.clip && <ClipCard c={sponsored.clip} sponsor={sponsored} onChange={(x) => setSponsored({ ...sponsored, clip: x })} onGone={() => setSponsored(null)} onMsg={setMsg} onTag={(t) => setParams({ tag: t })} />}
+          </Fragment>
         ))}
         {!loading && !clips.length && !err && (
           <div className="clip-empty">
@@ -488,7 +493,8 @@ function ClipsBody({ me }: { me: CommunityMe }) {
   );
 }
 
-function ClipCard({ c, onChange, onGone, onMsg, onTag }: { c: ClipItem; onChange: (c: ClipItem) => void; onGone: (id: number) => void; onMsg: (m: string) => void; onTag: (t: string) => void }) {
+function ClipCard({ c, sponsor, onChange, onGone, onMsg, onTag }: { c: ClipItem; sponsor?: SponsoredItem; onChange: (c: ClipItem) => void; onGone: (id: number) => void; onMsg: (m: string) => void; onTag: (t: string) => void }) {
+  const navigate = useNavigate();
   const ref = useRef<HTMLVideoElement>(null);
   const box = useRef<HTMLElement>(null);
   const viewed = useRef(false);
@@ -530,7 +536,7 @@ function ClipCard({ c, onChange, onGone, onMsg, onTag }: { c: ClipItem; onChange
     void api(`/api/social/clips/${c.id}/share`, 'POST').then(() => onChange({ ...c, shares: c.shares + 1 }));
   };
   return (
-    <article className="clip" ref={box} data-testid="clip" data-clip={c.id}>
+    <article className={sponsor ? 'clip sponsored' : 'clip'} ref={box} data-testid={sponsor ? 'sponsored-clip' : 'clip'} data-clip={c.id}>
       <video
         ref={ref}
         src={c.videoUrl}
@@ -558,6 +564,11 @@ function ClipCard({ c, onChange, onGone, onMsg, onTag }: { c: ClipItem; onChange
         <Icon name={muted ? 'muted' : 'sound'} size={20} />
       </button>
       {c.status !== 'visible' && <span className="pill sun clip-pending">Under review — only you can see it</span>}
+      {sponsor && (
+        <span className="sponsored-label clip-sponsored" data-testid="sponsored-label">
+          Sponsored
+        </span>
+      )}
       <div className="clip-rail">
         <Link to={`/people/${c.author.userId}`} className="clip-author" aria-label={`${c.author.displayName}’s profile`}>
           <Avatar a={c.author} size={42} />
@@ -613,6 +624,16 @@ function ClipCard({ c, onChange, onGone, onMsg, onTag }: { c: ClipItem; onChange
           </p>
         )}
         <small className="clip-views">{count(c.views, 'view')}</small>
+        {sponsor && (
+          <button
+            type="button"
+            className="btn small clip-cta"
+            data-testid="sponsored-cta"
+            onClick={() => void api(`/api/ads/${sponsor.campaignId}/click`, 'POST').catch(() => undefined).then(() => navigate(sponsor.href))}
+          >
+            {sponsor.cta}
+          </button>
+        )}
       </div>
       {comments && <ClipComments clip={c} onClose={() => setComments(false)} onCount={(n) => onChange({ ...c, comments: n })} />}
     </article>
@@ -997,6 +1018,120 @@ function Thread({ id }: { id: string }) {
           </button>
         </form>
       )}
+    </div>
+  );
+}
+
+/* ======================= Sponsored (the Provider Business Suite's ads) ======================= */
+
+/** A verified provider's paid placement: always labelled "Sponsored". Only ever inside the 18+ Feed. */
+export function SponsoredCard({ s }: { s: SponsoredItem }) {
+  const navigate = useNavigate();
+  const click = (): Promise<unknown> => api(`/api/ads/${s.campaignId}/click`, 'POST').catch(() => undefined);
+  const picture = s.imageUrl ?? s.post?.imageUrl ?? s.clip?.posterUrl ?? null;
+  const body = s.body ?? s.post?.body ?? s.clip?.caption ?? '';
+  return (
+    <article className="slip sponsored" data-testid="sponsored" data-campaign={s.campaignId}>
+      <header className="slip-head">
+        <Link to={`/people/${s.provider.userId}`} className="who-chip">
+          <Avatar a={s.provider} size={28} />
+          <b>{s.provider.displayName}</b>
+        </Link>
+        <span className="sponsored-label" data-testid="sponsored-label">
+          Sponsored
+        </span>
+      </header>
+      {picture && <img src={picture} alt="" className="feed-photo" />}
+      {s.headline && <b className="sponsored-head">{s.headline}</b>}
+      {body && <p className="slip-body">{body}</p>}
+      {s.external ? (
+        <a className="btn small" href={s.href} target="_blank" rel="noopener noreferrer sponsored" onClick={() => void click()} data-testid="sponsored-cta">
+          {s.cta} ↗
+        </a>
+      ) : (
+        <button type="button" className="btn small" onClick={() => void click().then(() => navigate(s.href))} data-testid="sponsored-cta">
+          {s.cta}
+        </button>
+      )}
+    </article>
+  );
+}
+
+/* ======================= Booking a consult (a verified provider's open times) ======================= */
+
+export function BookConsult({ provider, onClose }: { provider: CommunityAuthor; onClose: () => void }) {
+  const { data, error, reload } = useLoad<{ slots: ConsultSlot[] }>(`/api/providers/${provider.userId}/slots`);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const navigate = useNavigate();
+  const open = data?.slots.filter((s) => s.status === 'open') ?? [];
+  const mine = data?.slots.filter((s) => s.mine && s.status === 'booked') ?? [];
+  const when = (iso: string): string => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return (
+    <div className="sheet-back" role="dialog" aria-modal="true" aria-label="Book a consult" data-testid="book-sheet" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="sheet">
+        <header className="sheet-head">
+          <b>Book a consult with {provider.displayName}</b>
+          <button type="button" className="link" onClick={onClose} aria-label="Close">
+            <Icon name="close" size={22} />
+          </button>
+        </header>
+        {error && <p className="error">{error}</p>}
+        {mine.map((s) => (
+          <p key={s.id} className="card note small" data-testid="booked-note">
+            ✓ You’re booked: {when(s.startsAt)} ({s.minutes} min). {provider.displayName} will message you about the call.
+          </p>
+        ))}
+        {data && !open.length && (
+          <p className="muted small">
+            No open times right now.{' '}
+            <Link to={`/messages/${provider.userId}?consult=1`} onClick={onClose}>
+              Send {provider.displayName} a message
+            </Link>{' '}
+            instead.
+          </p>
+        )}
+        <div className="sheet-list">
+          {open.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className="book-slot"
+              disabled={busy !== null}
+              data-testid="book-slot"
+              onClick={() => {
+                setBusy(s.id);
+                setMsg(null);
+                void api<{ booked: boolean; url: string | null }>(`/api/consults/${s.id}/book`, 'POST')
+                  .then((r) => {
+                    if (r.url && !r.url.startsWith('/')) window.location.href = r.url;
+                    else {
+                      setMsg(`Booked ✓ ${when(s.startsAt)}. ${provider.displayName} will message you about the call.`);
+                      reload();
+                      if (r.url) navigate(r.url, { replace: true });
+                    }
+                  })
+                  .catch((e: unknown) => {
+                    setMsg(errText(e, 'Could not book'));
+                    reload();
+                  })
+                  .finally(() => setBusy(null));
+              }}
+            >
+              <b>{when(s.startsAt)}</b>
+              <span>
+                {s.minutes} min · {s.priceCents ? `$${(s.priceCents / 100).toFixed(2)}` : 'Free'}
+              </span>
+            </button>
+          ))}
+        </div>
+        {msg && (
+          <p className="small" role="status" data-testid="book-msg">
+            {msg}
+          </p>
+        )}
+        <small className="muted">Paid consults go through secure checkout. A consult is general guidance, not emergency care — if you’re in crisis, call or text 988.</small>
+      </div>
     </div>
   );
 }

@@ -2886,19 +2886,38 @@ async function privacyRules() {
 }
 
 /** Real payments through Stripe, against a local fake Stripe (no network, no real keys). */
+/** A grown-up for the Stripe consult check (signed in earlier in the run). */
+const robinStripeClient = new Client('clip-reporter');
+let robinSignedIn = false;
+const robinStripe = () => robinStripeClient;
+
 async function stripeBilling() {
+  if (!robinSignedIn) {
+    await robinStripeClient.get(`/dev-login?token=${DEV_TOKEN}&email=clip-reporter@example.test`);
+    robinSignedIn = true;
+  }
   section('audit: real payments (Stripe Checkout + signed webhooks) — against a local fake Stripe');
   const { createServer } = await import('node:http');
   const { createHmac } = await import('node:crypto');
   const calls = [];
   let customers = 0;
+  let sessionsMade = 0;
+  const sessionsById = new Map();
   const fake = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       calls.push({ path: req.url, auth: req.headers.authorization, body: new URLSearchParams(body) });
-      // A new customer id each time (like Stripe; the first is cus_test1).
-      const out = req.url === '/v1/customers' ? { id: `cus_test${++customers}` } : req.url === '/v1/checkout/sessions' ? { id: 'cs_1', url: 'https://checkout.stripe.test/cs_1' } : { url: 'https://billing.stripe.test/portal' };
+      // A new customer / session id each time (like Stripe; the first are cus_test1 / cs_1).
+      let out;
+      if (req.url === '/v1/customers') out = { id: `cus_test${++customers}` };
+      else if (req.url === '/v1/checkout/sessions') {
+        const id = `cs_${++sessionsMade}`;
+        const b = new URLSearchParams(body);
+        sessionsById.set(id, { id, payment_status: 'paid', amount_total: Number(b.get('line_items[0][price_data][unit_amount]')), metadata: { myday_kind: b.get('metadata[myday_kind]'), myday_id: b.get('metadata[myday_id]') } });
+        out = { id, url: `https://checkout.stripe.test/${id}` };
+      } else if (req.method === 'GET' && req.url.startsWith('/v1/checkout/sessions/')) out = sessionsById.get(req.url.split('/').pop()) ?? { error: { message: 'No such session' } };
+      else out = { url: 'https://billing.stripe.test/portal' };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     });
@@ -2974,6 +2993,25 @@ async function stripeBilling() {
     const after = (await call2(ty, 'GET', '/api/billing')).data;
     eq('canceled in Stripe → canceled here, paid through the period end', [after.status, after.paidThrough?.slice(0, 10)], ['canceled', '2030-01-01']);
     eq('“Manage billing” opens Stripe’s portal (card, invoices, cancel)', (await call2(ty, 'POST', '/api/billing/portal')).data.url, 'https://billing.stripe.test/portal');
+
+    section('Provider Business Suite through Stripe Checkout (fake Stripe): pay → live; the signed webhook or the return confirms it');
+    const samId2 = (await sql("SELECT id FROM users WHERE email = 'sam@example.com'"))[0].id;
+    const sclip = (await call2(sam, 'GET', `/api/social/clips?user=${samId2}`)).data.clips.find((c) => c.status === 'visible');
+    const bo = await call2(sam, 'POST', '/api/business/boost', { targetKind: 'clip', targetId: sclip.id, package: 'growth' });
+    const bsess = calls.filter((c) => c.path === '/v1/checkout/sessions').at(-1);
+    eq('boost → Stripe Checkout, a one-time $50 payment; not live until paid', [bo.status, bo.data.url.startsWith('https://checkout.stripe.test/cs_'), bo.data.campaign.status, bsess?.body.get('mode'), bsess?.body.get('line_items[0][price_data][unit_amount]'), bsess?.body.get('metadata[myday_kind]')], [201, true, 'pending_payment', 'payment', '5000', 'ad']);
+    const bsid = bo.data.url.split('/').pop();
+    eq('…a forged webhook is refused', (await hook('checkout.session.completed', { id: bsid, payment_status: 'paid', amount_total: 5000, metadata: { myday_kind: 'ad', myday_id: String(bo.data.campaign.id) } }, 'whsec_wrong')).status, 400);
+    await hook('checkout.session.completed', { id: bsid, payment_status: 'paid', amount_total: 5000, metadata: { myday_kind: 'ad', myday_id: String(bo.data.campaign.id) } });
+    eq('Stripe’s signed webhook → the boost is live', (await call2(sam, 'GET', '/api/business')).data.campaigns.find((c) => c.id === bo.data.campaign.id)?.status, 'active');
+    const when = new Date(Date.now() + 5 * 86400_000);
+    when.setUTCMinutes(0, 0, 0);
+    const slot = (await call2(sam, 'POST', '/api/business/slots', { startsAt: when.toISOString(), minutes: 50, priceCents: 2500 })).data.slots.find((x) => x.priceCents === 2500 && x.status === 'open');
+    const bk = await call2(robinStripe(), 'POST', `/api/consults/${slot.id}/book`);
+    eq('a paid consult → Stripe Checkout; the slot is held meanwhile', [bk.status, bk.data.url.startsWith('https://checkout.stripe.test/cs_'), (await call2(sam, 'GET', '/api/business')).data.slots.find((x) => x.id === slot.id)?.status], [201, true, 'held']);
+    const conf = await call2(robinStripe(), 'GET', `/api/business/checkout/confirm?session_id=${bk.data.url.split('/').pop()}`);
+    eq('back from Checkout: MyDay asks Stripe → paid → booked (even before the webhook)', [conf.data.ok, (await call2(sam, 'GET', '/api/business')).data.slots.find((x) => x.id === slot.id)?.status], [true, 'booked']);
+    eq('…and it’s revenue in Sam’s analytics', (await call2(sam, 'GET', '/api/business/analytics?range=7')).data.totals.revenueCents >= 2500, true);
   } finally {
     s2.kill();
     fake.close();
@@ -3346,6 +3384,131 @@ async function socialSuite() {
   eq('…while the rest of the app stays out of search', /index, follow/.test((await anon.get('/today')).data), false);
 }
 
+async function businessSuite() {
+  const uid = async (key) => (await sql('SELECT u.id FROM users u LEFT JOIN household_members m ON m.id = u.member_id WHERE m.key = $1 OR u.email = $1 ORDER BY u.id LIMIT 1', [key]))[0]?.id;
+  const samId = await uid('sam@example.com');
+  const kaylaId = await uid('kayla');
+  const bmod = new Client('business-mod');
+  await bmod.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  const robin = new Client('clip-reporter');
+  await robin.get(`/dev-login?token=${DEV_TOKEN}&email=clip-reporter@example.test`);
+
+  section('Provider Business Suite: verified providers only; ads only in the 18+ Feed');
+  const locked = await ty.get('/api/business');
+  eq('not a verified provider → the suite is closed (with why)', [locked.status, locked.data.code], [403, 'not_verified_provider']);
+  eq('kids never reach it', [(await avery.get('/api/business')).status, (await evan.get('/api/business/analytics')).status], [403, 403]);
+  let biz = (await sam.get('/api/business')).data;
+  eq('Sam (verified): boost packages from config, a CPM, payments (stub here)', [biz.packages.map((p) => [p.code, p.impressions, p.cents]), biz.cpmCents, biz.payments], [[['starter', 1000, 1500], ['growth', 5000, 5000], ['reach', 20000, 15000]], 1200, 'stub']);
+
+  section('Ads: the medical-claim screen refuses a violating draft before anything is charged');
+  const bad = await sam.post('/api/business/campaigns', { name: 'Fall push', headline: 'Cure your ADHD in 30 days', body: 'Clinically proven, guaranteed results — stop your meds for good.', destination: 'profile', budgetCents: 2000 });
+  eq('a cure claim / “clinically proven” / “guaranteed” / stop-your-meds → refused (422) with the reasons', [bad.status, bad.data.code, bad.data.details?.reasons.length >= 3], [422, 'ad_rejected', true]);
+  eq('…nothing was saved or charged', (await sam.get('/api/business')).data.campaigns.length, 0);
+  const chk = (await sam.post('/api/business/ads/check', { headline: 'FDA-approved focus formula', body: 'A miracle for ADHD kids' })).data;
+  eq('“Check my ad” says why without saving', [chk.ok, chk.reasons.length >= 2], [false, true]);
+  const fine = (await sam.post('/api/business/ads/check', { headline: 'ADHD evaluations for adults', body: 'Telehealth across Oklahoma. Accepting new patients this fall.' })).data;
+  eq('describing a service is fine', fine.ok, true);
+  eq('a website destination must be https', (await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD coaching', body: 'Weekly sessions.', destination: 'url', destinationUrl: 'http://example.com', budgetCents: 2000 })).status, 400);
+  eq('a budget has a floor', (await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD coaching', body: 'Weekly sessions.', budgetCents: 500 })).status, 400);
+
+  section('Boost a post or clip: package → checkout → “Sponsored” in the Feed, with impressions and clicks');
+  const samClip = (await sam.get(`/api/social/clips?user=${samId}`)).data.clips.find((c) => c.status === 'visible');
+  eq('only your own live post or clip', (await ty.post('/api/business/boost', { targetKind: 'clip', targetId: samClip.id, package: 'starter' })).status, 403);
+  const tyPost = (await ty.get(`/api/feed?author=${await uid('ty')}`)).data.posts[0];
+  eq('…not someone else’s', (await sam.post('/api/business/boost', { targetKind: 'post', targetId: tyPost.id, package: 'starter' })).status, 404);
+  eq('…a real package', (await sam.post('/api/business/boost', { targetKind: 'clip', targetId: samClip.id, package: 'mega' })).status, 400);
+  const boost = (await sam.post('/api/business/boost', { targetKind: 'clip', targetId: samClip.id, package: 'starter' })).data;
+  eq('boost: paid (stub) → live, 1,000 impressions for $15', [boost.url, boost.campaign.status, boost.campaign.impressionsBought, boost.campaign.budgetCents, boost.campaign.kind], ['/business?paid=ad', 'active', 1000, 1500, 'boost']);
+  const camp = (await sam.post('/api/business/campaigns', { name: 'Fall intake', headline: 'ADHD evaluations for adults', body: 'Telehealth across Oklahoma. Accepting new patients this fall.', destination: 'consult', budgetCents: 2400 })).data;
+  eq('campaign: creative + destination + budget → impressions at the CPM, live', [camp.campaign.status, camp.campaign.impressionsBought, camp.campaign.destination, camp.campaign.headline], ['active', 2000, 'consult', 'ADHD evaluations for adults']);
+  const total = async () => (await sam.get('/api/business')).data.campaigns.reduce((n, c) => n + c.impressions, 0);
+  const f1 = (await ty.get('/api/feed?tab=everyone')).data;
+  eq('Ty’s Feed: one Sponsored item from Sam, with a call to action', [f1.sponsored?.provider.userId, typeof f1.sponsored?.cta, f1.sponsored?.campaignId > 0], [samId, 'string', true]);
+  const f2 = (await ty.get('/api/feed?tab=everyone')).data;
+  eq('…the next load shows the other one (not the same twice in a row)', f2.sponsored?.campaignId !== f1.sponsored?.campaignId, true);
+  await ty.get('/api/feed?tab=everyone');
+  eq('impressions count once per person per campaign per day', await total(), 2);
+  await kayla.get('/api/feed?tab=following');
+  eq('…another person → another impression', await total(), 3);
+  eq('never on a person’s profile list', (await ty.get(`/api/feed?author=${samId}`)).data.sponsored ?? null, null);
+  const sc = (await ty.get('/api/social/clips')).data;
+  eq('Clips: the boosted clip shows as a sponsored clip', [sc.sponsored?.clip?.id, sc.sponsored?.kind], [samClip.id, 'clip']);
+  const click = (await ty.post(`/api/ads/${camp.campaign.id}/click`)).data;
+  eq('a tap → the destination (consult booking on Sam’s page) and a click', click.href, `/people/${samId}?book=1`);
+  await ty.post(`/api/ads/${camp.campaign.id}/click`);
+  await sam.post(`/api/ads/${camp.campaign.id}/click`);
+  eq('clicks count once per person; your own don’t count', (await sam.get('/api/business')).data.campaigns.find((c) => c.id === camp.campaign.id).clicks, 1);
+  eq('spend tracks impressions (budget × served ÷ bought)', (await sam.get('/api/business')).data.campaigns.every((c) => c.spendCents === Math.round((c.budgetCents * c.impressions) / c.impressionsBought)), true);
+  eq('kids never see an ad: the Feed and Clips are closed to them, clicks too', [(await avery.get('/api/feed')).status, (await evan.get('/api/social/clips')).status, (await avery.post(`/api/ads/${camp.campaign.id}/click`)).status], [403, 403, 403]);
+  const kidRows = await sql("SELECT COUNT(*)::int AS n FROM ad_impressions i JOIN users u ON u.id = i.viewer_user_id JOIN household_members m ON m.id = u.member_id WHERE m.kind = 'kid'");
+  eq('…not one impression was ever served to a kid account', kidRows[0].n, 0);
+  await kayla.post(`/api/community/people/${samId}/block`);
+  eq('blocked providers’ ads don’t show', (await kayla.get('/api/feed?tab=everyone')).data.sponsored ?? null, null);
+  await kayla.del(`/api/community/people/${samId}/block`);
+  for (const c of [boost.campaign, camp.campaign]) await sam.post(`/api/business/campaigns/${c.id}/pause`);
+  eq('paused → not served', (await ty.get('/api/feed?tab=everyone')).data.sponsored ?? null, null);
+  eq('…resume', (await sam.post(`/api/business/campaigns/${camp.campaign.id}/resume`)).data.campaigns.find((c) => c.id === camp.campaign.id).status, 'active');
+  await sam.post(`/api/business/campaigns/${boost.campaign.id}/resume`);
+  eq('someone else can’t pause your campaign', (await kayla.post(`/api/business/campaigns/${camp.campaign.id}/pause`)).status, 403);
+  await sql('UPDATE ad_campaigns SET impressions = impressions_bought WHERE id = $1', [boost.campaign.id]);
+  await ty.get('/api/feed?tab=everyone');
+  eq('impressions used up → finished, not served', (await sam.get('/api/business')).data.campaigns.find((c) => c.id === boost.campaign.id).status, 'completed');
+  await sql('UPDATE ad_campaigns SET impressions = 3 WHERE id = $1', [boost.campaign.id]);
+
+  section('Consult booking: slots on the provider page, free or paid, into analytics and revenue');
+  const tomorrow = new Date(Date.now() + 26 * 3600_000);
+  tomorrow.setUTCMinutes(0, 0, 0);
+  const later = new Date(tomorrow.getTime() + 24 * 3600_000);
+  eq('a slot in the past is refused', (await sam.post('/api/business/slots', { startsAt: new Date(Date.now() - 3600_000).toISOString(), minutes: 30, priceCents: 0 })).status, 400);
+  await sam.post('/api/business/slots', { startsAt: tomorrow.toISOString(), minutes: 30, priceCents: 0 });
+  const slots = (await sam.post('/api/business/slots', { startsAt: later.toISOString(), minutes: 45, priceCents: 7500 })).data.slots;
+  eq('Sam offers two times: free 30 min, $75 for 45 min', slots.map((s) => [s.minutes, s.priceCents, s.status]), [[30, 0, 'open'], [45, 7500, 'open']]);
+  eq('…not the same time twice', (await sam.post('/api/business/slots', { startsAt: tomorrow.toISOString(), minutes: 30, priceCents: 0 })).status, 409);
+  const open = (await ty.get(`/api/providers/${samId}/slots`)).data.slots;
+  eq('Ty sees Sam’s open times', open.length, 2);
+  const freeSlot = open.find((s) => s.priceCents === 0);
+  const paidSlot = open.find((s) => s.priceCents === 7500);
+  eq('book the free one → booked right away', (await ty.post(`/api/consults/${freeSlot.id}/book`)).data, { booked: true, url: null });
+  eq('…someone else can’t take it now', [(await kayla.post(`/api/consults/${freeSlot.id}/book`)).status, (await kayla.post(`/api/consults/${freeSlot.id}/book`)).data.code], [409, 'slot_taken']);
+  eq('kids can’t book', (await avery.post(`/api/consults/${paidSlot.id}/book`)).status, 403);
+  eq('the provider can’t book their own', (await sam.post(`/api/consults/${paidSlot.id}/book`)).status, 409);
+  const paidBook = (await kayla.post(`/api/consults/${paidSlot.id}/book`)).data;
+  eq('book the paid one → checkout (stub: paid) → booked', [paidBook.booked, paidBook.url], [true, `/people/${samId}?paid=consult`]);
+  const mine = (await sam.get('/api/business')).data.slots;
+  eq('Sam sees who booked (first names)', mine.map((s) => [s.status, s.bookedBy]), [['booked', 'Ty'], ['booked', 'Kayla']]);
+  eq('Kayla sees her consult', (await kayla.get('/api/consults/mine')).data.consults.map((c) => [c.provider.displayName, c.paidCents]), [['Sam', 7500]]);
+  eq('a booked slot can’t be removed', (await sam.del(`/api/business/slots/${paidSlot.id}`)).status, 409);
+
+  section('Analytics: per provider, 7/30/90 days, they move with real engagement, CSV, no cross-provider data');
+  const a0 = (await sam.get('/api/business/analytics?range=7')).data;
+  eq('7 days of daily numbers', [a0.rangeDays, a0.daily.length], [7, 7]);
+  eq('consult bookings and revenue land in analytics', [a0.totals.consultBookings, a0.totals.revenueCents], [2, 7500]);
+  check('ad impressions and clicks land in analytics', a0.totals.adImpressions >= 3 && a0.totals.adClicks === 1, JSON.stringify(a0.totals));
+  // Robin (a grown-up who hasn't touched Sam's things today) engages: every number moves by one.
+  await robin.get(`/api/community/people/${samId}`);
+  await robin.post(`/api/community/people/${samId}/follow`);
+  await robin.post(`/api/social/clips/${samClip.id}/view`);
+  await robin.post(`/api/social/clips/${samClip.id}/like`);
+  const samPostVis = (await sam.get(`/api/feed?author=${samId}`)).data.posts.find((p) => p.status === 'visible');
+  await robin.get('/api/feed?tab=everyone');
+  const a1 = (await sam.get('/api/business/analytics?range=7')).data;
+  const d = (k) => a1.totals[k] - a0.totals[k];
+  eq('test engagement moves the numbers: profile view, follower, clip view, like', [d('profileViews'), d('newFollowers'), d('followers'), d('clipViews'), d('engagement')], [1, 1, 1, 1, 1]);
+  check('…and post views (Sam’s posts shown in Robin’s Feed)', !samPostVis || d('postViews') >= 1, `${d('postViews')}`);
+  eq('…the daily series and follower growth end on today', [a1.daily.at(-1).followers, a1.daily.reduce((n, x) => n + x.profileViews, 0)], [a1.totals.followers, a1.totals.profileViews]);
+  check('top content lists Sam’s clip', a1.top.some((t) => t.kind === 'clip' && t.id === samClip.id));
+  eq('30 and 90 days work too', [(await sam.get('/api/business/analytics?range=30')).data.daily.length, (await sam.get('/api/business/analytics?range=90')).data.daily.length], [30, 90]);
+  const csv = await sam.get('/api/business/analytics.csv?range=7');
+  eq('CSV export: a file, a header, one row per day', [csv.status, /text\/csv/.test(csv.headers.get('content-type')), /attachment; filename="myday-analytics-7d.csv"/.test(csv.headers.get('content-disposition')), String(csv.data).trim().split('\n').length, String(csv.data).split('\n')[0]], [200, true, true, 8, 'date,profile_views,new_followers,followers,content_views,engagement,consult_bookings,revenue_usd']);
+  // Kayla becomes a verified provider too: her analytics never include Sam's numbers.
+  await kayla.put('/api/social/provider', { licenseType: 'Psychologist (PhD/PsyD)', licenseState: 'OK', licenseNumber: 'PSY-2231', specialties: ['ADHD'] });
+  await bmod.post(`/api/social/providers/${kaylaId}/verify`);
+  const ka = (await kayla.get(`/api/business/analytics?range=90&provider=${samId}&userId=${samId}`)).data;
+  eq('no cross-provider leakage: Kayla sees only her own (asking for Sam’s changes nothing)', [ka.totals.clipViews, ka.totals.consultBookings, ka.totals.revenueCents, ka.totals.adImpressions, ka.top.some((t) => t.id === samClip.id)], [0, 0, 0, 0, false]);
+  eq('…and Sam’s campaigns aren’t hers', (await kayla.get('/api/business')).data.campaigns.length, 0);
+  eq('not a provider → no analytics', (await ty.get('/api/business/analytics')).status, 403);
+}
+
 async function uiGate() {
   section('L2. button audit: every control → a handler → a real API route');
   const { audit } = await import(pathToFileURL(path.join(root, 'scripts', 'button-audit.mjs')).href);
@@ -3508,7 +3671,7 @@ async function uiGate() {
     await page.getByTestId('story-text').fill('UI story: water bottle filled before 9am');
     await page.getByTestId('story-post').click();
     await page.getByTestId('story-composer').waitFor({ state: 'detached', timeout: 10000 });
-    await page.getByTestId('story-you').click();
+    await page.locator('[data-testid="story-you"][aria-label="Watch your story"]').click();
     await page.getByTestId('story-viewer').waitFor({ timeout: 10000 });
     check('Stories: your story opens fullscreen, with progress segments and who saw it', /water bottle filled/.test(await page.getByTestId('story-body').innerText()) && (await page.locator('.story-bar').count()) >= 1 && /Seen by/.test(await page.getByTestId('story-views').innerText()));
     await page.getByTestId('story-close').click();
@@ -3550,8 +3713,10 @@ async function uiGate() {
     const creds = await page.getByTestId('provider-credentials').innerText();
     eq('provider page: teal header, gold VERIFIED LICENSED PROVIDER badge, credentials, specialties, Book consult + Message', [/verified licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.locator('.profile-hero.provider').count(), /CSW-10420/.test(creds) && /OK/.test(creds), await page.locator('.spec-chip').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
     await page.getByTestId('book-consult').click();
+    await page.getByTestId('book-sheet').waitFor({ timeout: 10000 });
+    await page.getByTestId('book-sheet').getByRole('link', { name: /Send .* a message/ }).click();
     await page.getByTestId('dm-thread').waitFor({ timeout: 10000 });
-    check('…Book consult opens a message to the provider, ready to send', /book a consult/i.test(await page.getByTestId('dm-input').inputValue()));
+    check('…Book consult with no open times → a message to the provider, ready to send', /book a consult/i.test(await page.getByTestId('dm-input').inputValue()));
     eq('…and the Hana button steps aside so it never covers Send', await page.getByTestId('hana-fab').count(), 0);
     await page.getByTestId('dm-input').fill('UI hello from Ty');
     await page.getByTestId('dm-send').click();
@@ -3572,16 +3737,70 @@ async function uiGate() {
     await page.getByTestId('circle-list').waitFor({ timeout: 10000 });
     eq('Circles live under the Feed too (same section bar)', await page.getByTestId('feed-nav').locator('a.active').innerText(), 'Circles');
 
+    section('UI: Provider Business Suite — Sponsored in the Feed, booking a consult, analytics, ads with the claim screen');
+    const openSlot = new Date(Date.now() + 3 * 86400_000);
+    openSlot.setUTCMinutes(30, 0, 0);
+    await sam.post('/api/business/slots', { startsAt: openSlot.toISOString(), minutes: 20, priceCents: 0 });
+    // Only the consult campaign is live for this check (boosts paused), so the card's button books.
+    for (const c of (await sam.get('/api/business')).data.campaigns) if (c.kind === 'boost' && c.status === 'active') await sam.post(`/api/business/campaigns/${c.id}/pause`);
+    await page.goto(`${BASE}/feed`);
+    const spons = page.getByTestId('sponsored');
+    await spons.waitFor({ timeout: 10000 });
+    eq('Ty’s Feed: a card labelled “Sponsored” from the verified provider, with its call to action', [(await spons.getByTestId('sponsored-label').innerText()).trim().toUpperCase(), /Sam/.test(await spons.innerText()), await spons.getByTestId('sponsored-cta').count()], ['SPONSORED', true, 1]);
+    await spons.getByTestId('sponsored-cta').click();
+    await page.getByTestId('book-sheet').waitFor({ timeout: 10000 });
+    check('…tap “Book a consult” → Sam’s page with the open times', (await page.getByTestId('book-slot').count()) >= 1);
+    await page.getByTestId('book-slot').first().click();
+    await page.getByTestId('book-msg').waitFor({ timeout: 10000 });
+    check('…book a free time → “Booked ✓”', /Booked/.test(await page.getByTestId('book-msg').innerText()));
+    await page.keyboard.press('Escape');
+    const bizCtx = await browser.newContext(phone);
+    const bizPage = await bizCtx.newPage();
+    watch(bizPage);
+    await sam.patch('/api/me/prefs', { firstRunDone: true });
+    await bizPage.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=sam@example.com`);
+    await bizPage.goto(`${BASE}/people/${samUser}`);
+    await bizPage.getByTestId('business-link').click();
+    await bizPage.getByTestId('biz-analytics').waitFor({ timeout: 10000 });
+    await bizPage.getByTestId('biz-profile-views').waitFor({ timeout: 10000 });
+    eq('Business → Analytics: profile views, followers, views, engagement, bookings, revenue, ads — and CSV', [await bizPage.locator('.biz-tile').count(), await bizPage.getByTestId('biz-csv').getAttribute('href'), /\$/.test(await bizPage.getByTestId('biz-revenue').innerText())], [10, '/api/business/analytics.csv?range=30', true]);
+    await bizPage.getByTestId('biz-range-7').click();
+    await bizPage.getByTestId('biz-csv').and(bizPage.locator('[href$="range=7"]')).waitFor({ timeout: 10000 });
+    check('…7 / 30 / 90 day ranges', true);
+    await bizPage.getByTestId('biz-tab-ads').click();
+    await bizPage.getByTestId('biz-campaign').first().waitFor({ timeout: 10000 });
+    check('Ads: campaigns with status, spend, impressions, clicks', /Impressions/i.test(await bizPage.getByTestId('biz-campaigns').innerText()) && /Clicks/i.test(await bizPage.getByTestId('biz-campaigns').innerText()));
+    await bizPage.getByTestId('biz-campaign-open').click();
+    await bizPage.getByTestId('ad-name').fill('Bad idea');
+    await bizPage.getByTestId('ad-headline').fill('Cure ADHD naturally');
+    await bizPage.getByTestId('ad-body').fill('Guaranteed results. Stop your meds.');
+    await bizPage.getByTestId('ad-pay').click();
+    await bizPage.getByTestId('ad-rejected').waitFor({ timeout: 10000 });
+    eq('the claim screen refuses a violating draft — with the reasons, before any payment', [/can’t run/.test(await bizPage.getByTestId('ad-rejected').innerText()), await bizPage.getByTestId('ad-rejected').locator('li').count() >= 2, new URL(bizPage.url()).pathname], [true, true, '/business']);
+    await bizPage.getByTestId('biz-boost-open').click();
+    await bizPage.getByTestId('boost-target').first().check();
+    await bizPage.getByTestId('boost-pkg-starter').click();
+    await bizPage.getByTestId('boost-pay').click();
+    await bizPage.getByTestId('biz-note').waitFor({ timeout: 15000 });
+    check('Boost: pick a post or clip and a package → pay → “your ad is live”', /ad is live/.test(await bizPage.getByTestId('biz-note').innerText()));
+    await bizPage.getByTestId('biz-tab-consults').click();
+    await bizPage.getByTestId('biz-slot').first().waitFor({ timeout: 10000 });
+    check('Consults: Sam sees the times and who booked', /Booked by Ty/.test(await bizPage.getByTestId('biz-slots').innerText()));
+    await bizCtx.close();
+    await page.goto(`${BASE}/business`);
+    await page.getByTestId('business-locked').waitFor({ timeout: 10000 });
+    check('not a verified provider → the Business page explains how to get verified', /verified/i.test(await page.getByTestId('business-locked').innerText()));
+
     section('UI: kids never see the Feed');
     const teenFeedCtx = await browser.newContext(phone);
     const tfp = await teenFeedCtx.newPage();
     watch(tfp);
     await tfp.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&member=avery`);
-    for (const p of ['/feed', '/clips', '/messages', '/feed/stories', '/circles']) {
+    for (const p of ['/feed', '/clips', '/messages', '/feed/stories', '/circles', '/business']) {
       await tfp.goto(`${BASE}${p}`);
       await tfp.getByText('Page not found.').waitFor({ timeout: 10000 });
     }
-    eq('a teen gets “Page not found” for Feed, Clips, Messages, Stories, Circles — and no section bar', await tfp.getByTestId('feed-nav').count(), 0);
+    eq('a teen gets “Page not found” for Feed, Clips, Messages, Stories, Circles, Business — and no section bar', await tfp.getByTestId('feed-nav').count(), 0);
     await teenFeedCtx.close();
 
     section('UI: the public Feed page (signed out) → join → straight into the Feed');
@@ -4752,6 +4971,7 @@ try {
   await circles();
   await careTeam();
   await socialSuite();
+  await businessSuite();
   await exercisePictures();
   await bodyScience();
   await privacyRules();

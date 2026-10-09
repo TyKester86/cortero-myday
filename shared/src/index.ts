@@ -2475,6 +2475,101 @@ export interface VillageInfo {
   threads: number;
 }
 
+/* ---------- the Provider Business Suite (verified providers): ads, analytics, consults ---------- */
+
+/** A boost: a number of impressions for a price (prices live in the server's config). */
+export interface BoostPackage {
+  code: string;
+  label: string;
+  impressions: number;
+  cents: number;
+}
+
+export interface AdCampaign {
+  id: number;
+  kind: 'boost' | 'campaign';
+  name: string;
+  targetKind: 'post' | 'clip' | null;
+  targetId: number | null;
+  headline: string | null;
+  body: string | null;
+  imageUrl: string | null;
+  destination: 'profile' | 'consult' | 'url';
+  destinationUrl: string | null;
+  packageCode: string | null;
+  budgetCents: number;
+  impressionsBought: number;
+  impressions: number;
+  clicks: number;
+  spendCents: number;
+  startsOn: string;
+  endsOn: string | null;
+  status: 'pending_payment' | 'active' | 'paused' | 'completed' | 'rejected' | 'canceled';
+  rejectReasons: string[];
+  paidAt: string | null;
+  createdAt: string;
+}
+
+export interface ConsultSlot {
+  id: number;
+  providerUserId: number;
+  startsAt: string;
+  minutes: number;
+  priceCents: number;
+  status: 'open' | 'held' | 'booked' | 'canceled';
+  /** You booked it. */
+  mine: boolean;
+  /** The provider's own view: who booked (first name). */
+  bookedBy: string | null;
+  paidCents: number;
+}
+
+export interface BusinessOverview {
+  packages: BoostPackage[];
+  cpmCents: number;
+  payments: 'stripe' | 'stub' | 'none';
+  campaigns: AdCampaign[];
+  slots: ConsultSlot[];
+}
+
+export interface BusinessAnalytics {
+  rangeDays: number;
+  totals: {
+    profileViews: number;
+    newFollowers: number;
+    followers: number;
+    postViews: number;
+    clipViews: number;
+    storyViews: number;
+    engagement: number;
+    /** Engagement per 100 content views. */
+    engagementRate: number;
+    consultBookings: number;
+    revenueCents: number;
+    adImpressions: number;
+    adClicks: number;
+    adSpendCents: number;
+  };
+  daily: Array<{ day: string; profileViews: number; follows: number; followers: number; views: number; engagement: number; bookings: number; revenueCents: number }>;
+  top: Array<{ kind: 'post' | 'clip'; id: number; text: string; views: number; engagement: number; at: string }>;
+}
+
+/** One sponsored item in the Feed or Clips (always labelled "Sponsored"; grown-ups only). */
+export interface SponsoredItem {
+  campaignId: number;
+  kind: 'post' | 'clip' | 'campaign';
+  provider: CommunityAuthor;
+  headline: string | null;
+  body: string | null;
+  imageUrl: string | null;
+  post: FeedPost | null;
+  clip: ClipItem | null;
+  destination: 'profile' | 'consult' | 'url';
+  href: string;
+  external: boolean;
+  cta: string;
+}
+
 export interface CommunityMe {
   /** False for kid and teen accounts (they never get this far — 403 — but the type allows it). */
   eligible: boolean;
@@ -2594,6 +2689,8 @@ export interface FeedPage {
   next: number | null;
   /** How far back this page goes (days); 0 = a person's profile (their latest posts). */
   windowDays: number;
+  /** At most one paid placement from a verified provider, labelled "Sponsored" (Feed tabs only). */
+  sponsored?: SponsoredItem | null;
 }
 
 /** "Around the Web": a trusted publisher's article, as a link-out card. */
