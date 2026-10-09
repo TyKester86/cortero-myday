@@ -17,6 +17,8 @@ import express, { Router, type Request, type Response } from 'express';
 import { asSystem, pool } from '../db.js';
 import { config } from '../config.js';
 import { onFeedApp, originFor } from '../lib/hosts.js';
+import { ageFrom, ageToken, verifyAgeToken } from '../lib/age.js';
+import { logEvent } from '../lib/events.js';
 import { hashToken, startSession, upsertUser } from '../auth.js';
 import { HttpError, str } from '../lib/http.js';
 import { mailOn, sendMail, stubOutbox } from '../lib/mail.js';
@@ -35,6 +37,23 @@ signinRouter.get('/api/auth/methods', (_req, res) => {
   res.json({ google: !!(config.googleClientId && config.googleClientSecret), email: mailOn(), apple: !!process.env.APPLE_CLIENT_ID });
 });
 
+/* ---------- the Feed's sign-up: age first (no account until it's checked) ---------- */
+
+const ageLimit = rateLimiter(20, 15 * 60_000);
+
+/** Date of birth → a short-lived proof the sign-in carries (18+); under 18 → kindly turned away, nothing kept. */
+signinRouter.post('/api/feed/age', async (req, res) => {
+  if (!ageLimit(req.ip ?? 'unknown')) throw new HttpError(429, 'Too many tries. Wait a few minutes.');
+  const dob = String((req.body as { dob?: unknown }).dob ?? '');
+  const age = ageFrom(dob);
+  if (age === null || age > 120) throw new HttpError(400, 'Check your date of birth', 'dob_invalid');
+  if (age < 18) {
+    await asSystem(() => logEvent('community_underage', { at: 'signup' }, null, null));
+    throw new HttpError(403, 'The Feed is for grown-ups 18 and older.', 'under_18');
+  }
+  res.json({ token: ageToken(dob) });
+});
+
 /* ---------- email link ---------- */
 
 signinRouter.post('/api/auth/email', async (req, res) => {
@@ -43,9 +62,11 @@ signinRouter.post('/api/auth/email', async (req, res) => {
   if (!EMAIL_RE.test(email)) throw new HttpError(400, 'That doesn’t look like an email address');
   if (!ipLimit(req.ip ?? 'unknown') || !emailLimit(email)) throw new HttpError(429, 'Too many tries. Wait a few minutes.');
   const invite = typeof (req.body as { invite?: unknown }).invite === 'string' ? String((req.body as { invite: string }).invite).slice(0, 200) : null;
+  // From the Feed's sign-up: the checked date of birth rides along with the link (a new Feed account needs it).
+  const birth = verifyAgeToken((req.body as { age?: unknown }).age);
   const token = randomBytes(32).toString('base64url');
   await asSystem(() =>
-    pool.query("INSERT INTO email_logins (email, token_hash, invite, expires_at) VALUES ($1, $2, $3, now() + interval '15 minutes')", [email, hashToken(token), invite]),
+    pool.query("INSERT INTO email_logins (email, token_hash, invite, expires_at, birth_date) VALUES ($1, $2, $3, now() + interval '15 minutes', $4)", [email, hashToken(token), invite, birth]),
   );
   // Back to the domain that asked: the Feed app (its own domain) or MyDay.
   const link = `${originFor(req)}/api/auth/email/callback?token=${token}`;
@@ -62,8 +83,8 @@ signinRouter.post('/api/auth/email', async (req, res) => {
 signinRouter.get('/api/auth/email/callback', async (req, res) => {
   const token = typeof req.query.token === 'string' ? req.query.token : '';
   const row = await asSystem(async () => {
-    const { rows } = await pool.query<{ id: number; email: string; invite: string | null }>(
-      'UPDATE email_logins SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING id, email, invite',
+    const { rows } = await pool.query<{ id: number; email: string; invite: string | null; birth_date: string | null }>(
+      'UPDATE email_logins SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING id, email, invite, birth_date::text AS birth_date',
       [hashToken(token)],
     );
     return rows[0] ?? null;
@@ -73,10 +94,14 @@ signinRouter.get('/api/auth/email/callback', async (req, res) => {
     return;
   }
   try {
-    const { userId, pendingInvite } = await upsertUser({ sub: `email:${row.email}`, email: row.email, email_verified: true, name: '' }, row.invite ?? undefined, 'email', onFeedApp(req) ? 'feed' : 'myday');
+    const { userId, pendingInvite } = await upsertUser({ sub: `email:${row.email}`, email: row.email, email_verified: true, name: '' }, row.invite ?? undefined, 'email', onFeedApp(req) ? 'feed' : 'myday', row.birth_date);
     await startSession(req, userId);
     if (pendingInvite) req.session.pendingInvite = pendingInvite;
   } catch (e) {
+    if (e instanceof HttpError && e.code === 'age_required') {
+      res.redirect('/?error=age');
+      return;
+    }
     if (e instanceof HttpError && e.status === 403) {
       res.redirect('/?error=roster');
       return;

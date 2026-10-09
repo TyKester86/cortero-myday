@@ -1164,6 +1164,100 @@ function appHome(): { url: string; elsewhere: boolean; join: string } {
   return { url: APP_URL, elsewhere: away, join: feedApp ? `${feedApp}/?join=1` : `${APP_URL}/feed?join=1` };
 }
 
+const AGE_PROOF = 'feed.age';
+const UNDER_18 = 'feed.under18';
+
+/** Session-only: the checked-age proof, for this sign-up. */
+function ageProof(): string | null {
+  try {
+    return sessionStorage.getItem(AGE_PROOF);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Feed app's sign-up box. New people: date of birth first — under 18 is turned away kindly and nothing is
+ * kept; 18+ gets a short-lived proof the sign-in carries, so no account exists before age is checked.
+ */
+function FeedSignUp({ step, setStep, error }: { step: 'dob' | 'choices'; setStep: (s: 'dob' | 'choices') => void; error: string | null }) {
+  const [dob, setDob] = useState('');
+  const [proof, setProof] = useState(ageProof);
+  const [under, setUnder] = useState(() => stored(UNDER_18) === '1');
+  const [msg, setMsg] = useState<string | null>(null);
+  const check = async (): Promise<void> => {
+    setMsg(null);
+    try {
+      const r = await api<{ token: string }>('/api/feed/age', 'POST', { dob });
+      try {
+        sessionStorage.setItem(AGE_PROOF, r.token);
+      } catch {
+        /* kept in memory below */
+      }
+      setProof(r.token);
+      setStep('choices');
+    } catch (e) {
+      if (e instanceof ApiFail && e.code === 'under_18') {
+        store(UNDER_18, '1');
+        setUnder(true);
+      } else setMsg(e instanceof Error ? e.message : 'Check your date of birth');
+    }
+  };
+  if (under) {
+    return (
+      <p className="fl-under" role="status" data-testid="signup-under18">
+        The Feed is for grown-ups 18 and older, so we can’t make you an account. If you’re a teen, MyDay’s teen spaces are made for you — ask a parent.
+      </p>
+    );
+  }
+  if (step === 'dob') {
+    return (
+      <form
+        className="fl-dob"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void check();
+        }}
+        data-testid="signup-age"
+      >
+        <b>Create your free account</b>
+        {error && (
+          <p className="error-light" role="alert" data-testid="signin-error">
+            {error}
+          </p>
+        )}
+        <label>
+          Your date of birth <small>(private — the Feed shows age only)</small>
+          <input type="date" required value={dob} onChange={(e) => setDob(e.target.value)} max={new Date().toISOString().slice(0, 10)} data-testid="signup-dob" />
+        </label>
+        {msg && <p className="error-light">{msg}</p>}
+        <button className="btn" data-testid="signup-dob-go">
+          Continue
+        </button>
+        <button type="button" className="link small" onClick={() => setStep('choices')}>
+          Already a member? Sign in
+        </button>
+      </form>
+    );
+  }
+  return (
+    <>
+      <b>{proof ? 'Create your free account' : 'Welcome back — sign in'}</b>
+      {error && (
+        <p className="error-light" role="alert" data-testid="signin-error">
+          {error}
+        </p>
+      )}
+      <SignInChoices age={proof} />
+      {!proof && (
+        <button type="button" className="link small" onClick={() => setStep('dob')} data-testid="signup-new">
+          New here? Create your account
+        </button>
+      )}
+    </>
+  );
+}
+
 export function FeedLanding() {
   const { data } = useLoad<FeedPreview>('/api/public/feed-preview');
   const app = appHome();
@@ -1174,6 +1268,8 @@ export function FeedLanding() {
   const [error] = useState(() => LOGIN_ERRORS[qs.get('error') ?? ''] ?? null);
   const [age, setAge] = useState<'ok' | 'under' | null>(arrived || stored(AGE_KEY) === '1' ? 'ok' : null);
   const [joining, setJoining] = useState(arrived || !!error);
+  // The Feed app's sign-up: age first (no account until it's checked), then the ways in. "Sign in" skips to them.
+  const [step, setStep] = useState<'dob' | 'choices'>(() => (FEED_APP && (arrived || qs.get('error') === 'age') ? 'dob' : 'choices'));
   const signin = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!arrived) return;
@@ -1188,6 +1284,12 @@ export function FeedLanding() {
     }
     store(NEXT_KEY, '/feed');
     setJoining(true);
+    if (FEED_APP) setStep('dob');
+    setTimeout(() => signin.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+  };
+  const signIn = (): void => {
+    setJoining(true);
+    setStep('choices');
     setTimeout(() => signin.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   };
   const appLink = (p: string): string => (app.elsewhere ? `${app.url}${p}` : p);
@@ -1211,7 +1313,7 @@ export function FeedLanding() {
           </nav>
           <span className="grow" />
           {FEED_APP ? (
-            <button type="button" className="link fl-signin" onClick={join} data-testid="feed-signin-top">
+            <button type="button" className="link fl-signin" onClick={signIn} data-testid="feed-signin-top">
               Sign in
             </button>
           ) : (
@@ -1233,13 +1335,19 @@ export function FeedLanding() {
           </button>
           <small className="fl-fine">Free for everyone. No subscription. Kids never see the Feed — or its ads.</small>
           <div ref={signin} className="fl-signin-box" hidden={!joining} data-testid="feed-signin">
-            <b>{FEED_APP ? 'Sign in or create your free account' : 'Create your free account'}</b>
-            {error && (
-              <p className="error-light" role="alert" data-testid="signin-error">
-                {error}
-              </p>
+            {FEED_APP ? (
+              <FeedSignUp step={step} setStep={setStep} error={error} />
+            ) : (
+              <>
+                <b>Create your free account</b>
+                {error && (
+                  <p className="error-light" role="alert" data-testid="signin-error">
+                    {error}
+                  </p>
+                )}
+                <SignInChoices />
+              </>
             )}
-            <SignInChoices />
           </div>
         </section>
         <section className="fl-section" id="features">

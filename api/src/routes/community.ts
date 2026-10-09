@@ -35,7 +35,13 @@ import {
   type VillageThread,
   type VillageThreadSummary,
   type WebItem,
+  FEED_INTERESTS,
+  USERNAME_RE,
+  type FeedOnboarding,
+  type FeedSuggestion,
+  type VillageInfo,
 } from '@myday/shared';
+import { onFeedApp } from '../lib/hosts.js';
 import { config } from '../config.js';
 import { asSystem, detached, pool, tx } from '../db.js';
 import { logEvent } from '../lib/events.js';
@@ -104,6 +110,9 @@ export interface ProfileRow {
   dob: string | null;
   height_in: string | null;
   location: string | null;
+  username: string | null;
+  interests: string[];
+  onboarded_at: Date | null;
 }
 
 /** Where MonetizeMe storefronts live (a creator's shop is <base>/creator/?slug=<slug>). */
@@ -277,6 +286,7 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
   return {
     userId,
     displayName: p.display_name,
+    username: p.username,
     bio: openText(p.bio_enc, p.key_id),
     parentBadge: p.parent_badge,
     avatarUrl: imageUrl(c?.avatar ?? null),
@@ -318,8 +328,41 @@ communityRouter.get('/api/community/me', async (req, res) => {
     banned: !!p?.banned_at,
     guidelines: COMMUNITY_GUIDELINES,
     isModerator: a.admin,
+    onboarded: !!p?.onboarded_at,
+    birthDateOnFile: !!(await birthDate(a.userId)),
   };
   res.json(out);
+});
+
+/** The date of birth checked when this account signed up for the Feed (private), if any. */
+async function birthDate(userId: number): Promise<string | null> {
+  const { rows } = await asSystem(() => pool.query<{ d: string | null }>('SELECT birth_date::text AS d FROM users WHERE id = $1', [userId]));
+  return rows[0]?.d ?? null;
+}
+
+/** Names nobody gets to wear: they'd look official. */
+const RESERVED_USERNAMES = new Set(['admin', 'administrator', 'myday', 'thefeed', 'feed', 'support', 'moderator', 'mod', 'mods', 'staff', 'help', 'root', 'system', 'official', 'hana', 'null', 'undefined', 'me', 'settings', 'security', 'safety']);
+
+/** A valid, unclaimed @username for this person, or why not (HttpError). */
+async function checkUsername(raw: unknown, userId: number): Promise<string> {
+  const u = String(raw ?? '').trim().replace(/^@/, '').toLowerCase();
+  if (!USERNAME_RE.test(u) || /^[0-9_.]+$/.test(u)) throw new HttpError(400, 'Usernames are 3–20 letters, numbers, _ or . (with at least one letter).', 'username_invalid');
+  if (RESERVED_USERNAMES.has(u)) throw new HttpError(409, 'That username is taken.', 'username_taken');
+  const s = await screenText(u);
+  if (s.hold) throw new HttpError(422, 'Pick a different username.', 'username_held');
+  const { rowCount } = await pool.query('SELECT 1 FROM social_profiles WHERE username = $1 AND user_id <> $2', [u, userId]);
+  if (rowCount) throw new HttpError(409, 'That username is taken.', 'username_taken');
+  return u;
+}
+
+communityRouter.get('/api/feed/username', async (req, res) => {
+  const a = await adult(req);
+  try {
+    res.json({ available: true, username: await checkUsername(req.query.u, a.userId) });
+  } catch (e) {
+    if (e instanceof HttpError) res.json({ available: false, reason: e.message });
+    else throw e;
+  }
 });
 
 /** First name only: one word, letters (plus ' and -). */
@@ -370,6 +413,11 @@ communityRouter.put('/api/community/profile', async (req, res) => {
     }
     dob = v;
   }
+  // Age checked at sign-up (the Feed app): that date of birth stands; nobody is asked twice.
+  if (!existing && !dob) dob = await birthDate(a.userId);
+  let username: string | null = existing?.username ?? null;
+  if (b.username !== undefined && b.username !== null && b.username !== '') username = await checkUsername(b.username, a.userId);
+  if (!existing && !username && onFeedApp(req)) throw new HttpError(400, 'Pick a username — it’s how people find you.', 'username_required');
   // Joined just for the Feed (no household behind the account): the date of birth is the 18+ check.
   if (!existing && !req.member && !dob) throw new HttpError(400, 'Add your date of birth — the Feed is for grown-ups 18 and older.', 'dob_required');
   let heightIn: number | null = existing?.height_in == null ? null : Number(existing.height_in);
@@ -389,13 +437,17 @@ communityRouter.put('/api/community/profile', async (req, res) => {
   }
   const keyId = currentKeyId();
   await pool.query(
-    `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at, shop_slug, dob, height_in, location)
-     VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7, $8, $9, $10)
+    `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at, shop_slug, dob, height_in, location, username)
+     VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7, $8, $9, $10, $11)
      ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, bio_enc = EXCLUDED.bio_enc, key_id = EXCLUDED.key_id,
        avatar_id = EXCLUDED.avatar_id, parent_badge = EXCLUDED.parent_badge, shop_slug = EXCLUDED.shop_slug,
-       dob = EXCLUDED.dob, height_in = EXCLUDED.height_in, location = EXCLUDED.location`,
-    [a.userId, displayName, bio ? sealText(bio, keyId) : null, keyId, avatarId, b.parentBadge === true, shopSlug, dob, heightIn, location],
-  );
+       dob = EXCLUDED.dob, height_in = EXCLUDED.height_in, location = EXCLUDED.location, username = EXCLUDED.username`,
+    [a.userId, displayName, bio ? sealText(bio, keyId) : null, keyId, avatarId, b.parentBadge === true, shopSlug, dob, heightIn, location, username],
+  ).catch((e: unknown) => {
+    // Two people grabbing the same name at once: the second one hears it's taken.
+    if (e instanceof Error && 'code' in e && (e as { code?: string }).code === '23505') throw new HttpError(409, 'That username is taken.', 'username_taken');
+    throw e;
+  });
   res.json(await profileView(a.userId, a.userId));
 });
 
@@ -453,13 +505,105 @@ const categoryOf = (v: unknown): VillageCategory => {
 /** Villages: topic forums under the Feed (ADHD Parents, Late Diagnosis, Partners…). */
 communityRouter.get('/api/villages', async (req, res) => {
   const m = await member(req);
-  const { rows } = await pool.query<{ slug: string; name: string; description: string; threads: number }>(
+  res.json({ villages: await villageList(m.userId) });
+});
+
+async function villageList(userId: number): Promise<VillageInfo[]> {
+  const { rows } = await pool.query<VillageInfo>(
     `SELECT v.slug, v.name, v.description,
-            (SELECT COUNT(*)::int FROM forum_threads t WHERE t.village_id = v.id AND ${SEEN('t')}) AS threads
+            (SELECT COUNT(*)::int FROM forum_threads t WHERE t.village_id = v.id AND ${SEEN('t')}) AS threads,
+            (SELECT COUNT(*)::int FROM village_members vm WHERE vm.village_id = v.id) AS members,
+            EXISTS (SELECT 1 FROM village_members vm WHERE vm.village_id = v.id AND vm.user_id = $1) AS joined
        FROM villages v ORDER BY v.sort, v.id`,
-    [m.userId],
+    [userId],
   );
-  res.json({ villages: rows });
+  return rows;
+}
+
+/** Join or leave a village (its activity comes to you). */
+communityRouter.post('/api/villages/:slug/members', async (req, res) => {
+  const m = await member(req);
+  const vid = await villageId(req.params.slug);
+  await pool.query('INSERT INTO village_members (village_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [vid, m.userId]);
+  res.status(201).json({ villages: await villageList(m.userId) });
+});
+communityRouter.delete('/api/villages/:slug/members', async (req, res) => {
+  const m = await member(req);
+  const vid = await villageId(req.params.slug);
+  await pool.query('DELETE FROM village_members WHERE village_id = $1 AND user_id = $2', [vid, m.userId]);
+  res.json({ villages: await villageList(m.userId) });
+});
+
+/* ---------- the Feed app's first run: interests → villages → people (no cold landing) ---------- */
+
+/** People to follow: shared interests and villages first, then whoever the Feed loves; never blocked or banned. */
+async function suggestions(userId: number, limit: number): Promise<FeedSuggestion[]> {
+  const { rows } = await pool.query<{ user_id: number; display_name: string; username: string | null; avatar_id: number | null; followers: number; shared: string[]; villages: string[]; provider: boolean }>(
+    `WITH me AS (SELECT interests FROM social_profiles WHERE user_id = $1)
+     SELECT p.user_id, p.display_name, p.username,
+            (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar_id,
+            (SELECT COUNT(*)::int FROM social_follows f WHERE f.followed_user_id = p.user_id) AS followers,
+            ARRAY(SELECT unnest(p.interests) INTERSECT SELECT unnest((SELECT interests FROM me))) AS shared,
+            ARRAY(SELECT v.name FROM village_members a JOIN village_members b ON b.village_id = a.village_id AND b.user_id = $1
+                    JOIN villages v ON v.id = a.village_id WHERE a.user_id = p.user_id) AS villages,
+            EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = p.user_id AND pc.status = 'verified') AS provider
+       FROM social_profiles p
+      WHERE p.user_id <> $1 AND p.banned_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id)
+        AND NOT EXISTS (SELECT 1 FROM social_blocks b WHERE (b.blocker_user_id = $1 AND b.blocked_user_id = p.user_id) OR (b.blocker_user_id = p.user_id AND b.blocked_user_id = $1))
+      ORDER BY cardinality(ARRAY(SELECT unnest(p.interests) INTERSECT SELECT unnest((SELECT interests FROM me)))) * 3
+             + (SELECT COUNT(*) FROM village_members a JOIN village_members b ON b.village_id = a.village_id AND b.user_id = $1 WHERE a.user_id = p.user_id) * 2
+             + ln(1 + (SELECT COUNT(*) FROM social_follows f WHERE f.followed_user_id = p.user_id)) DESC,
+               p.created_at DESC
+      LIMIT $2`,
+    [userId, limit],
+  );
+  const label = (k: string): string => FEED_INTERESTS.find((i) => i.key === k)?.label ?? k;
+  return rows.map((r) => ({
+    userId: r.user_id,
+    displayName: r.display_name,
+    username: r.username,
+    avatarUrl: imageUrl(r.avatar_id),
+    followers: r.followers,
+    provider: r.provider,
+    reason: r.shared[0] ? `Also into ${label(r.shared[0])}` : r.villages[0] ? `In ${r.villages[0]} with you` : r.provider ? 'Verified provider' : 'Popular in the Feed',
+  }));
+}
+
+communityRouter.get('/api/feed/onboarding', async (req, res) => {
+  const m = await member(req);
+  const picked = new Set(m.profile.interests);
+  const fromInterests = new Set<string>(FEED_INTERESTS.filter((i) => picked.has(i.key)).map((i) => i.village));
+  const out: FeedOnboarding = {
+    interests: m.profile.interests,
+    villages: (await villageList(m.userId)).map((v) => ({ ...v, suggested: fromInterests.has(v.slug) })),
+    people: await suggestions(m.userId, 12),
+    done: !!m.profile.onboarded_at,
+  };
+  res.json(out);
+});
+
+/** Interests (from the catalog only). */
+communityRouter.put('/api/feed/onboarding', async (req, res) => {
+  const m = await member(req);
+  const raw = (req.body as { interests?: unknown }).interests;
+  if (!Array.isArray(raw)) throw new HttpError(400, 'Pick from the list');
+  const keys = new Set<string>(FEED_INTERESTS.map((i) => i.key));
+  const interests = [...new Set(raw.filter((x): x is string => typeof x === 'string' && keys.has(x)))];
+  await pool.query('UPDATE social_profiles SET interests = $2 WHERE user_id = $1', [m.userId, interests]);
+  res.json({ interests });
+});
+
+/** First run finished (or skipped): the Feed itself from now on. */
+communityRouter.post('/api/feed/onboarding/done', async (req, res) => {
+  const m = await member(req);
+  await pool.query('UPDATE social_profiles SET onboarded_at = COALESCE(onboarded_at, now()) WHERE user_id = $1', [m.userId]);
+  res.json({ done: true });
+});
+
+communityRouter.get('/api/feed/suggestions', async (req, res) => {
+  const m = await member(req);
+  res.json({ people: await suggestions(m.userId, Math.min(Number(req.query.limit) || 10, 30)) });
 });
 
 /** The village a request is about (?village=slug; default ADHD Parents, the original Village). */

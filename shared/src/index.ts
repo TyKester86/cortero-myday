@@ -2377,6 +2377,8 @@ export interface CommunityProfile {
   achievements: Array<{ key: string; label: string }>;
   /** A verified licensed provider (null = not a provider, or not verified yet). */
   provider: ProviderInfo | null;
+  /** @username (null until they pick one). */
+  username: string | null;
   /** Your own profile only: your date of birth (private), and where your provider credentials stand. */
   dob?: string | null;
   providerStatus?: ProviderSubmission | null;
@@ -2479,6 +2481,48 @@ export interface VillageInfo {
   name: string;
   description: string;
   threads: number;
+  /** People who joined this village, and whether you did. */
+  members: number;
+  joined: boolean;
+}
+
+/* ---------- the Feed app: sign-up and first run ---------- */
+
+/** What people pick on their first run; each leads to a village. */
+export const FEED_INTERESTS = [
+  { key: 'late-diagnosis', label: 'Diagnosed as an adult', village: 'late-diagnosis' },
+  { key: 'parenting', label: 'Parenting with ADHD', village: 'adhd-parents' },
+  { key: 'relationships', label: 'Relationships', village: 'partners' },
+  { key: 'work', label: 'Work & career', village: 'work-career' },
+  { key: 'routines', label: 'Routines & habits', village: 'routines' },
+  { key: 'focus', label: 'Focus & getting started', village: 'routines' },
+  { key: 'creativity', label: 'Creativity', village: 'creatives' },
+  { key: 'school', label: 'School & college', village: 'students' },
+  { key: 'movement', label: 'Movement & fitness', village: 'move' },
+  { key: 'money', label: 'Money', village: 'money-matters' },
+] as const;
+export type FeedInterest = (typeof FEED_INTERESTS)[number]['key'];
+
+/** @username: 3–20 lowercase letters, numbers, _ or . */
+export const USERNAME_RE = /^[a-z0-9_.]{3,20}$/;
+
+/** Someone the Feed suggests you follow, and why. */
+export interface FeedSuggestion {
+  userId: number;
+  displayName: string;
+  username: string | null;
+  avatarUrl: string | null;
+  followers: number;
+  /** e.g. "Also into Creativity", "In Late Diagnosis with you", "Popular in the Feed". */
+  reason: string;
+  provider: boolean;
+}
+
+export interface FeedOnboarding {
+  interests: string[];
+  villages: Array<VillageInfo & { suggested: boolean }>;
+  people: FeedSuggestion[];
+  done: boolean;
 }
 
 /* ---------- the Provider Business Suite (verified providers): ads, analytics, consults ---------- */
@@ -2585,6 +2629,10 @@ export interface CommunityMe {
   banned: boolean;
   guidelines: readonly string[];
   isModerator: boolean;
+  /** The Feed app's first run (interests, villages, people) is done or skipped. */
+  onboarded: boolean;
+  /** Age was checked at sign-up (date of birth on file): the profile form doesn't ask again. */
+  birthDateOnFile: boolean;
 }
 
 export interface CommunityAuthor {

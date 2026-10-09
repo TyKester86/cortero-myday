@@ -218,7 +218,8 @@ async function hostFetch(url, { method, headers, body }) {
   const u = new URL(url);
   return new Promise((resolve, reject) => {
     const lookup = (_h, o, cb) => (o?.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4));
-    const q = request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, lookup }, (res) => {
+    const h = body ? { ...headers, 'Content-Length': Buffer.byteLength(body) } : headers;
+    const q = request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method, headers: h, lookup }, (res) => {
       let b = '';
       res.setEncoding('utf8');
       res.on('data', (c) => (b += c));
@@ -3360,7 +3361,7 @@ async function socialSuite() {
 
   section('Villages: several topic forums under the Feed');
   const vl = (await ty.get('/api/villages')).data.villages;
-  eq('three villages', vl.map((v) => v.slug), ['adhd-parents', 'late-diagnosis', 'partners']);
+  eq('the villages (the first three, then one for each sign-up interest)', vl.map((v) => v.slug), ['adhd-parents', 'late-diagnosis', 'partners', 'work-career', 'routines', 'creatives', 'students', 'move', 'money-matters']);
   const ld = (await kayla.post('/api/village/threads', { village: 'late-diagnosis', category: 'wins', title: 'Diagnosed at 38', body: 'So much makes sense now.' })).data;
   eq('a thread lands in its village only', [(await ty.get('/api/village?village=late-diagnosis')).data.threads.map((t) => t.id), (await ty.get('/api/village')).data.threads.some((t) => t.id === ld.thread.id)], [[ld.thread.id], false]);
   eq('unknown village → 404', (await ty.get('/api/village?village=nope')).status, 404);
@@ -3408,7 +3409,7 @@ async function socialSuite() {
 
   section('The public landing page: /feed signed out — indexable, 18+ gate, no member posts');
   const pre = await anon.get('/api/public/feed-preview');
-  eq('preview needs no sign-in', [pre.status, typeof pre.data.members, pre.data.villages.length], [200, 'number', 3]);
+  eq('preview needs no sign-in', [pre.status, typeof pre.data.members, pre.data.villages.length], [200, 'number', 9]);
   eq('…shows publisher headlines, never a member’s words', [JSON.stringify(pre.data).includes('Morning win'), JSON.stringify(pre.data).includes('label maker'), pre.data.web.every((w) => w.url.startsWith('https://'))], [false, false, true]);
   const lpHtml = (await anon.get('/feed')).data;
   // conquermyday.app/thefeed and thefeedsocial.com are routed here by Caddy: each host gets its own answer.
@@ -3455,7 +3456,9 @@ async function feedAppSuite() {
   section('Sign-in on the Feed’s domain: email links come back there; Google goes through MyDay’s callback and back');
   const email = 'feed-app-email@example.test';
   const before = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
-  eq('email sign-in from the Feed app', (await fa.post('/api/auth/email', { email })).status, 200);
+  // A new Feed account starts with its date of birth (age checked before any account exists).
+  const faAge = (await fa.post('/api/feed/age', { dob: '1991-04-12' })).data.token;
+  eq('email sign-in from the Feed app', (await fa.post('/api/auth/email', { email, age: faAge })).status, 200);
   const mail = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(before).find((m) => m.to === email);
   const link = mail?.text.match(/https?:\/\/\S+/)?.[0] ?? '';
   eq('…the email names The Feed and links back to the Feed app’s domain', [mail?.subject, link.startsWith(`${FEED}/api/auth/email/callback?token=`)], ['Your The Feed sign-in link', true]);
@@ -3514,14 +3517,14 @@ async function feedAppSuite() {
   section('One person, one account: the Feed app → MyDay, same email = same account; the funnel counts real people');
   const fEmail = 'feed-first@example.test';
   const outbox = async () => (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail;
-  const linkFor = async (client, base, who) => {
+  const linkFor = async (client, base, who, age) => {
     const n0 = (await outbox()).length;
-    await client.post('/api/auth/email', { email: who });
+    await client.post('/api/auth/email', { email: who, ...(age ? { age } : {}) });
     const m = (await outbox()).slice(n0).find((x) => x.to === who);
     return (m?.text.match(/https?:\/\/\S+/)?.[0] ?? '').slice(base.length);
   };
   const ff = new Client('feed-first', 'MyDay-e2e', FEED);
-  await ff.get(await linkFor(ff, FEED, fEmail));
+  await ff.get(await linkFor(ff, FEED, fEmail, (await ff.post('/api/feed/age', { dob: '1988-02-03' })).data.token));
   const ffId = (await ff.get('/api/me')).data.userId;
   eq('joining in the Feed app marks the account as a Feed signup', (await sql('SELECT signup_app FROM users WHERE id = $1', [ffId]))[0]?.signup_app, 'feed');
   // Later, on MyDay, with a different way in (Sign in with Apple) but the same verified email.
@@ -3548,6 +3551,69 @@ async function feedAppSuite() {
   eq('…a grown-up → a one-time sign-in on the Feed app', String(goTy.location).startsWith(`${FEED}/api/auth/handoff?token=`), true);
 
   eq('kids are never handed to the Feed (18+); signed out gets nothing; no other apps', [(await avery.post('/api/auth/handoff', { to: 'feed' })).status, (await anon.post('/api/auth/handoff', { to: 'feed' })).status, (await tyH.post('/api/auth/handoff', { to: 'elsewhere' })).status], [403, 401, 400]);
+
+  section('The Feed app’s sign-up: age first — no account until it’s checked (18+)');
+  const sg = new Client('signup', 'MyDay-e2e', FEED);
+  // The walk runs the server on a fixed week (its clock differs from ours by days): stay a month off the birthday.
+  const yearsAgo = (y, plusDays = 0) => {
+    const d = new Date();
+    d.setUTCFullYear(d.getUTCFullYear() - y);
+    d.setUTCDate(d.getUTCDate() + plusDays);
+    return d.toISOString().slice(0, 10);
+  };
+  const under0 = (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name = 'community_underage'"))[0].n;
+  const young = await sg.post('/api/feed/age', { dob: yearsAgo(18, 30) });
+  eq('a date of birth a month short of 18 → turned away kindly (403 under_18), and it’s counted', [young.status, young.data.code, (await sql("SELECT COUNT(*)::int AS n FROM events WHERE name = 'community_underage'"))[0].n - under0], [403, 'under_18', 1]);
+  eq('…not a date → asked again', (await sg.post('/api/feed/age', { dob: 'yesterday' })).status, 400);
+  const okAge = await sg.post('/api/feed/age', { dob: yearsAgo(18, -30) });
+  eq('just turned 18 → a short-lived proof to carry into sign-in', [okAge.status, /^\d{4}-\d{2}-\d{2}\.\d+\.[\w-]+$/.test(okAge.data.token)], [200, true]);
+  const newbie = 'signup-newbie@example.test';
+  const linkOf = async (client, base, who, age) => {
+    const n0 = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+    await client.post('/api/auth/email', { email: who, ...(age ? { age } : {}) });
+    const m = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(n0).find((x) => x.to === who);
+    return (m?.text.match(/https?:\/\/\S+/)?.[0] ?? '').slice(base.length);
+  };
+  const noAge = await new Client('no-age', 'MyDay-e2e', FEED).get(await linkOf(sg, FEED, newbie));
+  eq('a NEW Feed account without the age step → no account is created; back to the date-of-birth step', [noAge.location, (await sql('SELECT COUNT(*)::int AS n FROM users WHERE email = $1', [newbie]))[0].n], ['/?error=age', 0]);
+  const forged = okAge.data.token.replace(/^\d{4}/, '2015');
+  await new Client('forged', 'MyDay-e2e', FEED).get(await linkOf(sg, FEED, newbie, forged));
+  eq('…a doctored proof (changed birth year) counts as none', (await sql('SELECT COUNT(*)::int AS n FROM users WHERE email = $1', [newbie]))[0].n, 0);
+  const nb = new Client('newbie', 'MyDay-e2e', FEED);
+  const made = await nb.get(await linkOf(sg, FEED, newbie, okAge.data.token));
+  const nbRow = (await sql('SELECT signup_app, birth_date::text AS d FROM users WHERE email = $1', [newbie]))[0];
+  eq('with it: the account is made, a Feed signup, its checked date of birth kept (private)', [made.location, nbRow?.signup_app, nbRow?.d], ['/', 'feed', yearsAgo(18, -30)]);
+  const back2 = await new Client('returning', 'MyDay-e2e', FEED).get(await linkOf(sg, FEED, 'feed-app-email@example.test'));
+  eq('someone who already has an account just signs in (no age step)', back2.location, '/');
+
+  section('Profile in the Feed app: a @username (unique), age not asked twice; then a first run — interests, villages, people');
+  const cme = (await nb.get('/api/community/me')).data;
+  const nbId = (await nb.get('/api/me')).data.userId;
+  eq('the profile form knows age was checked at sign-up', [cme.birthDateOnFile, cme.profile, cme.onboarded], [true, null, false]);
+  const prof = { displayName: 'Nova', adult: true, guidelines: true };
+  eq('in the Feed app a profile needs a username', (await nb.put('/api/community/profile', prof)).data.code, 'username_required');
+  eq('…3–20 letters/numbers/_/. with a letter; official-looking names are taken', [(await nb.get('/api/feed/username?u=ab')).data.available, (await nb.get('/api/feed/username?u=1234')).data.available, (await nb.get('/api/feed/username?u=Admin')).data.available, (await nb.get('/api/feed/username?u=nova.reads')).data.available], [false, false, false, true]);
+  const np1 = await nb.put('/api/community/profile', { ...prof, username: '@Nova.Reads' });
+  eq('…saved lowercase; the age on the profile comes from sign-up (no date asked)', [np1.status, np1.data.username, np1.data.age, np1.data.dob], [200, 'nova.reads', 18, yearsAgo(18, -30)]);
+  const twin = new Client('twin', 'MyDay-e2e', FEED);
+  await twin.get(await linkOf(twin, FEED, 'signup-twin@example.test', (await twin.post('/api/feed/age', { dob: '1990-01-01' })).data.token));
+  eq('…usernames are unique (any case)', [(await twin.get('/api/feed/username?u=NOVA.READS')).data.available, (await twin.put('/api/community/profile', { ...prof, displayName: 'Twin', username: 'nova.reads' })).status], [false, 409]);
+  await twin.put('/api/community/profile', { ...prof, displayName: 'Twin', username: 'twin_two' });
+  await twin.put('/api/feed/onboarding', { interests: ['creativity', 'money'] });
+  const ob0 = (await nb.put('/api/feed/onboarding', { interests: ['creativity', 'work', 'not-a-thing'] })).data;
+  eq('interests come from the list only', ob0.interests.sort(), ['creativity', 'work']);
+  const ob = (await nb.get('/api/feed/onboarding')).data;
+  eq('…and point to villages (“For you”): Creatives, Work & Career', ob.villages.filter((v) => v.suggested).map((v) => v.slug).sort(), ['creatives', 'work-career']);
+  eq('…people who share an interest come first, with why', [ob.people[0]?.displayName, ob.people[0]?.reason, ob.people.some((p) => p.userId === nbId)], ['Twin', 'Also into Creativity', false]);
+  const joinV = (await nb.post('/api/villages/creatives/members')).data.villages.find((v) => v.slug === 'creatives');
+  eq('joining a village: you’re in, and it counts you', [joinV.joined, joinV.members], [true, 1]);
+  eq('…and leaving works', (await nb.del('/api/villages/creatives/members')).data.villages.find((v) => v.slug === 'creatives').joined, false);
+  await nb.post('/api/villages/creatives/members');
+  await nb.post(`/api/community/people/${ob.people[0].userId}/follow`);
+  eq('someone you follow isn’t suggested again', (await nb.get('/api/feed/suggestions')).data.people.some((p) => p.displayName === 'Twin'), false);
+  await nb.post('/api/feed/onboarding/done');
+  eq('first run done → the Feed itself from now on', (await nb.get('/api/community/me')).data.onboarded, true);
+  eq('on MyDay’s own domain a username stays optional (nothing changes for MyDay grown-ups)', (await new Client('md-noname').get('/api/feed/username?u=x')).status, 401);
 }
 
 async function businessSuite() {
@@ -4102,6 +4168,73 @@ async function uiGate() {
     await fip.getByTestId('feed-nav').waitFor({ timeout: 10000 });
     eq('…“Not now” keeps it away on this phone', await fip.getByTestId('feed-install').count(), 0);
     await faIosCtx.close();
+
+    section('UI: joining in the Feed app — date of birth first, then sign-in, a @username, and a first run (no cold landing)');
+    const kidTry = await browser.newContext(phone);
+    const kt = await kidTry.newPage();
+    watch(kt);
+    await kt.goto(`${FEED}/`);
+    await kt.getByTestId('age-yes').click();
+    await kt.getByTestId('feed-join').first().click();
+    await kt.getByTestId('signup-dob').fill(new Date(Date.now() - 15 * 365.25 * 86400000).toISOString().slice(0, 10));
+    await kt.getByTestId('signup-dob-go').click();
+    await kt.getByTestId('signup-under18').waitFor({ timeout: 10000 });
+    eq('a 15-year-old’s date of birth → turned away kindly, no sign-in offered', [await kt.getByTestId('signin-choices').count(), /18 and older/.test(await kt.getByTestId('signup-under18').innerText())], [0, true]);
+    await kt.reload();
+    await kt.getByTestId('feed-join').first().click();
+    eq('…and trying again on that phone gets the same answer', await kt.getByTestId('signup-under18').isVisible(), true);
+    await kidTry.close();
+    const joinCtx = await browser.newContext(phone);
+    const jp = await joinCtx.newPage();
+    watch(jp);
+    await jp.goto(`${FEED}/`);
+    await jp.getByTestId('age-yes').click();
+    await jp.getByTestId('feed-join').first().click();
+    eq('Join → the first thing asked is a date of birth (no sign-in choices yet)', [await jp.getByTestId('signup-dob').isVisible(), await jp.getByTestId('signin-choices').count()], [true, 0]);
+    await jp.getByTestId('signup-dob').fill('1993-06-21');
+    await jp.getByTestId('signup-dob-go').click();
+    await jp.getByTestId('signin-choices').waitFor({ timeout: 10000 });
+    const uiEmail = 'feed-ui-joiner@example.test';
+    const mailN = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+    await jp.getByLabel('Email address').fill(uiEmail);
+    await jp.getByRole('button', { name: 'Email me a sign-in link' }).click();
+    await jp.getByTestId('email-sent').waitFor({ timeout: 10000 });
+    const uiLink = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(mailN).find((m) => m.to === uiEmail)?.text.match(/https?:\/\/\S+/)?.[0];
+    await jp.goto(uiLink);
+    await jp.getByTestId('community-setup').waitFor({ timeout: 10000 });
+    eq('…18+ → sign in → straight to the profile: a username, and no second date-of-birth question', [new URL(jp.url()).origin, await jp.getByTestId('setup-username').count(), await jp.getByTestId('setup-dob').count()], [FEED, 1, 0]);
+    await jp.getByLabel('First name only').fill('Rae');
+    await jp.getByTestId('setup-username').fill('nova.reads');
+    await jp.getByTestId('username-check').getByText('taken', { exact: false }).waitFor({ timeout: 10000 });
+    eq('…a taken username says so as you type (and Join waits)', await jp.getByRole('button', { name: 'Join' }).isDisabled(), true);
+    await jp.getByTestId('setup-username').fill('rae_makes');
+    await jp.getByTestId('username-check').getByText('Available').waitFor({ timeout: 10000 });
+    await jp.getByLabel('I’m 18 or older').check();
+    await jp.getByLabel('I’ve read and accept the community guidelines').check();
+    await jp.getByRole('button', { name: 'Join' }).click();
+    await jp.getByTestId('feed-onboarding').waitFor({ timeout: 10000 });
+    check('…then the first run, not an empty feed: “What are you into?”', /What are you into/.test(await jp.getByTestId('feed-onboarding').innerText()));
+    await jp.getByTestId('interest-creativity').click();
+    await jp.getByTestId('interest-money').click();
+    await jp.getByTestId('onb-next').click();
+    await jp.getByTestId('onb-villages').waitFor({ timeout: 10000 });
+    eq('villages your interests point to are marked “For you” and already ticked', [await jp.getByTestId('onb-village-creatives').getAttribute('aria-pressed'), await jp.getByTestId('onb-village-money-matters').getAttribute('aria-pressed'), await jp.getByTestId('onb-village-partners').getAttribute('aria-pressed')], ['true', 'true', 'false']);
+    await jp.getByTestId('onb-next').click();
+    await jp.getByTestId('onb-people').waitFor({ timeout: 10000 });
+    const firstPerson = jp.getByTestId('onb-people').locator('li').first();
+    check('people to follow come with a reason', /Also into|In .+ with you|Popular|provider/.test(await firstPerson.innerText()), await firstPerson.innerText());
+    await firstPerson.getByTestId('onb-follow').click();
+    await firstPerson.getByText('Following').waitFor({ timeout: 10000 });
+    await jp.getByTestId('onb-next').click();
+    eq('“Bring your people”: their own invite link on the Feed’s domain', await jp.getByTestId('onb-invite-link').inputValue(), `${FEED}/?join=1`);
+    await jp.getByTestId('onb-next').click();
+    await jp.getByTestId('story-rail').waitFor({ timeout: 10000 });
+    const joinedV = (await (await jp.request.get(`${FEED}/api/villages`)).json()).villages.filter((v) => v.joined).map((v) => v.slug).sort();
+    eq('…“Go to my feed” → the Feed, with the villages joined and the first run done for good', [await jp.getByTestId('feed-onboarding').count(), joinedV], [0, ['creatives', 'money-matters']]);
+    await jp.reload();
+    await jp.getByTestId('story-rail').waitFor({ timeout: 10000 });
+    eq('…it doesn’t come back', await jp.getByTestId('feed-onboarding').count(), 0);
+    await joinCtx.close();
 
     const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const dp = await desk.newPage();
@@ -4863,8 +4996,10 @@ async function uiGate() {
     eq('a new couple: setup checklist on Today; no Homework, Rewards, Kid money or School on Me', [menu2.some((t) => /Homework|Rewards|Kid money|School|Lectures/.test(t)), menu2.some((t) => /Health/.test(t))], [false, true]);
     await np.locator('nav.tabs a[href="/"]').click();
     await np.getByTestId('setup-checklist').getByRole('button', { name: 'Hide' }).click();
+    await np.getByTestId('setup-checklist').waitFor({ state: 'detached', timeout: 10000 });
+    await np.waitForLoadState('networkidle');
     await np.reload();
-    await np.getByTestId('today-adult').waitFor({ timeout: 10000 });
+    await np.getByTestId('today-adult').waitFor({ timeout: 20000 });
     eq('…“Hide” keeps it hidden', await np.getByTestId('setup-checklist').count(), 0);
     await np.goto(`${BASE}/settings`);
     await np.getByTestId('modules').waitFor({ timeout: 10000 });

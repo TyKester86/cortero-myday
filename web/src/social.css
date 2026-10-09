@@ -403,3 +403,19 @@
 .feed-install-actions { display: flex; align-items: center; gap: 10px; }
 .install-steps { margin: 8px 0 12px; padding-left: 22px; display: grid; gap: 8px; text-align: left; }
 .social-top .link { white-space: nowrap; }
+
+/* The Feed app's sign-up (age first) and first run. */
+.fl-dob { display: grid; gap: 10px; text-align: left; }
+.fl-dob label { display: grid; gap: 6px; }
+.fl-under { max-width: 46ch; margin: 0 auto; }
+.at-input { display: flex; align-items: center; gap: 4px; }
+.at-input > span { color: var(--muted); font-weight: 600; }
+.at-input input { flex: 1; min-width: 0; }
+.onboarding { display: grid; gap: 12px; }
+.onb-top, .onb-actions { display: flex; align-items: center; gap: 10px; }
+.onb-chips { flex-wrap: wrap; }
+.onb-list { display: grid; gap: 8px; }
+.onb-list .row-card { display: flex; align-items: center; gap: 12px; }
+.onb-list .pill { margin-left: 6px; }
+.onb-invite { display: flex; gap: 8px; }
+.onb-invite input { flex: 1; min-width: 0; }

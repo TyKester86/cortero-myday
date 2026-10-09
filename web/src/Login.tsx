@@ -10,10 +10,17 @@ export const LOGIN_ERRORS: Record<string, string> = {
   state: 'Sign-in expired. Try again.',
   link: 'That sign-in link has expired or was already used. Send yourself a new one.',
   handoff: 'That sign-in expired before it finished. Sign in again.',
+  age: 'New here? Start with your date of birth — the Feed is for grown-ups 18 and older.',
 };
 
-/** Google sign-in. The Feed app (its own domain) goes through MyDay's registered callback and is handed back. */
-const googleHref = (): string => (FEED_APP && elsewhere(APP_URL) ? `${APP_URL}/api/auth/google?to=feed` : '/api/auth/google');
+/**
+ * Google sign-in. The Feed app (its own domain) goes through MyDay's registered callback and is handed back,
+ * carrying the sign-up's age proof (a new Feed account needs it).
+ */
+function googleHref(age?: string | null): string {
+  if (!(FEED_APP && elsewhere(APP_URL))) return '/api/auth/google';
+  return `${APP_URL}/api/auth/google?to=feed${age ? `&age=${encodeURIComponent(age)}` : ''}`;
+}
 
 interface Methods {
   google: boolean;
@@ -22,7 +29,7 @@ interface Methods {
 }
 
 /** Google, Apple, or a one-time email link — whichever the server has turned on. */
-export function SignInChoices({ primary = false }: { primary?: boolean }) {
+export function SignInChoices({ primary = false, age = null }: { primary?: boolean; age?: string | null }) {
   const { data } = useLoad<Methods>('/api/auth/methods');
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState<string | null>(null);
@@ -32,7 +39,7 @@ export function SignInChoices({ primary = false }: { primary?: boolean }) {
     e.preventDefault();
     setErr(null);
     try {
-      await api('/api/auth/email', 'POST', { email, ...(invite ? { invite } : {}) });
+      await api('/api/auth/email', 'POST', { email, ...(invite ? { invite } : {}), ...(age ? { age } : {}) });
       setSent(email);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : 'Could not send the link');
@@ -42,11 +49,11 @@ export function SignInChoices({ primary = false }: { primary?: boolean }) {
   return (
     <div className="signin-choices" data-testid="signin-choices">
       {m.google && (
-        <a className="btn" href={googleHref()} data-testid={primary ? 'start-trial' : 'google-signin'}>
+        <a className="btn" href={googleHref(age)} data-testid={primary ? 'start-trial' : 'google-signin'}>
           {primary ? 'Start free with Google' : 'Continue with Google'}
         </a>
       )}
-      {m.apple && (
+      {m.apple && !FEED_APP && (
         <a className="btn" href="/api/auth/apple" data-testid="apple-signin">
           Continue with Apple
         </a>

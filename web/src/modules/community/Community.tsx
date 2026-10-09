@@ -36,6 +36,8 @@ import { count } from '../../format';
 import { useSession } from '../../session';
 import { BookConsult, FeedNav, SponsoredCard, StoryRail } from '../social/Social';
 import { FeedTitle } from '../social/shell';
+import { FeedOnboarding } from '../social/Onboarding';
+import { FEED_APP } from '../../apps';
 
 /* ---------- shared pieces ---------- */
 
@@ -243,16 +245,31 @@ function TrustedCard({ t, testid = 'trusted-answer' }: { t: TrustedAnswer; testi
 function Setup({ me, onDone }: { me: CommunityMe; onDone: () => void }) {
   const { me: session } = useSession();
   // People who joined just for the Feed confirm their date of birth (18+); the feed shows age only.
-  const needDob = !session.member;
-  const [f, setF] = useState({ displayName: '', bio: '', parentBadge: !needDob, adult: false, guidelines: false, dob: '' });
+  // Checked at sign-up (the Feed app)? Then nobody asks twice.
+  const askDob = !me.birthDateOnFile;
+  const needDob = !session.member && askDob;
+  const [f, setF] = useState({ displayName: '', bio: '', parentBadge: !!session.member, adult: false, guidelines: false, dob: '', username: '' });
   const [msg, setMsg] = useState<string | null>(null);
+  // @username: required in the Feed app (how people find you), checked as you type.
+  const [nameCheck, setNameCheck] = useState<{ available: boolean; reason?: string } | null>(null);
+  useEffect(() => {
+    const u = f.username.trim().replace(/^@/, '').toLowerCase();
+    if (!u) {
+      setNameCheck(null);
+      return;
+    }
+    const t = setTimeout(() => {
+      void api<{ available: boolean; reason?: string }>(`/api/feed/username?u=${encodeURIComponent(u)}`).then(setNameCheck, () => setNameCheck(null));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [f.username]);
   return (
     <form
       className="card form"
       data-testid="community-setup"
       onSubmit={(e) => {
         e.preventDefault();
-        void api('/api/community/profile', 'PUT', { ...f, dob: f.dob || undefined })
+        void api('/api/community/profile', 'PUT', { ...f, dob: f.dob || undefined, username: f.username.trim() || undefined })
           .then(onDone)
           .catch((e2: unknown) => setMsg(e2 instanceof Error ? e2.message : 'Could not save'));
       }}
@@ -269,13 +286,36 @@ function Setup({ me, onDone }: { me: CommunityMe; onDone: () => void }) {
         <input value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} required maxLength={24} autoComplete="given-name" />
       </label>
       <label>
+        Username{FEED_APP ? '' : ' (optional)'} — how people find you
+        <span className="at-input">
+          <span aria-hidden="true">@</span>
+          <input
+            value={f.username}
+            onChange={(e) => setF({ ...f, username: e.target.value.replace(/\s/g, '').toLowerCase() })}
+            required={FEED_APP}
+            maxLength={21}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            data-testid="setup-username"
+          />
+        </span>
+        {nameCheck && (
+          <small className={nameCheck.available ? 'good' : 'error'} role="status" data-testid="username-check">
+            {nameCheck.available ? 'Available' : nameCheck.reason}
+          </small>
+        )}
+      </label>
+      <label>
         A short bio (optional — no kids’ names or schools)
         <input value={f.bio} onChange={(e) => setF({ ...f, bio: e.target.value })} maxLength={280} />
       </label>
-      <label>
-        Date of birth{needDob ? '' : ' (optional)'} — only your age shows, never the date
-        <input type="date" value={f.dob} onChange={(e) => setF({ ...f, dob: e.target.value })} required={needDob} max={new Date().toISOString().slice(0, 10)} data-testid="setup-dob" />
-      </label>
+      {askDob && (
+        <label>
+          Date of birth{needDob ? '' : ' (optional)'} — only your age shows, never the date
+          <input type="date" value={f.dob} onChange={(e) => setF({ ...f, dob: e.target.value })} required={needDob} max={new Date().toISOString().slice(0, 10)} data-testid="setup-dob" />
+        </label>
+      )}
       <label className="inline-label">
         <input type="checkbox" checked={f.parentBadge} onChange={(e) => setF({ ...f, parentBadge: e.target.checked })} /> Show a “parent” badge
       </label>
@@ -290,7 +330,7 @@ function Setup({ me, onDone }: { me: CommunityMe; onDone: () => void }) {
           {msg}
         </p>
       )}
-      <button className="btn" disabled={!f.adult || !f.guidelines}>
+      <button className="btn" disabled={!f.adult || !f.guidelines || (FEED_APP && nameCheck?.available === false)}>
         Join
       </button>
     </form>
@@ -308,7 +348,7 @@ export function Gate({ children }: { children: (me: CommunityMe) => ReactNode })
         {COMMUNITY_SAFETY_LINE}
       </p>
       {data.mutedUntil && <p className="card note">You’re muted until {new Date(data.mutedUntil).toLocaleDateString()} — you can read, but not post.</p>}
-      {data.profile ? children(data) : <Setup me={data} onDone={reload} />}
+      {!data.profile ? <Setup me={data} onDone={reload} /> : FEED_APP && !data.onboarded ? <FeedOnboarding onDone={reload} /> : children(data)}
     </>
   );
 }

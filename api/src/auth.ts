@@ -27,6 +27,7 @@ import { config } from './config.js';
 import { asSystem, inHousehold, pool, setHousehold } from './db.js';
 import { logEvent } from './lib/events.js';
 import { HttpError, idParam } from './lib/http.js';
+import { verifyAgeToken } from './lib/age.js';
 import { memberById, requireAdult } from './lib/members.js';
 import {
   assertStrongPin,
@@ -53,6 +54,8 @@ declare module 'express-session' {
     krogerState: string;
     /** Google sign-in started on the Feed app's domain: hand the person back there afterwards. */
     authTo: 'feed';
+    /** The Feed sign-up's age proof (lib/age.ts), carried through Google sign-in. */
+    feedAge: string;
   }
 }
 
@@ -131,6 +134,8 @@ export async function upsertUser(
   inviteToken: string | undefined,
   via: 'google' | 'email' | 'apple' = 'google',
   app: 'myday' | 'feed' = 'myday',
+  /** The Feed sign-up's checked date of birth (18+). A NEW Feed account can't exist without it. */
+  birthDate: string | null = null,
 ): Promise<{ userId: number; pendingInvite: string | null }> {
   const email = p.email.toLowerCase();
   return asSystem(async () => {
@@ -162,6 +167,10 @@ export async function upsertUser(
     if (memberId === null && existing === null && !config.signupOpen && !config.allowedEmails.includes(email)) {
       throw new HttpError(403, `${email} is not on a household roster`);
     }
+    // The Feed is 18+: no Feed account is created until age is checked (an invited household member is MyDay's).
+    if (existing === null && app === 'feed' && memberId === null && !birthDate) {
+      throw new HttpError(403, 'Start with your date of birth — the Feed is for grown-ups 18 and older.', 'age_required');
+    }
     if (existing !== null) {
       // An email-link sign-in has no name: keep the one the account has.
       await pool.query(
@@ -171,8 +180,8 @@ export async function upsertUser(
       return { userId: existing, pendingInvite };
     }
     const { rows } = await pool.query<{ id: number }>(
-      'INSERT INTO users (google_sub, email, name, member_id, signup_app) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [p.sub, email, p.name ?? '', memberId, app],
+      'INSERT INTO users (google_sub, email, name, member_id, signup_app, birth_date) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [p.sub, email, p.name ?? '', memberId, app, birthDate],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('user upsert returned nothing');
@@ -230,6 +239,8 @@ authRouter.get('/api/auth/google', (req, res) => {
   // The Feed app (its own domain) signs in through this registered callback, then gets the person handed back.
   if (req.query.to === 'feed' && config.feedAppUrl) req.session.authTo = 'feed';
   else delete req.session.authTo;
+  if (typeof req.query.age === 'string') req.session.feedAge = req.query.age;
+  else delete req.session.feedAge;
   const q = new URLSearchParams({
     client_id: config.googleClientId,
     redirect_uri: redirectUri(),
@@ -283,12 +294,16 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
   }
   let userId: number;
   try {
-    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday');
+    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday', verifyAgeToken(req.session.feedAge));
     userId = up.userId;
     await startSession(req, userId);
     delete req.session.inviteToken;
     if (up.pendingInvite) req.session.pendingInvite = up.pendingInvite;
   } catch (e) {
+    if (e instanceof HttpError && e.code === 'age_required') {
+      res.redirect(`${back}/?error=age`);
+      return;
+    }
     if (e instanceof HttpError && e.status === 403) {
       res.redirect(`${back}/login?error=roster`);
       return;
