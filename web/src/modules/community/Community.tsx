@@ -38,6 +38,7 @@ import { BookConsult, FeedNav, SponsoredCard, StoryRail } from '../social/Social
 import { FeedTitle } from '../social/shell';
 import { FeedOnboarding } from '../social/Onboarding';
 import { VillageInvite } from '../social/Growth';
+import { SupportBox } from '../social/Creator';
 import { CatchupCard, EndlessPosts, MemoriesCard, StreakChip, YourStats } from '../social/Endless';
 import { FEED_APP } from '../../apps';
 
@@ -421,7 +422,7 @@ function VillageList({ me }: { me: CommunityMe }) {
             type="button"
             className={here.joined ? 'btn small' : 'btn ghost small'}
             aria-pressed={here.joined}
-            onClick={() => void api(`/api/villages/${here.slug}/members`, here.joined ? 'DELETE' : 'POST').then(() => villages.reload())}
+            onClick={() => void (here.joined ? api(`/api/villages/${here.slug}/members`, 'DELETE') : api(`/api/villages/${here.slug}/members`, 'POST')).then(() => villages.reload())}
             data-testid="village-join"
           >
             {here.joined ? 'Joined' : 'Join'}
@@ -1033,6 +1034,9 @@ function Person({ id }: { id: string }) {
       <button className="btn ghost" onClick={() => setEditing(!editing)} data-testid="edit-profile">
         Edit profile
       </button>
+      <Link className="btn ghost" to="/earnings" data-testid="earnings-link">
+        Earnings
+      </Link>
     </div>
   );
   return (
@@ -1113,6 +1117,7 @@ function Person({ id }: { id: string }) {
           </>
         )}
         {pro && !data.me && <div className="profile-actions">{follow}</div>}
+        {!data.me && <SupportBox userId={data.userId} name={data.displayName} />}
         {data.shopUrl && (
           <a className="price-tag" href={data.shopUrl} target="_blank" rel="noopener noreferrer" data-testid="shop-slot">
             <span className="tag-hole" aria-hidden="true" />

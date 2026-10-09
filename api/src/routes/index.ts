@@ -18,6 +18,7 @@ import { socialPublicRouter, socialRouter, socialStaffRouter, socialUploadRouter
 import { businessRouter } from './business.js';
 import { feedNotificationsRouter } from './feednotifications.js';
 import { feedGrowthPublicRouter, feedGrowthRouter } from './feedgrowth.js';
+import { creatorRouter } from './creator.js';
 import { engagementRouter } from './engagement.js';
 import { identityRouter } from './identity.js';
 import { joinRouter } from './join.js';
@@ -39,7 +40,7 @@ export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRout
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
 // The Feed is open to anyone with the app (no household needed): community + social routes do their own 18+ checks.
-export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, communityStaffRouter, socialStaffRouter, proRouter, joinRouter, communityRouter, socialRouter, businessRouter, feedNotificationsRouter, feedGrowthRouter];
+export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, communityStaffRouter, socialStaffRouter, proRouter, joinRouter, communityRouter, socialRouter, businessRouter, feedNotificationsRouter, feedGrowthRouter, creatorRouter];
 
 /** Public, outside /api and sign-in: the calendar subscription feed (its secret is in the URL). */
 export const publicRoutes: Router[] = [calendarFeedRouter, inboundRouter, socialPublicRouter, feedGrowthPublicRouter];

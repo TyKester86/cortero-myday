@@ -1332,13 +1332,15 @@ export function FeedLanding() {
   const app = appHome();
   // Arrived from "Join the Feed" on the other domain (?join=1): they already said they're 18+; open sign-up.
   const qs = new URLSearchParams(window.location.search);
-  const [arrived] = useState(() => (qs.get('join') === '1' || (FEED_APP && /^\/invite\//.test(window.location.pathname))) && !app.elsewhere);
+  const [arrived] = useState(() => qs.get('join') === '1' && !app.elsewhere);
+  // From a friend's invite link: sign-up opens (date of birth first) — after the 18+ gate, which they haven't seen yet.
+  const [invited] = useState(() => FEED_APP && /^\/invite\//.test(window.location.pathname));
   // Sign-in came back with a problem (expired, cancelled): say so, with the choices open again.
   const [error] = useState(() => LOGIN_ERRORS[qs.get('error') ?? ''] ?? null);
   const [age, setAge] = useState<'ok' | 'under' | null>(arrived || stored(AGE_KEY) === '1' ? 'ok' : null);
-  const [joining, setJoining] = useState(arrived || !!error);
+  const [joining, setJoining] = useState(arrived || invited || !!error);
   // The Feed app's sign-up: age first (no account until it's checked), then the ways in. "Sign in" skips to them.
-  const [step, setStep] = useState<'dob' | 'choices'>(() => (FEED_APP && (arrived || qs.get('error') === 'age') ? 'dob' : 'choices'));
+  const [step, setStep] = useState<'dob' | 'choices'>(() => (FEED_APP && (arrived || invited || qs.get('error') === 'age') ? 'dob' : 'choices'));
   const signin = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!arrived) return;

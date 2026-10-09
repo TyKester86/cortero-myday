@@ -42,6 +42,8 @@ export type EventName =
   | 'ai_consent_given'
   | 'account_linked'
   | 'feed_converted'
+  | 'creator_tip'
+  | 'creator_supporter'
   | 'ai_consent_withdrawn'
   | 'tutor_style_changed'
   | 'data_exported'

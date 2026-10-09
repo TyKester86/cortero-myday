@@ -2810,6 +2810,27 @@ export interface FeedCatchup {
   top: FeedPost[];
 }
 
+/** A creator's earnings setup (their own view). */
+export interface CreatorInfo {
+  payments: 'stripe' | 'stub' | 'none';
+  /** Stripe Connect: none yet, onboarding, can take payments, or Stripe needs more from them. */
+  status: 'none' | 'pending' | 'active' | 'restricted';
+  tipsEnabled: boolean;
+  /** Monthly support price in cents (null = not offered). */
+  subCents: number | null;
+  /** The platform's share of each payment (percent). */
+  feePct: number;
+  earnings: { tipsCents: number; last30Cents: number; tips: number; supporters: number; monthlyCents: number };
+}
+
+/** What someone else's profile offers. */
+export interface CreatorPublic {
+  tips: boolean;
+  subCents: number | null;
+  /** You already support them monthly. */
+  supporting: boolean;
+}
+
 /** Your own numbers in the Feed. */
 export interface FeedStats {
   posts: number;

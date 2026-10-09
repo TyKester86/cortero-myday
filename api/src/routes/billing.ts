@@ -33,6 +33,7 @@ import { hanaDailyCap } from '../lib/limits.js';
 import { registerJob } from '../lib/schedulers.js';
 import { statusFrom, stripe, verifyWebhook } from '../lib/stripe.js';
 import { checkoutCompleted } from './business.js';
+import { creatorWebhook } from './creator.js';
 
 export const billingRouter = Router();
 export const adminRouter = Router();
@@ -301,6 +302,11 @@ billingWebhookRouter.post('/api/billing/webhook', express.raw({ type: '*/*', lim
     const { rows } = await asSystem(() => pool.query<{ id: number }>('SELECT id FROM households WHERE stripe_customer_id = $1', [customer]));
     return rows[0]?.id ?? null;
   };
+  // Creators' tips and monthly support (the Feed): paid to the creator's own Stripe account.
+  if (await creatorWebhook(ev.type, o)) {
+    res.json({ received: true });
+    return;
+  }
   // One-time checkouts from the Provider Business Suite (an ad, or a consult booking).
   if (ev.type === 'checkout.session.completed' && (await checkoutCompleted(o))) {
     res.json({ received: true });

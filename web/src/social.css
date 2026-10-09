@@ -450,3 +450,7 @@
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
 .stat-tile { display: grid; gap: 2px; padding: 10px; border-radius: 12px; background: var(--card-alt); }
 .stat-tile b { font-size: 22px; font-variant-numeric: tabular-nums; }
+
+/* Creator earnings. */
+.support-box { display: grid; gap: 8px; margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 14px; }
+.support-box .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

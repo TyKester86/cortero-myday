@@ -3828,6 +3828,31 @@ async function feedAppSuite() {
   eq('unsubscribe (no sign-in needed) → no more digest emails', [un.status, (await twin.get('/api/feed/notifications/prefs')).data.digestEmail], [200, false]);
   eq('…a forged unsubscribe link does nothing', (await new Client('unsub2', 'MyDay-e2e', FEED).get(`/api/feed/unsubscribe?u=${nbId}&t=nope`)).status, 400);
   eq('the digest ping can be turned off too', (await twin.put('/api/feed/notifications/prefs', { digests: false })).data.digests, false);
+
+  section('Creators earn: tips and monthly support, paid through Stripe to the creator (optional — the Feed is free)');
+  const ci0 = (await nb.get('/api/creator')).data;
+  eq('not set up yet', [ci0.status, ci0.tipsEnabled, ci0.subCents, ci0.feePct], ['none', false, null, 0]);
+  eq('…no tips before payouts are connected', (await nb.put('/api/creator', { tipsEnabled: true })).data.code, 'not_connected');
+  eq('connect payouts (Stripe Express; here: the test stand-in) → ready', (await nb.post('/api/creator/connect')).data.info.status, 'active');
+  const ci1 = (await nb.put('/api/creator', { tipsEnabled: true, subCents: 400 })).data;
+  eq('tips on, monthly support at $4', [ci1.tipsEnabled, ci1.subCents], [true, 400]);
+  eq('…$1–$100 a month only', (await nb.put('/api/creator', { subCents: 50 })).status, 400);
+  eq('what Twin sees on Nova’s profile', (await twin.get(`/api/creator/${nbId}/public`)).data, { tips: true, subCents: 400, supporting: false });
+  eq('…and on her own, nothing to pay herself', (await nb.get(`/api/creator/${nbId}/public`)).data.tips, false);
+  const tip = (await twin.post(`/api/creator/${nbId}/tip`, { cents: 500 })).data;
+  eq('Twin tips $5 → paid, back to Nova’s profile with thanks', tip.url, `${FEED}/people/${nbId}?tip=thanks`);
+  const ci2 = (await nb.get('/api/creator')).data.earnings;
+  eq('…Nova’s earnings show it, and she hears who', [ci2.tipsCents, ci2.tips, (await inboxOf(nb)).items.find((n) => n.kind === 'tip')?.text], [500, 1, 'Twin sent you a $5 tip']);
+  eq('tips are $1–$500; never to yourself; kids never', [(await twin.post(`/api/creator/${nbId}/tip`, { cents: 50 })).status, (await nb.post(`/api/creator/${nbId}/tip`, { cents: 500 })).status, (await avery.post(`/api/creator/${nbId}/tip`, { cents: 500 })).status], [400, 400, 403]);
+  await twin.post(`/api/creator/${nbId}/subscribe`);
+  eq('Twin supports Nova monthly → active; Nova hears it', [(await twin.get(`/api/creator/${nbId}/public`)).data.supporting, (await nb.get('/api/creator')).data.earnings.supporters, (await inboxOf(nb)).items.find((n) => n.kind === 'supporter')?.text], [true, 1, 'Twin is now supporting you ($4 a month)']);
+  eq('…once', (await twin.post(`/api/creator/${nbId}/subscribe`)).status, 409);
+  eq('Nova’s supporters list', (await nb.get('/api/creator/supporters')).data.items.map((i) => [i.name, i.kind, i.cents]), [['Twin', 'monthly', 400], ['Twin', 'tip', 500]]);
+  await twin.post(`/api/creator/${nbId}/unsubscribe`);
+  eq('Twin stops → no longer supporting', (await twin.get(`/api/creator/${nbId}/public`)).data.supporting, false);
+  await tyF.post(`/api/community/people/${nbId}/block`);
+  eq('blocked → no way to pay them either way', [(await tyF.get(`/api/creator/${nbId}/public`)).data.tips, (await tyF.post(`/api/creator/${nbId}/tip`, { cents: 500 })).status], [false, 403]);
+  await tyF.del(`/api/community/people/${nbId}/block`);
 }
 
 async function businessSuite() {
@@ -4550,6 +4575,20 @@ async function uiGate() {
     await jp.getByTestId('village-invite-send').click();
     await jp.getByTestId('village-invited').waitFor({ timeout: 10000 });
     check('…one tap invites her people', /Invited/.test(await jp.getByTestId('village-invited').innerText()));
+    // Support a creator from their profile; set up her own earnings.
+    const novaUid = (await sql("SELECT user_id FROM social_profiles WHERE username = 'nova.reads'"))[0].user_id;
+    await jp.goto(`${FEED}/people/${novaUid}`);
+    await jp.getByTestId('support-box').waitFor({ timeout: 10000 });
+    eq('a creator’s profile: tip buttons and monthly support, clearly optional', [await jp.getByTestId('tip-200').count(), /\$4\/month/.test(await jp.getByTestId('support-monthly').innerText()), /free for everyone/.test(await jp.getByTestId('support-box').innerText())], [1, true, true]);
+    await jp.getByTestId('tip-200').click();
+    await jp.getByTestId('support-msg').waitFor({ timeout: 10000 });
+    check('…a $2 tip goes through (thank-you shown)', /Thank you/.test(await jp.getByTestId('support-msg').innerText()));
+    await jp.goto(`${FEED}/earnings`);
+    await jp.getByTestId('creator-connect').click();
+    await jp.getByTestId('creator-settings').waitFor({ timeout: 10000 });
+    await jp.getByTestId('creator-tips').check();
+    await jp.waitForTimeout(300);
+    eq('her Earnings: payouts connected, tips turned on', (await jp.evaluate(async () => (await (await fetch('/api/creator')).json()).tipsEnabled)), true);
     await joinCtx.close();
     const ivCtx = await browser.newContext(phone);
     const ivp = await ivCtx.newPage();

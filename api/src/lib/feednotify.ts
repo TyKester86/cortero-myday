@@ -14,9 +14,9 @@ import { asSystem, pool } from '../db.js';
 import { inQuietHours, localTime, realPush, stubbed } from './push.js';
 import { registerJob } from './schedulers.js';
 
-export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined';
+export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined' | 'tip' | 'supporter';
 
-const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined']);
+const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined', 'tip', 'supporter']);
 const BATCH_MINUTES = 15;
 const REPING_HOURS = 2;
 const DAILY_CAP = 8;
@@ -32,6 +32,8 @@ const PREF_OF: Record<FeedNoticeKind, string> = {
   milestone: 'milestones',
   invite: 'villages',
   joined: 'follows',
+  tip: 'milestones',
+  supporter: 'milestones',
 };
 
 export interface Notice {
@@ -121,6 +123,10 @@ function words(kind: FeedNoticeKind, names: string[], count: number, snippet: st
       return `${who} invited you to ${snippet ?? 'a village'}`;
     case 'joined':
       return `${who} joined The Feed from your invite`;
+    case 'tip':
+      return `${who} sent you a ${snippet ?? ''} tip`.replace('  ', ' ');
+    case 'supporter':
+      return `${who} is now supporting you${snippet ? ` (${snippet} a month)` : ''}`;
   }
 }
 
