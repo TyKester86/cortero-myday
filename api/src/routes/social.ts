@@ -9,6 +9,7 @@ import express, { Router, type Request } from 'express';
 import type { ClipComment, ClipItem, DmMessage, DmThread, DmThreadSummary, ReviewNote, StoryItem, StoryRailItem } from '@myday/shared';
 import { pool } from '../db.js';
 import { logEvent } from '../lib/events.js';
+import { notify, notifyMentions } from '../lib/feednotify.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { screenText } from '../lib/screen.js';
 import { currentKeyId, openBytes, openText, sealBytes, sealText } from '../lib/seal.js';
@@ -294,7 +295,11 @@ socialRouter.post('/api/social/clips/:id/like', async (req, res) => {
   const c = await clipFor(m.userId, id);
   if (c.status !== 'visible') throw new HttpError(409, 'Under review');
   const del = await pool.query('DELETE FROM social_clip_likes WHERE clip_id = $1 AND user_id = $2', [id, m.userId]);
-  if (!del.rowCount) await pool.query('INSERT INTO social_clip_likes (clip_id, user_id) VALUES ($1, $2)', [id, m.userId]);
+  if (!del.rowCount) {
+    await pool.query('INSERT INTO social_clip_likes (clip_id, user_id) VALUES ($1, $2)', [id, m.userId]);
+    const { rows: ca } = await pool.query<{ author_user_id: number }>('SELECT author_user_id FROM social_clips WHERE id = $1', [id]);
+    if (ca[0]) await notify({ to: ca[0].author_user_id, kind: 'like', actor: m.userId, group: `like:clip:${id}`, url: '/clips' });
+  }
   await pool.query('UPDATE social_clips SET like_count = (SELECT COUNT(*) FROM social_clip_likes WHERE clip_id = $1) WHERE id = $1', [id]);
   res.json({ clip: await clipFor(m.userId, id) });
 });
@@ -363,6 +368,11 @@ socialRouter.post('/api/social/clips/:id/comments', async (req, res) => {
     id, m.userId, sealText(body, keyId), keyId, d.status, d.priority, d.flags,
   ]);
   await pool.query("UPDATE social_clips SET comment_count = (SELECT COUNT(*) FROM social_clip_comments WHERE clip_id = $1 AND status = 'visible') WHERE id = $1", [id]);
+  if (d.status === 'visible') {
+    const { rows: ca } = await pool.query<{ author_user_id: number }>('SELECT author_user_id FROM social_clips WHERE id = $1', [id]);
+    if (ca[0]) await notify({ to: ca[0].author_user_id, kind: 'comment', actor: m.userId, group: `comment:clip:${id}`, url: '/clips', snippet: body });
+    await notifyMentions(body, m.userId, `mention:clip:${id}`, '/clips');
+  }
   res.status(201).json({ review: d.note });
 });
 
@@ -470,7 +480,12 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
   await pool.query('INSERT INTO dm_messages (thread_id, sender_user_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
     id, m.userId, sealText(body, keyId), keyId, d.status, d.priority, d.flags,
   ]);
-  if (d.status === 'visible') await pool.query('UPDATE dm_threads SET last_at = now() WHERE id = $1', [id]);
+  if (d.status === 'visible') {
+    await pool.query('UPDATE dm_threads SET last_at = now() WHERE id = $1', [id]);
+    // A message is for them: right away (unless they muted this conversation). Never the words themselves.
+    const { rows: mu } = await pool.query<{ muted: boolean }>('SELECT muted FROM dm_thread_state WHERE thread_id = $1 AND user_id = $2', [id, other]);
+    if (!mu[0]?.muted) await notify({ to: other, kind: 'dm', actor: m.userId, group: `dm:${id}`, url: `/messages/${m.userId}` });
+  }
   await logEvent('social_message', { held: d.status !== 'visible' }, null, null);
   res.status(201).json({ thread: await threadView(m.userId, other), review: d.note });
 });

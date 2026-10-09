@@ -144,7 +144,16 @@ self.addEventListener('push', (event) => {
     /* plain text or empty */
   }
   event.waitUntil(
-    self.registration.showNotification(data.title, { body: data.body, icon: '/icons/myday-icon-192.png', badge: '/icons/myday-icon-192.png', data: { url: data.url }, tag: 'myday-daily' }),
+    Promise.all([
+      self.registration.showNotification(data.title, {
+        body: data.body,
+        icon: data.icon || '/icons/myday-icon-192.png',
+        badge: data.icon || '/icons/myday-icon-192.png',
+        data: { url: data.url },
+        tag: data.tag || 'myday-daily',
+      }),
+      typeof data.badge === 'number' && self.navigator.setAppBadge ? self.navigator.setAppBadge(data.badge).catch(() => undefined) : undefined,
+    ]),
   );
 });
 

@@ -42,6 +42,7 @@ import {
   type VillageInfo,
 } from '@myday/shared';
 import { onFeedApp } from '../lib/hosts.js';
+import { milestone, notify, notifyMentions } from '../lib/feednotify.js';
 import { config } from '../config.js';
 import { asSystem, detached, pool, tx } from '../db.js';
 import { logEvent } from '../lib/events.js';
@@ -709,9 +710,31 @@ communityRouter.post('/api/village/threads', async (req, res) => {
     ]);
     return tid;
   });
-  if (d.status === 'visible') ensureTrusted('village', id, `${title}\n\n${body}`);
+  if (d.status === 'visible') {
+    ensureTrusted('village', id, `${title}\n\n${body}`);
+    const { rows: vm } = await pool.query<{ user_id: number; slug: string }>(
+      'SELECT vm.user_id, v.slug FROM village_members vm JOIN villages v ON v.id = vm.village_id WHERE vm.village_id = $1 AND vm.user_id <> $2',
+      [vid, m.userId],
+    );
+    const day = new Date().toISOString().slice(0, 10);
+    for (const r of vm) await notify({ to: r.user_id, kind: 'village', actor: m.userId, group: `village:${r.slug}:${day}`, url: `/village/${id}`, snippet: title });
+    await notifyMentions(`${title}\n${body}`, m.userId, `mention:thread:${id}`, `/village/${id}`);
+    await firstPost(m.userId);
+  }
   res.status(201).json({ thread: await threadView(m.userId, id), review: d.note });
 });
+
+/** Reciprocity: a person's first post deserves a welcome. */
+async function firstPost(userId: number): Promise<void> {
+  const { rows } = await pool.query<{ n: number }>(
+    `SELECT (SELECT COUNT(*) FROM social_posts WHERE author_user_id = $1 AND status = 'visible')
+          + (SELECT COUNT(*) FROM forum_posts WHERE author_user_id = $1 AND status = 'visible') AS n`,
+    [userId],
+  );
+  if (Number(rows[0]?.n ?? 0) === 1) await milestone(userId, 'first-post', 'Your first post is live — welcome to the Feed. People can see it now.', `/people/${userId}`);
+  const streak = (await profileView(userId, userId)).streak;
+  if (streak >= 30) await milestone(userId, 'streak-30', 'A 30-day streak. Thirty days of showing up — that’s real.', `/people/${userId}`);
+}
 
 communityRouter.post('/api/village/threads/:id/replies', async (req, res) => {
   const m = await poster(req);
@@ -724,7 +747,14 @@ communityRouter.post('/api/village/threads/:id/replies', async (req, res) => {
   await pool.query('INSERT INTO forum_posts (thread_id, author_user_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
     id, m.userId, sealText(body, keyId), keyId, d.status, d.priority, d.flags,
   ]);
-  if (d.status === 'visible') await pool.query('UPDATE forum_threads SET last_activity_at = now() WHERE id = $1', [id]);
+  if (d.status === 'visible') {
+    await pool.query('UPDATE forum_threads SET last_activity_at = now() WHERE id = $1', [id]);
+    const { rows: au } = await pool.query<{ author_user_id: number }>('SELECT author_user_id FROM forum_threads WHERE id = $1', [id]);
+    const to = au[0]?.author_user_id;
+    if (to) await notify({ to, kind: 'reply', actor: m.userId, group: `reply:thread:${id}`, url: `/village/${id}`, snippet: body });
+    await notifyMentions(body, m.userId, `mention:thread:${id}`, `/village/${id}`);
+    await firstPost(m.userId);
+  }
   res.status(201).json({ thread: await threadView(m.userId, id), review: d.note });
 });
 
@@ -1011,6 +1041,10 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
     [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags],
   );
   if (d.status === 'visible' && body) ensureTrusted('feed', rows[0]?.id ?? 0, body);
+  if (d.status === 'visible') {
+    if (body) await notifyMentions(body, m.userId, `mention:post:${rows[0]?.id ?? 0}`, `/people/${m.userId}`);
+    await firstPost(m.userId);
+  }
   res.status(201).json({ post: await onePost(m.userId, rows[0]?.id ?? 0), review: d.note });
 });
 
@@ -1030,7 +1064,10 @@ communityRouter.post('/api/feed/posts/:id/like', async (req, res) => {
   const p = await socialPost(m.userId, id);
   if (p.status !== 'visible') throw new HttpError(409, 'Under review');
   const del = await pool.query('DELETE FROM social_likes WHERE post_id = $1 AND user_id = $2', [id, m.userId]);
-  if (!del.rowCount) await pool.query('INSERT INTO social_likes (post_id, user_id) VALUES ($1, $2)', [id, m.userId]);
+  if (!del.rowCount) {
+    await pool.query('INSERT INTO social_likes (post_id, user_id) VALUES ($1, $2)', [id, m.userId]);
+    await notify({ to: p.author_user_id, kind: 'like', actor: m.userId, group: `like:post:${id}`, url: `/people/${p.author_user_id}` });
+  }
   await pool.query('UPDATE social_posts SET like_count = (SELECT COUNT(*) FROM social_likes WHERE post_id = $1) WHERE id = $1', [id]);
   res.json(await onePost(m.userId, id));
 });
@@ -1071,7 +1108,12 @@ communityRouter.post('/api/community/people/:id/follow', async (req, res) => {
   const id = idParam(req.params.id);
   if (id === m.userId) throw new HttpError(400, 'You can’t follow yourself');
   await profileView(m.userId, id); // must be a visible, unblocked grown-up's profile
-  await pool.query('INSERT INTO social_follows (follower_user_id, followed_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [m.userId, id]);
+  const f = await pool.query('INSERT INTO social_follows (follower_user_id, followed_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [m.userId, id]);
+  if (f.rowCount) {
+    await notify({ to: id, kind: 'follow', actor: m.userId, group: `follow:${new Date().toISOString().slice(0, 10)}`, url: `/people/${m.userId}` });
+    const { rows: fc } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM social_follows WHERE followed_user_id = $1', [id]);
+    if ((fc[0]?.n ?? 0) >= 10) await milestone(id, 'followers-10', 'You just reached 10 followers. People are glad you’re here.', `/people/${id}`);
+  }
   res.json(await profileView(m.userId, id));
 });
 

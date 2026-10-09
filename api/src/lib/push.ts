@@ -45,12 +45,12 @@ export function vapidPublicKey(): string | null {
   return process.env.VAPID_PUBLIC_KEY || null;
 }
 
-function stubbed(): boolean {
+export function stubbed(): boolean {
   return process.env.PUSH_STUB === '1' && !config.production;
 }
 
 let vapidSet = false;
-function realPush(): boolean {
+export function realPush(): boolean {
   const pub = process.env.VAPID_PUBLIC_KEY ?? '';
   const priv = process.env.VAPID_PRIVATE_KEY ?? '';
   if (!pub || !priv) return false;

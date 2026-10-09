@@ -2,14 +2,15 @@
  * The Feed app's first run, right after the profile: what you're into → villages to join → people to follow →
  * bring your people. Nobody lands in an empty feed. Every step can be skipped; it never comes back once done.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { FEED_INTERESTS, type FeedOnboarding as Onboarding, type FeedSuggestion } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { FeedHorn } from '../../components/NavIcon';
 import { count } from '../../format';
+import { enableFeedPush, pushSupported } from './push';
 
-type Step = 'interests' | 'villages' | 'people' | 'invite';
-const STEPS: Step[] = ['interests', 'villages', 'people', 'invite'];
+type Step = 'interests' | 'villages' | 'people' | 'notify' | 'invite';
+const STEPS: Step[] = ['interests', 'villages', 'people', 'notify', 'invite'];
 
 export function FeedOnboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<Step>('interests');
@@ -18,10 +19,7 @@ export function FeedOnboarding({ onDone }: { onDone: () => void }) {
   const [joined, setJoined] = useState<Set<string> | null>(null);
   const [followed, setFollowed] = useState<Set<number>>(new Set());
   const [copied, setCopied] = useState(false);
-  // Villages your interests point to start ticked (plus any you're already in).
-  useEffect(() => {
-    if (step === 'villages' && data && joined === null) setJoined(new Set(data.villages.filter((v) => v.joined || v.suggested).map((v) => v.slug)));
-  }, [step, data, joined]);
+  const [push, setPush] = useState<string | null>(null);
   const finish = async (): Promise<void> => {
     await api('/api/feed/onboarding/done', 'POST').catch(() => undefined);
     onDone();
@@ -29,8 +27,10 @@ export function FeedOnboarding({ onDone }: { onDone: () => void }) {
   const next = async (): Promise<void> => {
     if (step === 'interests') {
       await api('/api/feed/onboarding', 'PUT', { interests: [...picked] });
+      // The villages these interests point to (fresh, not the list from before they were picked) start ticked.
+      const fresh = await api<Onboarding>('/api/feed/onboarding');
+      setJoined(new Set(fresh.villages.filter((v) => v.joined || v.suggested).map((v) => v.slug)));
       reload();
-      setJoined(null);
       setStep('villages');
     } else if (step === 'villages' && data) {
       const want = joined ?? new Set<string>();
@@ -41,7 +41,8 @@ export function FeedOnboarding({ onDone }: { onDone: () => void }) {
       );
       reload();
       setStep('people');
-    } else if (step === 'people') setStep('invite');
+    } else if (step === 'people') setStep(pushSupported() ? 'notify' : 'invite');
+    else if (step === 'notify') setStep('invite');
     else await finish();
   };
   const follow = async (p: FeedSuggestion): Promise<void> => {
@@ -161,6 +162,22 @@ export function FeedOnboarding({ onDone }: { onDone: () => void }) {
             ))}
             {data && !data.people.length && <li className="muted">You’re early — the Feed is just getting going. Invite your people next.</li>}
           </ul>
+        </>
+      )}
+      {step === 'notify' && (
+        <>
+          <h2 id="onb-title">Know when they answer</h2>
+          <p className="muted small">Get a ping when someone replies, follows you back or sends a message. Likes come together, a bit later. Never between 10pm and 8am — change it anytime.</p>
+          {push === 'on' ? (
+            <p className="good" role="status" data-testid="onb-push-on">
+              Notifications are on.
+            </p>
+          ) : (
+            <button type="button" className="btn" onClick={() => void enableFeedPush().then(setPush, () => setPush('unsupported'))} data-testid="onb-push">
+              Turn on notifications
+            </button>
+          )}
+          {push === 'denied' && <p className="small muted">No problem — you can turn them on later in Notifications.</p>}
         </>
       )}
       {step === 'invite' && (

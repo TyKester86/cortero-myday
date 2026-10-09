@@ -6,7 +6,9 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation } from 'react-router';
 import { useLoad } from '../../api';
 import { useSession } from '../../session';
-import { FeedHorn } from '../../components/NavIcon';
+import { FeedHorn, NavIcon } from '../../components/NavIcon';
+import { api as apiCall } from '../../api';
+import { setBadge } from './push';
 import { signOut } from '../../signout';
 import { APP_URL, clearInstall, FEED_APP, iosSafari, pendingInstall, standalone } from '../../apps';
 import type { ReactNode } from 'react';
@@ -70,6 +72,35 @@ export function FeedTitle({ children }: { children: ReactNode }) {
 
 /* ---------- the Feed's section bar ---------- */
 
+/** New notifications (the bell's number, and the Feed app's home-screen badge): checked every minute. */
+function useFeedUnread(): number {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    let live = true;
+    const check = (): void => {
+      void apiCall<{ unread: number }>('/api/feed/notifications/count').then(
+        (r) => {
+          if (!live) return;
+          setN(r.unread);
+          if (FEED_APP) setBadge(r.unread);
+        },
+        () => undefined,
+      );
+    };
+    check();
+    const t = setInterval(check, 60_000);
+    window.addEventListener('feed-notifications', check);
+    window.addEventListener('focus', check);
+    return () => {
+      live = false;
+      clearInterval(t);
+      window.removeEventListener('feed-notifications', check);
+      window.removeEventListener('focus', check);
+    };
+  }, []);
+  return n;
+}
+
 const SECTIONS: Array<{ to: string; label: string; end?: boolean; household?: boolean }> = [
   { to: '/feed', label: 'Feed', end: true },
   { to: '/feed/stories', label: 'Stories' },
@@ -87,6 +118,7 @@ export function FeedNav() {
   // Circles live with a household (people who joined just for the Feed don't have one), inside MyDay.
   const links = SECTIONS.filter((s) => !s.household || (!FEED_APP && me.household && !off.has('circles')));
   const unread = inbox.data?.unread ?? 0;
+  const notes = useFeedUnread();
   const bar = useRef<HTMLElement>(null);
   const { pathname } = useLocation();
   // The section you're in is always visible in the bar (it scrolls sideways on phones).
@@ -108,6 +140,14 @@ export function FeedNav() {
           )}
         </NavLink>
       ))}
+      <NavLink to="/notifications" className="feed-nav-link feed-nav-bell" aria-label={notes ? `Notifications, ${notes} new` : 'Notifications'} data-testid="notif-bell">
+        <NavIcon name="bell" size={18} />
+        {notes > 0 && (
+          <span className="feed-nav-badge" data-testid="notif-badge">
+            {notes > 99 ? '99+' : notes}
+          </span>
+        )}
+      </NavLink>
     </nav>
   );
 }
