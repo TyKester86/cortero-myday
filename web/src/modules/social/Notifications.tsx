@@ -6,8 +6,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, useLoad } from '../../api';
-import { ago } from '../../dates';
-import { FeedNav, FeedTitle } from './shell';
+import { Avatar, Icon, IconLink, since, TopBar } from '../feed/kit';
 import { Gate } from '../community/Community';
 import { enableFeedPush, pushSupported, setBadge } from './push';
 
@@ -19,7 +18,7 @@ interface Item {
   at: string;
   unread: boolean;
   count: number;
-  actors: Array<{ userId: number; name: string }>;
+  actors: Array<{ userId: number; name: string; avatarUrl: string | null }>;
   prompt: 'follow_back' | 'reply' | null;
   followsBack: boolean;
 }
@@ -35,101 +34,103 @@ const KINDS: Array<[keyof Prefs, string]> = [
   ['replies', 'Replies to you'],
   ['mentions', 'Mentions'],
   ['dms', 'Messages'],
-  ['follows', 'New followers'],
+  ['follows', 'Friend requests'],
   ['likes', 'Likes'],
-  ['comments', 'Comments on your clips'],
+  ['comments', 'Comments'],
   ['villages', 'Village activity'],
   ['milestones', 'Milestones'],
 ];
 
 export function NotificationsPage() {
   return (
-    <section className="feed-page" data-testid="notifications">
-      <FeedTitle>Notifications</FeedTitle>
-      <FeedNav />
+    <section className="sc-page feed-page" data-testid="notifications">
+      <TopBar title="Notifications" back={false} right={<IconLink to="/feed/settings/notifications" icon="gear" label="Notification settings" testid="notif-settings" />} />
       <Gate>{() => <Inbox />}</Gate>
     </section>
+  );
+}
+
+/** "Ana and 2 others liked your post": the people in bold. */
+function NoticeText({ text }: { text: string }) {
+  const m = text.match(/^(.+?) (liked|commented|replied|sent|accepted|mentioned|started|joined|invited|is now)(\b[\s\S]*)$/);
+  if (!m) return <>{text}</>;
+  return (
+    <span>
+      <b>{m[1]}</b> {m[2]}
+      {m[3]}
+    </span>
   );
 }
 
 function Inbox() {
   const { data, reload } = useLoad<{ items: Item[]; unread: number }>('/api/feed/notifications');
   const [followed, setFollowed] = useState<Set<number>>(new Set());
-  // Seen once you've looked: the badge clears.
+  // What was new when you opened the page stays marked "New" while you look; the badge clears.
+  const [fresh] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (!data?.unread) return;
+    if (!data) return;
+    for (const n of data.items) if (n.unread) fresh.add(n.key);
+    if (!data.unread) return;
     void api<{ unread: number }>('/api/feed/notifications/read', 'POST').then((r) => {
       setBadge(r.unread);
       window.dispatchEvent(new Event('feed-notifications'));
     });
-  }, [data?.unread]);
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const items = data?.items ?? [];
+  const isNew = (n: Item): boolean => n.unread || fresh.has(n.key);
+  const row = (n: Item) => {
+    const who = n.actors[0];
+    return (
+      <li key={n.key} className={isNew(n) ? 'sc-card sc-notif unread' : 'sc-card sc-notif'} data-testid="notif-item" data-kind={n.kind}>
+        {who ? (
+          <Avatar a={{ displayName: who.name, avatarUrl: who.avatarUrl }} size={48} />
+        ) : (
+          <span className="sc-avatar blank" aria-hidden="true" style={{ width: 48, height: 48 }}>
+            <Icon name="bell" size={22} />
+          </span>
+        )}
+        <Link to={n.url} className="grow sc-notif-text">
+          <NoticeText text={n.text} />
+          <small className="sc-meta">{since(n.at)}</small>
+        </Link>
+        {n.prompt === 'follow_back' && who && !followed.has(who.userId) && (
+          <button
+            type="button"
+            className="sc-btn small"
+            onClick={() =>
+              void api(`/api/community/people/${who.userId}/follow`, 'POST').then(() => {
+                setFollowed(new Set([...followed, who.userId]));
+                reload();
+              })
+            }
+            data-testid="notif-followback"
+          >
+            {n.kind === 'friend_request' ? 'Confirm' : 'Add friend'}
+          </button>
+        )}
+        {n.prompt === 'reply' && (
+          <Link to={n.url} className="sc-btn outline small" data-testid="notif-reply">
+            Reply
+          </Link>
+        )}
+        {isNew(n) && <span className="sc-dot" aria-label="New" />}
+      </li>
+    );
+  };
+  const now = items.filter(isNew);
+  const earlier = items.filter((n) => !isNew(n));
   return (
-    <>
-      <ul className="plain notif-list" data-testid="notif-list">
-        {data?.items.map((n) => {
-          const who = n.actors[0];
-          return (
-            <li key={n.key} className={n.unread ? 'row-card notif unread' : 'row-card notif'} data-testid="notif-item" data-kind={n.kind}>
-              <span className="ring-avatar" aria-hidden="true" style={{ width: 40, height: 40, fontSize: 16 }}>
-                {who ? who.name.slice(0, 1) : '★'}
-              </span>
-              <Link to={n.url} className="grow notif-text">
-                {n.text}
-                <small className="muted" style={{ display: 'block' }}>
-                  {ago(n.at)}
-                </small>
-              </Link>
-              {n.prompt === 'follow_back' && who && !followed.has(who.userId) && (
-                <button
-                  type="button"
-                  className="btn small"
-                  onClick={() =>
-                    void api(`/api/community/people/${who.userId}/follow`, 'POST').then(() => {
-                      setFollowed(new Set([...followed, who.userId]));
-                      reload();
-                    })
-                  }
-                  data-testid="notif-followback"
-                >
-                  Follow back
-                </button>
-              )}
-              {n.prompt === 'reply' && (
-                <Link to={n.url} className="btn ghost small" data-testid="notif-reply">
-                  Reply
-                </Link>
-              )}
-            </li>
-          );
-        })}
-        {data && !data.items.length && <li className="muted">Nothing yet. When people reply, follow or like your posts, it shows up here.</li>}
-      </ul>
-      <NotificationSettings />
-    </>
+    <ul className="plain sc-list" data-testid="notif-list">
+      {now.length > 0 && <li className="sc-h3">New</li>}
+      {now.map(row)}
+      {earlier.length > 0 && <li className="sc-h3">Earlier</li>}
+      {earlier.map(row)}
+      {data && !items.length && <li className="sc-meta">Nothing yet. When people comment, add you as a friend or like your posts, it shows up here.</li>}
+    </ul>
   );
 }
 
-/** Contacts matching: whether people who have your email can find you. */
-function Findable() {
-  const { data, setData } = useLoad<{ findableByEmail: boolean }>('/api/feed/privacy');
-  if (!data) return null;
-  return (
-    <label className="inline-label">
-      <input
-        type="checkbox"
-        checked={data.findableByEmail}
-        onChange={(e) => {
-          setData({ findableByEmail: e.target.checked });
-          void api('/api/feed/privacy', 'PUT', { findableByEmail: e.target.checked });
-        }}
-        data-testid="pref-findable"
-      />{' '}
-      Let people who have my email find me
-    </label>
-  );
-}
-
-function NotificationSettings() {
+export function NotificationSettings({ open = false }: { open?: boolean }) {
   const { data: loaded, reload } = useLoad<Prefs>('/api/feed/notifications/prefs');
   const [local, setLocal] = useState<Partial<Prefs>>({});
   const [state, setState] = useState<string | null>(null);
@@ -146,7 +147,7 @@ function NotificationSettings() {
     reload();
   };
   return (
-    <details className="card notif-prefs" data-testid="notif-prefs">
+    <details className="sc-card notif-prefs" data-testid="notif-prefs" open={open}>
       <summary>
         <b>Notification settings</b>
       </summary>
@@ -191,7 +192,6 @@ function NotificationSettings() {
           <input type="checkbox" checked={data.digestEmail} onChange={(e) => save({ digestEmail: e.target.checked })} data-testid="pref-digest-email" /> …and email
         </label>
       </fieldset>
-      <Findable />
     </details>
   );
 }

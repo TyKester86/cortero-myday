@@ -14,9 +14,9 @@ import { asSystem, pool } from '../db.js';
 import { inQuietHours, localTime, realPush, stubbed } from './push.js';
 import { registerJob } from './schedulers.js';
 
-export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined' | 'tip' | 'supporter';
+export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined' | 'tip' | 'supporter' | 'friend_request' | 'friend_accept';
 
-const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined', 'tip', 'supporter']);
+const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined', 'tip', 'supporter', 'friend_request', 'friend_accept']);
 const BATCH_MINUTES = 15;
 const REPING_HOURS = 2;
 const DAILY_CAP = 8;
@@ -34,6 +34,8 @@ const PREF_OF: Record<FeedNoticeKind, string> = {
   joined: 'follows',
   tip: 'milestones',
   supporter: 'milestones',
+  friend_request: 'follows',
+  friend_accept: 'follows',
 };
 
 export interface Notice {
@@ -91,7 +93,7 @@ export interface InboxItem {
   unread: boolean;
   count: number;
   /** The most recent people involved (first names). */
-  actors: Array<{ userId: number; name: string }>;
+  actors: Array<{ userId: number; name: string; avatarUrl: string | null }>;
   /** Follows: whether you follow them back (a "Follow back" button). Replies/mentions: "Reply". */
   prompt: 'follow_back' | 'reply' | null;
   followsBack: boolean;
@@ -104,7 +106,7 @@ function words(kind: FeedNoticeKind, names: string[], count: number, snippet: st
     case 'like':
       return `${who} liked your post`;
     case 'comment':
-      return `${who} commented on your clip${quote}`;
+      return `${who} commented${quote}`;
     case 'reply':
       return `${who} replied to you${quote}`;
     case 'follow':
@@ -127,6 +129,10 @@ function words(kind: FeedNoticeKind, names: string[], count: number, snippet: st
       return `${who} sent you a ${snippet ?? ''} tip`.replace('  ', ' ');
     case 'supporter':
       return `${who} is now supporting you${snippet ? ` (${snippet} a month)` : ''}`;
+    case 'friend_request':
+      return `${who} sent you a friend request`;
+    case 'friend_accept':
+      return `${who} accepted your friend request`;
   }
 }
 
@@ -141,7 +147,7 @@ export async function inbox(userId: number, limit = 50): Promise<{ items: InboxI
       unread: number;
       n: number;
       snippet: string | null;
-      actors: Array<{ id: number; name: string }> | null;
+      actors: Array<{ id: number; name: string; avatar: number | null }> | null;
       follows_back: boolean;
     }>(
       `SELECT g.group_key, g.kind, g.url, g.at, g.unread, g.n, g.snippet, g.actors,
@@ -152,7 +158,7 @@ export async function inbox(userId: number, limit = 50): Promise<{ items: InboxI
                   COUNT(DISTINCT COALESCE(n.actor_user_id, -n.id))::int AS n,
                   (array_agg(n.snippet ORDER BY n.created_at DESC))[1] AS snippet,
                   (array_agg(n.actor_user_id ORDER BY n.created_at DESC))[1] AS last_actor,
-                  (SELECT json_agg(json_build_object('id', a.user_id, 'name', a.display_name))
+                  (SELECT json_agg(json_build_object('id', a.user_id, 'name', a.display_name, 'avatar', (SELECT ci.id FROM community_images ci WHERE ci.id = a.avatar_id AND ci.status = 'visible')))
                      FROM (SELECT DISTINCT ON (x.actor_user_id) x.actor_user_id, x.created_at FROM feed_notifications x
                             WHERE x.user_id = $1 AND x.group_key = n.group_key AND x.actor_user_id IS NOT NULL ORDER BY x.actor_user_id, x.created_at DESC) d
                      JOIN social_profiles a ON a.user_id = d.actor_user_id) AS actors
@@ -165,7 +171,7 @@ export async function inbox(userId: number, limit = 50): Promise<{ items: InboxI
     );
     const { rows: c } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM feed_notifications WHERE user_id = $1 AND read_at IS NULL', [userId]);
     const items = rows.map((r): InboxItem => {
-      const actors = (r.actors ?? []).slice(0, 3).map((a) => ({ userId: a.id, name: a.name }));
+      const actors = (r.actors ?? []).slice(0, 3).map((a) => ({ userId: a.id, name: a.name, avatarUrl: a.avatar ? `/api/community/images/${a.avatar}` : null }));
       return {
         key: r.group_key,
         kind: r.kind,
@@ -175,7 +181,7 @@ export async function inbox(userId: number, limit = 50): Promise<{ items: InboxI
         unread: r.unread > 0,
         count: r.n,
         actors,
-        prompt: (r.kind === 'follow' || r.kind === 'joined') && !r.follows_back ? 'follow_back' : r.kind === 'reply' || r.kind === 'mention' ? 'reply' : null,
+        prompt: (r.kind === 'follow' || r.kind === 'joined' || r.kind === 'friend_request') && !r.follows_back ? 'follow_back' : r.kind === 'reply' || r.kind === 'mention' ? 'reply' : null,
         followsBack: r.follows_back,
       };
     });

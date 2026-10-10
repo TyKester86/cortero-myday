@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router';
 import type { ModuleKey } from '@myday/shared';
 import { useOffline } from './api';
@@ -17,7 +17,9 @@ import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
 import { MODULES, MyProfilePage } from './modules';
-import { InstallFeed, SocialHeader, takeNext } from './modules/social/shell';
+import { takeNext, useFeedUnread } from './modules/social/shell';
+import { Dock } from './modules/feed/kit';
+import './modules/feed/softcard.css';
 import { APP_URL, FEED_APP, FEED_URL, standalone } from './apps';
 import { signOut } from './signout';
 import { FeedHorn, HanaFace, NavIcon } from './components/NavIcon';
@@ -146,6 +148,18 @@ function Shell() {
       );
     });
   const sideTabs = sidebar ? nav.tabs.map((t) => ({ ...t, group: 'today' as const })) : [];
+  if (isAdult && FEED_ROUTE.test(location.pathname)) {
+    return (
+      <FeedShell profileTo={me.userId ? `/people/${me.userId}` : '/feed'}>
+        <Routes>
+          {nav.routes.map((m) => (
+            <Route key={m.path} path={m.path} element={m.element} />
+          ))}
+          <Route path="*" element={<p className="sc-meta">Page not found.</p>} />
+        </Routes>
+      </FeedShell>
+    );
+  }
   return (
     <div className={sidebar ? 'app wide sidebar' : 'app'}>
       <OfflineBar />
@@ -232,33 +246,52 @@ function Shell() {
 const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ default: m.FeedLanding })));
 
 /** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
-const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
+const SOCIAL_PATHS = ['/feed', '/feed/stories', '/feed/explore', '/feed/create', '/feed/friends', '/feed/post/:id', '/feed/profile/edit', '/feed/settings', '/feed/settings/notifications', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
 const SOCIAL = /^\/(feed|clips|messages|people|village|business|notifications|search|invite|earnings|u)(\/|$)/;
 /** Every page that belongs to the Feed (Circles too). */
 const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles|notifications|search|invite|earnings|u)(\/|$)/;
 
-/** A Feed-only account (or anyone in the Feed app): the social pages, with a way to MyDay for later. */
-function SocialShell() {
+/**
+ * The Feed's frame ("Soft Card"): warm paper, the page, and the floating dock (Home · Friends · + · Profile · Bell).
+ * Light only. A conversation has its own composer at the bottom, so no dock there.
+ */
+function FeedShell({ profileTo, children }: { profileTo: string; children: ReactNode }) {
   useKeyboardLayout();
+  const unread = useFeedUnread();
+  const { pathname } = useLocation();
   useEffect(() => {
-    applyLook('system', 'navy');
+    document.body.classList.add('sc-body');
+    try {
+      document.documentElement.classList.toggle('sc-calm', localStorage.getItem('feed.reduceMotion') === '1');
+    } catch {
+      /* a convenience only */
+    }
+    return () => document.body.classList.remove('sc-body');
   }, []);
+  const chat = /^\/messages\/[^/]+/.test(pathname);
   return (
-    <div className={FEED_APP ? 'app social-only feed-app' : 'app social-only'}>
-      <SocialHeader />
-      <main>
-        {FEED_APP && <InstallFeed />}
-        <Suspense fallback={<p className="muted">Loading…</p>}>
-          <Routes>
-            {MODULES.filter((m) => SOCIAL_PATHS.includes(m.path)).map((m) => (
-              <Route key={m.path} path={m.path} element={m.element} />
-            ))}
-            <Route path="/me" element={<MyProfilePage />} />
-            <Route path="*" element={<Navigate to="/feed" replace />} />
-          </Routes>
-        </Suspense>
+    <div className={`${FEED_APP ? 'app social-only feed-app' : 'app social-only'} sc-app${chat ? ' no-dock' : ''}`} data-testid="social-shell">
+      <OfflineBar />
+      <main className="sc-main">
+        <Suspense fallback={<p className="sc-meta">Loading…</p>}>{children}</Suspense>
       </main>
+      {!chat && <Dock profileTo={profileTo} unread={unread} />}
     </div>
+  );
+}
+
+/** A Feed-only account (or anyone in the Feed app): the social pages; MyDay is a door in Settings. */
+function SocialShell() {
+  return (
+    <FeedShell profileTo="/me">
+      <Routes>
+        {MODULES.filter((m) => SOCIAL_PATHS.includes(m.path)).map((m) => (
+          <Route key={m.path} path={m.path} element={m.element} />
+        ))}
+        <Route path="/me" element={<MyProfilePage />} />
+        <Route path="*" element={<Navigate to="/feed" replace />} />
+      </Routes>
+    </FeedShell>
   );
 }
 

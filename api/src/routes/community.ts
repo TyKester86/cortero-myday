@@ -41,6 +41,18 @@ import {
   type FeedSearch,
   type FeedCatchup,
   type FeedMemory,
+  type FeedPoll,
+  type FeedReaction,
+  type FeedFeeling,
+  type PostAudience,
+  type CommentsFrom,
+  type PostComment,
+  type FriendPerson,
+  type FriendsData,
+  type MediaTile,
+  type Relationship,
+  FEED_FEELINGS,
+  FEED_REACTIONS,
   type FeedStats,
   type FeedVillageItem,
   CHECKIN_MOODS,
@@ -122,6 +134,11 @@ export interface ProfileRow {
   interests: string[];
   onboarded_at: Date | null;
   findable_by_email: boolean;
+  cover_id: number | null;
+  work: string | null;
+  default_audience: PostAudience;
+  pinned_kind: 'post' | 'clip' | null;
+  pinned_id: number | null;
 }
 
 /** Where MonetizeMe storefronts live (a creator's shop is <base>/creator/?slug=<slug>). */
@@ -171,7 +188,8 @@ export async function poster(req: Request, limit = true): Promise<Adult & { prof
 export const imageUrl = (id: number | null): string | null => (id ? `/api/community/images/${id}` : null);
 
 export const AUTHOR_COLS = `p.user_id AS a_id, p.display_name AS a_name, p.parent_badge AS a_badge,
-  CASE WHEN ai.status = 'visible' THEN p.avatar_id END AS a_avatar`;
+  CASE WHEN ai.status = 'visible' THEN p.avatar_id END AS a_avatar, p.username AS a_username,
+  EXISTS (SELECT 1 FROM provider_credentials apc WHERE apc.user_id = p.user_id AND apc.status = 'verified') AS a_verified`;
 export const AUTHOR_JOIN = (col: string): string => `JOIN social_profiles p ON p.user_id = ${col} LEFT JOIN community_images ai ON ai.id = p.avatar_id`;
 
 export interface AuthorCols {
@@ -179,8 +197,21 @@ export interface AuthorCols {
   a_name: string;
   a_badge: boolean;
   a_avatar: number | null;
+  a_username?: string | null;
+  a_verified?: boolean;
 }
-export const author = (r: AuthorCols): CommunityAuthor => ({ userId: r.a_id, displayName: r.a_name, parentBadge: r.a_badge, avatarUrl: imageUrl(r.a_avatar) });
+export const author = (r: AuthorCols): CommunityAuthor => ({
+  userId: r.a_id,
+  displayName: r.a_name,
+  parentBadge: r.a_badge,
+  avatarUrl: imageUrl(r.a_avatar),
+  verified: !!r.a_verified,
+  username: r.a_username ?? null,
+});
+
+/** A post the viewer may see by its audience: public, theirs, or a friend's (mutual follows). $1 = the viewer. */
+export const AUDIENCE_OK = (alias: string): string =>
+  `(${alias}.audience = 'public' OR ${alias}.author_user_id = $1 OR feed_friends($1, ${alias}.author_user_id))`;
 
 /** Neither side has blocked the other. $1 = the viewer. */
 export const NOT_BLOCKED = (col: string): string =>
@@ -284,10 +315,36 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
   if ((e?.helpful ?? 0) >= 3) achievements.push({ key: 'helper', label: 'Community Helper' });
   if (provider) achievements.push({ key: 'provider', label: 'Verified Provider' });
   const me = viewer === userId;
+  const { rows: rel } = await pool.query<{ out: boolean; inn: boolean; friends: number; mutual: number; cover: number | null }>(
+    `SELECT EXISTS (SELECT 1 FROM social_follows WHERE follower_user_id = $1 AND followed_user_id = $2) AS out,
+            EXISTS (SELECT 1 FROM social_follows WHERE follower_user_id = $2 AND followed_user_id = $1) AS inn,
+            feed_friend_count($2) AS friends, feed_mutual_friends($1, $2) AS mutual,
+            (SELECT id FROM community_images WHERE id = $3 AND (status = 'visible' OR user_id = $1)) AS cover`,
+    [viewer, userId, p.cover_id],
+  );
+  const r0 = rel[0];
+  const relationship: Relationship = me ? 'self' : r0?.out && r0.inn ? 'friends' : r0?.out ? 'requested' : r0?.inn ? 'incoming' : 'none';
+  const { rows: mf } = me
+    ? { rows: [] as AuthorCols[] }
+    : await pool.query<AuthorCols>(
+        `SELECT ${AUTHOR_COLS} FROM social_follows f ${AUTHOR_JOIN('f.followed_user_id')}
+          WHERE f.follower_user_id = $1 AND f.followed_user_id <> $2 AND feed_friends($1, f.followed_user_id) AND feed_friends($2, f.followed_user_id)
+            AND p.banned_at IS NULL LIMIT 5`,
+        [viewer, userId],
+      );
+  const labelOf = (k: string): string | null => FEED_INTERESTS.find((i) => i.key === k)?.label ?? null;
   return {
     userId,
     displayName: p.display_name,
     username: p.username,
+    coverUrl: imageUrl(r0?.cover ?? null),
+    work: p.work,
+    friends: r0?.friends ?? 0,
+    relationship,
+    mutualFriends: { count: r0?.mutual ?? 0, people: mf.map(author) },
+    verified: !!provider,
+    interestLabels: p.interests.map(labelOf).filter((x): x is string => !!x),
+    pinned: p.pinned_kind && p.pinned_id ? { kind: p.pinned_kind, id: p.pinned_id } : null,
     bio: openText(p.bio_enc, p.key_id),
     parentBadge: p.parent_badge,
     avatarUrl: imageUrl(c?.avatar ?? null),
@@ -310,6 +367,7 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
     provider,
     ...(me
       ? {
+          defaultAudience: p.default_audience,
           dob,
           providerStatus: pc
             ? { status: pc.status as 'submitted' | 'verified' | 'rejected', licenseType: pc.license_type, licenseState: pc.license_state, licenseNumber: pc.license_number, specialties: pc.specialties, submittedAt: pc.submitted_at.toISOString(), rejectReason: pc.reject_reason }
@@ -436,6 +494,24 @@ communityRouter.put('/api/community/profile', async (req, res) => {
       if (s.hold) throw new HttpError(422, 'Keep your location general — a city or state.', 'location_held');
     }
   }
+  // Cover photo: an uploaded (moderated) image of yours, like the avatar. null = the Feed's own cover.
+  let coverId: number | null = existing?.cover_id ?? null;
+  if (b.coverId === null) coverId = null;
+  else if (b.coverId !== undefined) {
+    const cid = idParam(b.coverId);
+    const { rowCount } = await pool.query("SELECT 1 FROM community_images WHERE id = $1 AND user_id = $2 AND status <> 'removed'", [cid, a.userId]);
+    if (!rowCount) throw new HttpError(400, 'Upload the cover photo first');
+    coverId = cid;
+  }
+  let work: string | null = existing?.work ?? null;
+  if (b.work !== undefined) {
+    work = str(b.work, 'work', 80) || null;
+    if (work) {
+      const s = await screenText(work);
+      if (s.hold) throw new HttpError(422, 'Keep work general — a role, not a company address or contact.', 'work_held');
+    }
+  }
+  const defaultAudience: PostAudience = b.defaultAudience === 'friends' ? 'friends' : b.defaultAudience === 'public' ? 'public' : (existing?.default_audience ?? 'public');
   const keyId = currentKeyId();
   await pool.query(
     `INSERT INTO social_profiles (user_id, display_name, bio_enc, key_id, avatar_id, parent_badge, adult_confirmed_at, guidelines_accepted_at, shop_slug, dob, height_in, location, username)
@@ -449,6 +525,7 @@ communityRouter.put('/api/community/profile', async (req, res) => {
     if (e instanceof Error && 'code' in e && (e as { code?: string }).code === '23505') throw new HttpError(409, 'That username is taken.', 'username_taken');
     throw e;
   });
+  await pool.query('UPDATE social_profiles SET cover_id = $2, work = $3, default_audience = $4 WHERE user_id = $1', [a.userId, coverId, work, defaultAudience]);
   res.json(await profileView(a.userId, a.userId));
 });
 
@@ -841,7 +918,27 @@ communityRouter.delete('/api/village/posts/:id', async (req, res) => {
 
 /* ---------- The Feed ---------- */
 
-type FeedRow = AuthorCols & { id: number; body_enc: Buffer; key_id: string; image_id: number | null; img_status: string | null; status: CommunityStatus; created_at: Date; author_user_id: number; like_count: number; liked: boolean; following: boolean };
+type FeedRow = AuthorCols & {
+  id: number;
+  body_enc: Buffer;
+  key_id: string;
+  image_id: number | null;
+  img_status: string | null;
+  status: CommunityStatus;
+  created_at: Date;
+  author_user_id: number;
+  like_count: number;
+  liked: boolean;
+  following: boolean;
+  my_reaction: FeedReaction | null;
+  reactions: Partial<Record<FeedReaction, number>> | null;
+  comment_count: number;
+  audience: PostAudience;
+  comments_from: CommentsFrom;
+  feeling: FeedFeeling | null;
+  place: string | null;
+  friends: boolean;
+};
 
 const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
   id: r.id,
@@ -857,7 +954,34 @@ const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
   check: null,
   isQuestion: isQuestion(openText(r.body_enc, r.key_id)),
   trusted: null,
+  reactions: { like: 0, relate: 0, helpful: 0, funny: 0, ...(r.reactions ?? {}) },
+  myReaction: r.my_reaction,
+  comments: r.comment_count,
+  audience: r.audience,
+  commentsFrom: r.comments_from,
+  canComment: r.author_user_id === viewer || (r.comments_from === 'anyone' ? true : r.comments_from === 'friends' ? r.friends : false),
+  feeling: r.feeling,
+  place: r.place,
+  poll: null,
 });
+
+/** Polls on these posts: options with vote counts, and the viewer's vote. */
+async function pollsFor(viewer: number, ids: number[]): Promise<Map<number, FeedPoll>> {
+  if (!ids.length) return new Map();
+  const { rows } = await pool.query<{ post_id: number; options: string[]; counts: number[] | null; mine: number | null }>(
+    `SELECT pl.post_id, pl.options,
+            ARRAY(SELECT COUNT(v.user_id)::int FROM generate_subscripts(pl.options, 1) i LEFT JOIN social_poll_votes v ON v.post_id = pl.post_id AND v.option_idx = i - 1 GROUP BY i ORDER BY i) AS counts,
+            (SELECT option_idx FROM social_poll_votes WHERE post_id = pl.post_id AND user_id = $1) AS mine
+       FROM social_polls pl WHERE pl.post_id = ANY($2::int[])`,
+    [viewer, ids],
+  );
+  return new Map(
+    rows.map((r) => {
+      const counts = r.counts ?? r.options.map(() => 0);
+      return [r.post_id, { options: r.options.map((text, i) => ({ text, votes: counts[i] ?? 0 })), total: counts.reduce((a, b) => a + b, 0), myVote: r.mine }];
+    }),
+  );
+}
 
 /* ---------- Trusted Answers: shared checks + pinned answers ---------- */
 
@@ -923,9 +1047,12 @@ export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone
   const { rows } = await pool.query<FeedRow>(
     `SELECT s.id, s.body_enc, s.key_id, s.image_id, i.status AS img_status, s.status, s.created_at, s.author_user_id, s.like_count, ${AUTHOR_COLS},
             EXISTS (SELECT 1 FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS liked,
-            EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id) AS following
+            EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id) AS following,
+            (SELECT l.reaction FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS my_reaction,
+            (SELECT json_object_agg(x.reaction, x.n) FROM (SELECT reaction, COUNT(*)::int AS n FROM social_likes WHERE post_id = s.id GROUP BY reaction) x) AS reactions,
+            s.comment_count, s.audience, s.comments_from, s.feeling, s.place, feed_friends($1, s.author_user_id) AS friends
        FROM social_posts s ${AUTHOR_JOIN('s.author_user_id')} LEFT JOIN community_images i ON i.id = s.image_id
-      WHERE ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL
+      WHERE ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL AND ${AUDIENCE_OK('s')}
         AND ($2::text <> 'following' OR s.author_user_id = $1 OR EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id))
         AND ($2::text <> 'discover' OR (s.author_user_id <> $1 AND s.status = 'visible' AND NOT EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id)))
         AND ($3::int IS NULL OR s.author_user_id = $3)
@@ -936,10 +1063,11 @@ export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone
   );
   const posts = rows.map((r) => toFeed(viewer, r));
   const ids = posts.map((p) => p.id);
-  const [checks, trusted] = await Promise.all([checksFor('feed', ids), trustedFor('feed', ids)]);
+  const [checks, trusted, polls] = await Promise.all([checksFor('feed', ids), trustedFor('feed', ids), pollsFor(viewer, ids)]);
   for (const p of posts) {
     p.check = checks.get(p.id) ?? null;
     p.trusted = trusted.get(p.id) ?? null;
+    p.poll = polls.get(p.id) ?? null;
   }
   if (o.tab === 'discover') for (const p of posts) p.discover = true;
   return { posts, next: null, windowDays: 0 };
@@ -1087,7 +1215,7 @@ communityRouter.get('/api/feed/catchup', async (req, res) => {
     [m.userId, since],
   );
   const { rows: top } = await pool.query<{ id: number }>(
-    `SELECT s.id FROM social_posts s WHERE s.status = 'visible' AND s.created_at > $2 AND s.author_user_id <> $1 AND ${NOT_BLOCKED('s.author_user_id')}
+    `SELECT s.id FROM social_posts s WHERE s.status = 'visible' AND s.created_at > $2 AND s.author_user_id <> $1 AND ${NOT_BLOCKED('s.author_user_id')} AND ${AUDIENCE_OK('s')}
         AND EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id)
       ORDER BY s.like_count DESC, s.id DESC LIMIT 3`,
     [m.userId, since],
@@ -1219,16 +1347,34 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
     if (!rows[0]) throw new HttpError(400, 'Upload the photo first');
     imagePending = rows[0].status === 'pending';
   }
-  if (!body && !imageId) throw new HttpError(400, 'Write something or add a photo');
-  const s = body ? await screenText(body) : { hold: false, crisis: false, reasons: [] };
+  // A poll: 2–4 short options (screened with the post's words).
+  let pollOptions: string[] | null = null;
+  if (b.poll != null) {
+    const raw = (b.poll as { options?: unknown }).options;
+    if (!Array.isArray(raw)) throw new HttpError(400, 'A poll needs options');
+    pollOptions = raw.map((o) => String(o ?? '').trim()).filter(Boolean).map((o) => o.slice(0, 80));
+    if (pollOptions.length < 2 || pollOptions.length > 4) throw new HttpError(400, 'A poll has 2 to 4 options');
+  }
+  if (!body && !imageId && !pollOptions) throw new HttpError(400, 'Write something or add a photo');
+  const audience: PostAudience = b.audience === 'friends' ? 'friends' : b.audience === 'public' ? 'public' : (m.profile.default_audience ?? 'public');
+  const commentsFrom: CommentsFrom = b.commentsFrom === 'friends' || b.commentsFrom === 'nobody' ? b.commentsFrom : 'anyone';
+  const feeling = b.feeling == null || b.feeling === '' ? null : FEED_FEELINGS.find((f) => f.key === b.feeling)?.key;
+  if (feeling === undefined) throw new HttpError(400, 'Pick a feeling from the list');
+  // A place is a city (or neighbourhood) — never an address; it's screened like the words.
+  const place = b.place == null || b.place === '' ? null : str(b.place, 'place', 60).replace(/\s+/g, ' ').trim() || null;
+  if (place && /\d{2,}/.test(place)) throw new HttpError(400, 'Keep the place to a city — no street addresses.', 'place_address');
+  const words = [body, place ?? '', ...(pollOptions ?? [])].filter(Boolean).join('\n');
+  const s = words ? await screenText(words) : { hold: false, crisis: false, reasons: [] };
   if (imagePending) s.hold = true;
   if (imagePending && !s.reasons.includes('image')) s.reasons.push('image');
   const d = await decide(s, 'feed');
   const keyId = currentKeyId();
   const { rows } = await pool.query<{ id: number }>(
-    'INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags, hashtags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-    [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags, hashtagsOf(body)],
+    `INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags, hashtags, audience, comments_from, feeling, place)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+    [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags, hashtagsOf(body), audience, commentsFrom, feeling, place],
   );
+  if (pollOptions) await pool.query('INSERT INTO social_polls (post_id, options) VALUES ($1, $2)', [rows[0]?.id, pollOptions]);
   if (d.status === 'visible' && body) ensureTrusted('feed', rows[0]?.id ?? 0, body);
   if (d.status === 'visible') {
     if (body) await notifyMentions(body, m.userId, `mention:post:${rows[0]?.id ?? 0}`, `/people/${m.userId}`);
@@ -1239,7 +1385,7 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
 
 async function socialPost(viewer: number, id: number): Promise<{ author_user_id: number; status: CommunityStatus }> {
   const { rows } = await pool.query<{ author_user_id: number; status: CommunityStatus }>(
-    `SELECT s.author_user_id, s.status FROM social_posts s WHERE s.id = $2 AND ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')}`,
+    `SELECT s.author_user_id, s.status FROM social_posts s WHERE s.id = $2 AND ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND ${AUDIENCE_OK('s')}`,
     [viewer, id],
   );
   const p = rows[0];
@@ -1252,13 +1398,136 @@ communityRouter.post('/api/feed/posts/:id/like', async (req, res) => {
   const id = idParam(req.params.id);
   const p = await socialPost(m.userId, id);
   if (p.status !== 'visible') throw new HttpError(409, 'Under review');
-  const del = await pool.query('DELETE FROM social_likes WHERE post_id = $1 AND user_id = $2', [id, m.userId]);
-  if (!del.rowCount) {
-    await pool.query('INSERT INTO social_likes (post_id, user_id) VALUES ($1, $2)', [id, m.userId]);
-    await notify({ to: p.author_user_id, kind: 'like', actor: m.userId, group: `like:post:${id}`, url: `/people/${p.author_user_id}` });
+  // A tap toggles a like; a reaction (long-press) sets that one, or clears it if it's already yours.
+  const want = FEED_REACTIONS.find((x) => x.key === (req.body as { reaction?: unknown })?.reaction)?.key ?? 'like';
+  const { rows: had } = await pool.query<{ reaction: FeedReaction }>('SELECT reaction FROM social_likes WHERE post_id = $1 AND user_id = $2', [id, m.userId]);
+  if (had[0]?.reaction === want) await pool.query('DELETE FROM social_likes WHERE post_id = $1 AND user_id = $2', [id, m.userId]);
+  else if (had[0]) await pool.query('UPDATE social_likes SET reaction = $3 WHERE post_id = $1 AND user_id = $2', [id, m.userId, want]);
+  else {
+    await pool.query('INSERT INTO social_likes (post_id, user_id, reaction) VALUES ($1, $2, $3)', [id, m.userId, want]);
+    await notify({ to: p.author_user_id, kind: 'like', actor: m.userId, group: `like:post:${id}`, url: `/feed/post/${id}` });
   }
   await pool.query('UPDATE social_posts SET like_count = (SELECT COUNT(*) FROM social_likes WHERE post_id = $1) WHERE id = $1', [id]);
   res.json(await onePost(m.userId, id));
+});
+
+/** One post (its own page, with comments). */
+communityRouter.get('/api/feed/posts/:id', async (req, res) => {
+  const m = await member(req);
+  res.json({ post: await onePost(m.userId, idParam(req.params.id)) });
+});
+
+/** A poll vote (one per person; voting again changes it). */
+communityRouter.post('/api/feed/posts/:id/vote', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  await onePost(m.userId, id); // you can see it
+  const { rows } = await pool.query<{ n: number }>('SELECT cardinality(options) AS n FROM social_polls WHERE post_id = $1', [id]);
+  const n = rows[0]?.n;
+  const opt = Number((req.body as { option?: unknown }).option);
+  if (n === undefined) throw new HttpError(404, 'No poll here');
+  if (!Number.isInteger(opt) || opt < 0 || opt >= n) throw new HttpError(400, 'Pick an option');
+  await pool.query(
+    `INSERT INTO social_poll_votes (post_id, user_id, option_idx) VALUES ($1, $2, $3)
+     ON CONFLICT (post_id, user_id) DO UPDATE SET option_idx = EXCLUDED.option_idx, created_at = now()`,
+    [id, m.userId, opt],
+  );
+  res.json({ post: await onePost(m.userId, id) });
+});
+
+type CommentRow = AuthorCols & { id: number; body_enc: Buffer; key_id: string; status: CommunityStatus; created_at: Date; author_user_id: number; like_count: number; liked: boolean; parent_id: number | null };
+
+communityRouter.get('/api/feed/posts/:id/comments', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  await onePost(m.userId, id);
+  const { rows } = await pool.query<CommentRow>(
+    `SELECT x.id, x.body_enc, x.key_id, x.status, x.created_at, x.author_user_id, x.like_count, x.parent_id, ${AUTHOR_COLS},
+            EXISTS (SELECT 1 FROM social_post_comment_likes l WHERE l.comment_id = x.id AND l.user_id = $1) AS liked
+       FROM social_post_comments x ${AUTHOR_JOIN('x.author_user_id')}
+      WHERE x.post_id = $2 AND ${SEEN('x')} AND ${NOT_BLOCKED('x.author_user_id')} AND p.banned_at IS NULL
+      ORDER BY x.id LIMIT 300`,
+    [m.userId, id],
+  );
+  const comments: PostComment[] = rows.map((r) => ({
+    id: r.id,
+    author: author(r),
+    body: openText(r.body_enc, r.key_id),
+    at: r.created_at.toISOString(),
+    status: r.status,
+    mine: r.author_user_id === m.userId,
+    likes: r.like_count,
+    likedByMe: r.liked,
+    parentId: r.parent_id,
+  }));
+  res.json({ comments });
+});
+
+communityRouter.post('/api/feed/posts/:id/comments', async (req, res) => {
+  const m = await poster(req);
+  const id = idParam(req.params.id);
+  const post = await onePost(m.userId, id);
+  if (post.status !== 'visible') throw new HttpError(409, 'Under review');
+  if (!post.canComment) throw new HttpError(403, post.commentsFrom === 'nobody' ? 'Comments are off on this post' : 'Only their friends can comment on this post', 'comments_closed');
+  const b = req.body as { body?: unknown; parentId?: unknown };
+  const body = str(b.body, 'body', 1000, true);
+  let parentId: number | null = null;
+  if (b.parentId != null) {
+    parentId = idParam(b.parentId);
+    const { rowCount } = await pool.query("SELECT 1 FROM social_post_comments WHERE id = $1 AND post_id = $2 AND status = 'visible'", [parentId, id]);
+    if (!rowCount) throw new HttpError(400, 'That comment is gone');
+  }
+  const d = await decide(await screenText(body), 'feed comment');
+  const keyId = currentKeyId();
+  const { rows } = await pool.query<{ id: number }>(
+    'INSERT INTO social_post_comments (post_id, author_user_id, parent_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+    [id, m.userId, parentId, sealText(body, keyId), keyId, d.status, d.priority, d.flags],
+  );
+  await pool.query("UPDATE social_posts SET comment_count = (SELECT COUNT(*) FROM social_post_comments WHERE post_id = $1 AND status = 'visible') WHERE id = $1", [id]);
+  if (d.status === 'visible') {
+    await notify({ to: post.author.userId, kind: 'comment', actor: m.userId, group: `comment:post:${id}`, url: `/feed/post/${id}`, snippet: body });
+    if (parentId) {
+      const { rows: pa } = await pool.query<{ author_user_id: number }>('SELECT author_user_id FROM social_post_comments WHERE id = $1', [parentId]);
+      if (pa[0] && pa[0].author_user_id !== post.author.userId) await notify({ to: pa[0].author_user_id, kind: 'reply', actor: m.userId, group: `reply:comment:${parentId}`, url: `/feed/post/${id}`, snippet: body });
+    }
+    await notifyMentions(body, m.userId, `mention:post:${id}`, `/feed/post/${id}`);
+  }
+  res.status(201).json({ id: rows[0]?.id, review: d.note });
+});
+
+communityRouter.post('/api/feed/comments/:id/like', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  const { rows } = await pool.query<{ post_id: number }>(`SELECT x.post_id FROM social_post_comments x WHERE x.id = $2 AND x.status = 'visible' AND ${NOT_BLOCKED('x.author_user_id')}`, [m.userId, id]);
+  if (!rows[0]) throw new HttpError(404, 'Not found');
+  await onePost(m.userId, rows[0].post_id);
+  const del = await pool.query('DELETE FROM social_post_comment_likes WHERE comment_id = $1 AND user_id = $2', [id, m.userId]);
+  if (!del.rowCount) await pool.query('INSERT INTO social_post_comment_likes (comment_id, user_id) VALUES ($1, $2)', [id, m.userId]);
+  const { rows: c } = await pool.query<{ n: number }>('UPDATE social_post_comments SET like_count = (SELECT COUNT(*) FROM social_post_comment_likes WHERE comment_id = $1) WHERE id = $1 RETURNING like_count AS n', [id]);
+  res.json({ likes: c[0]?.n ?? 0, likedByMe: !del.rowCount });
+});
+
+communityRouter.delete('/api/feed/comments/:id', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  const { rows } = await pool.query<{ post_id: number }>(
+    `UPDATE social_post_comments x SET status = 'removed' FROM social_posts s
+      WHERE x.id = $1 AND s.id = x.post_id AND (x.author_user_id = $2 OR s.author_user_id = $2) RETURNING x.post_id`,
+    [id, m.userId],
+  );
+  if (!rows[0]) throw new HttpError(404, 'Not found');
+  await pool.query("UPDATE social_posts SET comment_count = (SELECT COUNT(*) FROM social_post_comments WHERE post_id = $1 AND status = 'visible') WHERE id = $1", [rows[0].post_id]);
+  res.json({ ok: true });
+});
+
+communityRouter.post('/api/feed/comments/:id/report', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  const reason = str((req.body as Record<string, unknown>).reason, 'reason', 200) || 'Reported';
+  await pool.query('INSERT INTO social_post_comment_reports (comment_id, reporter_user_id, reason) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [id, m.userId, reason]);
+  const { rows } = await pool.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM social_post_comment_reports WHERE comment_id = $1 AND status = 'open'", [id]);
+  if ((rows[0]?.n ?? 0) >= HIDE_AT_REPORTS) await pool.query("UPDATE social_post_comments SET status = 'hidden', priority = GREATEST(priority, 1) WHERE id = $1 AND status = 'visible'", [id]);
+  res.status(201).json({ ok: true });
 });
 
 communityRouter.post('/api/feed/posts/:id/report', async (req, res) => {
@@ -1303,6 +1572,56 @@ async function topics(limit: number, like: string | null = null): Promise<Array<
   return rows.map((r) => ({ tag: r.tag, count: r.n }));
 }
 
+/** Trending: the most-loved posts of the last week (that you may see). */
+communityRouter.get('/api/feed/trending', async (req, res) => {
+  const m = await member(req);
+  const { rows } = await pool.query<{ id: number }>(
+    `SELECT s.id FROM social_posts s JOIN social_profiles p ON p.user_id = s.author_user_id
+      WHERE s.status = 'visible' AND s.created_at > now() - interval '7 days' AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL AND ${AUDIENCE_OK('s')}
+      ORDER BY s.like_count + 2 * s.comment_count DESC, s.id DESC LIMIT 10`,
+    [m.userId],
+  );
+  res.json({ posts: await Promise.all(rows.map((r) => onePost(m.userId, r.id))) });
+});
+
+/** A profile's Media tab: photos from posts and clips (with views), the pinned one first. */
+communityRouter.get('/api/community/people/:id/media', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  const prof = await profileView(m.userId, id);
+  const { rows } = await pool.query<{ kind: 'post' | 'clip'; id: number; image: number | null; views: number | null; at: Date }>(
+    `SELECT 'post' AS kind, s.id, s.image_id AS image, NULL::int AS views, s.created_at AS at FROM social_posts s
+      WHERE s.author_user_id = $2 AND s.image_id IS NOT NULL AND ${SEEN('s')} AND ${AUDIENCE_OK('s')}
+        AND EXISTS (SELECT 1 FROM community_images ci WHERE ci.id = s.image_id AND (ci.status = 'visible' OR ci.user_id = $1))
+     UNION ALL
+     SELECT 'clip', c.id, c.poster_id, c.view_count, c.created_at FROM social_clips c WHERE c.author_user_id = $2 AND ${SEEN('c')}
+     ORDER BY at DESC LIMIT 90`,
+    [m.userId, id],
+  );
+  const pin = prof.pinned;
+  const tiles: MediaTile[] = rows.map((r) => ({ kind: r.kind, id: r.id, imageUrl: imageUrl(r.image), views: r.kind === 'clip' ? (r.views ?? 0) : null, pinned: !!pin && pin.kind === r.kind && pin.id === r.id }));
+  tiles.sort((a, b) => Number(b.pinned) - Number(a.pinned));
+  res.json({ tiles });
+});
+
+/** Pin one of your posts or clips to the top of your Media tab (null unpins). */
+communityRouter.put('/api/community/profile/pin', async (req, res) => {
+  const m = await member(req);
+  const b = req.body as { kind?: unknown; id?: unknown } | null;
+  if (!b || b.kind == null) {
+    await pool.query('UPDATE social_profiles SET pinned_kind = NULL, pinned_id = NULL WHERE user_id = $1', [m.userId]);
+    res.json({ pinned: null });
+    return;
+  }
+  const kind = b.kind === 'clip' ? 'clip' : b.kind === 'post' ? 'post' : null;
+  if (!kind) throw new HttpError(400, 'Pin a post or a clip');
+  const id = idParam(b.id);
+  const { rowCount } = await pool.query(`SELECT 1 FROM ${kind === 'post' ? 'social_posts' : 'social_clips'} WHERE id = $1 AND author_user_id = $2 AND status <> 'removed'`, [id, m.userId]);
+  if (!rowCount) throw new HttpError(404, 'Not yours to pin');
+  await pool.query('UPDATE social_profiles SET pinned_kind = $2, pinned_id = $3 WHERE user_id = $1', [m.userId, kind, id]);
+  res.json({ pinned: { kind, id } });
+});
+
 communityRouter.get('/api/feed/topics', async (req, res) => {
   await member(req);
   res.json({ topics: await topics(12) });
@@ -1321,8 +1640,11 @@ communityRouter.get('/api/feed/search', async (req, res) => {
   const needle = q.replace(/^[@#]/, '').toLowerCase();
   const esc = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
   if (!tag) {
-    const { rows: ppl } = await pool.query<{ user_id: number; display_name: string; username: string | null; avatar: number | null; followers: number; followed: boolean }>(
+    const { rows: ppl } = await pool.query<{ user_id: number; display_name: string; username: string | null; avatar: number | null; followers: number; followed: boolean; follows_me: boolean; friends: number; mutual: number; verified: boolean }>(
       `SELECT p.user_id, p.display_name, p.username,
+              EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = p.user_id AND f.followed_user_id = $1) AS follows_me,
+              feed_friend_count(p.user_id) AS friends, feed_mutual_friends($1, p.user_id) AS mutual,
+              EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = p.user_id AND pc.status = 'verified') AS verified,
               (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar,
               (SELECT COUNT(*)::int FROM social_follows f WHERE f.followed_user_id = p.user_id) AS followers,
               EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id) AS followed
@@ -1332,20 +1654,20 @@ communityRouter.get('/api/feed/search', async (req, res) => {
         ORDER BY (p.username = $3 OR lower(p.display_name) = $3) DESC, followers DESC, p.user_id LIMIT 20`,
       [m.userId, `${esc(needle)}%`, needle],
     );
-    out.people = ppl.map((r) => ({ userId: r.user_id, displayName: r.display_name, username: r.username, avatarUrl: imageUrl(r.avatar), followers: r.followers, followedByMe: r.followed }));
+    out.people = ppl.map((r) => ({ userId: r.user_id, displayName: r.display_name, username: r.username, avatarUrl: imageUrl(r.avatar), followers: r.followers, followedByMe: r.followed, followsMe: r.follows_me, friends: r.friends, mutualFriends: r.mutual, verified: r.verified }));
     out.villages = (await villageList(m.userId)).filter((v) => `${v.name} ${v.description}`.toLowerCase().includes(needle));
   }
   // Posts: by hashtag (indexed), or by words (the recent window, opened one by one — they're sealed at rest).
   let ids: number[] = [];
   if (tag) {
     const { rows } = await pool.query<{ id: number }>(
-      `SELECT s.id FROM social_posts s WHERE $2 = ANY(s.hashtags) AND ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} ORDER BY s.id DESC LIMIT 30`,
+      `SELECT s.id FROM social_posts s WHERE $2 = ANY(s.hashtags) AND ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND ${AUDIENCE_OK('s')} ORDER BY s.id DESC LIMIT 30`,
       [m.userId, tag],
     );
     ids = rows.map((r) => r.id);
   } else {
     const { rows } = await pool.query<{ id: number; body_enc: Buffer | null; key_id: string }>(
-      `SELECT s.id, s.body_enc, s.key_id FROM social_posts s WHERE s.status = 'visible' AND ${NOT_BLOCKED('s.author_user_id')} ORDER BY s.id DESC LIMIT ${SEARCH_WINDOW}`,
+      `SELECT s.id, s.body_enc, s.key_id FROM social_posts s WHERE s.status = 'visible' AND ${NOT_BLOCKED('s.author_user_id')} AND ${AUDIENCE_OK('s')} ORDER BY s.id DESC LIMIT ${SEARCH_WINDOW}`,
       [m.userId],
     );
     for (const r of rows) {
@@ -1385,11 +1707,20 @@ communityRouter.post('/api/community/people/:id/follow', async (req, res) => {
   const id = idParam(req.params.id);
   if (id === m.userId) throw new HttpError(400, 'You can’t follow yourself');
   await profileView(m.userId, id); // must be a visible, unblocked grown-up's profile
+  // Friends are mutual follows: following someone who already follows you is "Confirm"; otherwise it's a request.
   const f = await pool.query('INSERT INTO social_follows (follower_user_id, followed_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [m.userId, id]);
   if (f.rowCount) {
-    await notify({ to: id, kind: 'follow', actor: m.userId, group: `follow:${new Date().toISOString().slice(0, 10)}`, url: `/people/${m.userId}` });
-    const { rows: fc } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM social_follows WHERE followed_user_id = $1', [id]);
-    if ((fc[0]?.n ?? 0) >= 10) await milestone(id, 'followers-10', 'You just reached 10 followers. People are glad you’re here.', `/people/${id}`);
+    await pool.query('DELETE FROM friend_request_dismissals WHERE user_id = $1 AND from_user_id = $2', [id, m.userId]);
+    const { rows: fr } = await pool.query<{ friends: boolean }>('SELECT feed_friends($1, $2) AS friends', [m.userId, id]);
+    if (fr[0]?.friends) {
+      await notify({ to: id, kind: 'friend_accept', actor: m.userId, group: `friend_accept:${m.userId}`, url: `/people/${m.userId}` });
+      for (const who of [id, m.userId]) {
+        const { rows: fc } = await pool.query<{ n: number }>('SELECT feed_friend_count($1) AS n', [who]);
+        if ((fc[0]?.n ?? 0) >= 10) await milestone(who, 'friends-10', 'You just reached 10 friends. People are glad you’re here.', `/people/${who}`);
+      }
+    } else {
+      await notify({ to: id, kind: 'friend_request', actor: m.userId, group: `friend_request:${m.userId}`, url: '/friends' });
+    }
   }
   res.json(await profileView(m.userId, id));
 });
@@ -1399,6 +1730,64 @@ communityRouter.delete('/api/community/people/:id/follow', async (req, res) => {
   const id = idParam(req.params.id);
   await pool.query('DELETE FROM social_follows WHERE follower_user_id = $1 AND followed_user_id = $2', [m.userId, id]);
   res.json(await profileView(m.userId, id));
+});
+
+/* ---------- friends (mutual follows): requests, friends, people you may know ---------- */
+
+const FRIEND_COLS = `p.user_id, p.display_name, p.username,
+  (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar,
+  EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = p.user_id AND pc.status = 'verified') AS verified,
+  feed_mutual_friends($1, p.user_id) AS mutual, feed_friend_count(p.user_id) AS friends`;
+type FriendRow = { user_id: number; display_name: string; username: string | null; avatar: number | null; verified: boolean; mutual: number; friends: number };
+const toFriend = (r: FriendRow): FriendPerson => ({
+  userId: r.user_id,
+  displayName: r.display_name,
+  username: r.username,
+  avatarUrl: imageUrl(r.avatar),
+  verified: r.verified,
+  mutualFriends: r.mutual,
+  friends: r.friends,
+});
+
+communityRouter.get('/api/friends', async (req, res) => {
+  const m = await member(req);
+  const { rows: requests } = await pool.query<FriendRow>(
+    `SELECT ${FRIEND_COLS} FROM social_follows f JOIN social_profiles p ON p.user_id = f.follower_user_id
+      WHERE f.followed_user_id = $1 AND p.banned_at IS NULL AND ${NOT_BLOCKED('p.user_id')}
+        AND NOT EXISTS (SELECT 1 FROM social_follows g WHERE g.follower_user_id = $1 AND g.followed_user_id = p.user_id)
+        AND NOT EXISTS (SELECT 1 FROM friend_request_dismissals d WHERE d.user_id = $1 AND d.from_user_id = p.user_id)
+      ORDER BY f.created_at DESC LIMIT 100`,
+    [m.userId],
+  );
+  const { rows: friends } = await pool.query<FriendRow>(
+    `SELECT ${FRIEND_COLS} FROM social_follows f JOIN social_profiles p ON p.user_id = f.followed_user_id
+      WHERE f.follower_user_id = $1 AND feed_friends($1, p.user_id) AND p.banned_at IS NULL AND ${NOT_BLOCKED('p.user_id')}
+      ORDER BY p.display_name LIMIT 500`,
+    [m.userId],
+  );
+  const sug = await suggestions(m.userId, 12);
+  const { rows: sugRows } = sug.length
+    ? await pool.query<FriendRow>(`SELECT ${FRIEND_COLS} FROM social_profiles p WHERE p.user_id = ANY($2::int[])`, [m.userId, sug.map((x) => x.userId)])
+    : { rows: [] as FriendRow[] };
+  const order = new Map(sug.map((x, i) => [x.userId, i]));
+  const out: FriendsData = {
+    requests: requests.map(toFriend),
+    friends: friends.map(toFriend),
+    // People you may know: never someone you already asked, or who asked you.
+    suggestions: sugRows
+      .filter((r) => !requests.some((q) => q.user_id === r.user_id))
+      .sort((a, b) => (order.get(a.user_id) ?? 0) - (order.get(b.user_id) ?? 0))
+      .map(toFriend),
+  };
+  res.json(out);
+});
+
+/** "Delete" a friend request: it goes away (they aren't told; their follow stays one-way). */
+communityRouter.post('/api/friends/:id/dismiss', async (req, res) => {
+  const m = await member(req);
+  const id = idParam(req.params.id);
+  await pool.query('INSERT INTO friend_request_dismissals (user_id, from_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [m.userId, id]);
+  res.json({ ok: true });
 });
 
 for (const which of ['followers', 'following'] as const) {
@@ -1430,6 +1819,16 @@ communityRouter.delete('/api/community/people/:id/block', async (req, res) => {
   const m = await member(req);
   await pool.query('DELETE FROM social_blocks WHERE blocker_user_id = $1 AND blocked_user_id = $2', [m.userId, idParam(req.params.id)]);
   res.json({ ok: true, blocked: false });
+});
+
+/** The people you've blocked (Settings → Blocked accounts). */
+communityRouter.get('/api/community/blocks', async (req, res) => {
+  const m = await member(req);
+  const { rows } = await pool.query<AuthorCols>(
+    `SELECT ${AUTHOR_COLS} FROM social_blocks b ${AUTHOR_JOIN('b.blocked_user_id')} WHERE b.blocker_user_id = $1 ORDER BY b.created_at DESC LIMIT 500`,
+    [m.userId],
+  );
+  res.json({ people: rows.map(author) });
 });
 
 communityRouter.post('/api/community/people/:id/report', async (req, res) => {
@@ -1538,6 +1937,13 @@ async function queue(): Promise<CommunityQueue> {
       WHERE q.status IN ('pending', 'hidden')`,
   );
   for (const r of ccom) push('clip-comment', r);
+  const { rows: pcom } = await pool.query<QueueRow>(
+    `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.body_enc, q.key_id, NULL::int AS image_id, q.status, q.priority, q.flags, q.created_at,
+            (SELECT array_agg(r.reason ORDER BY r.created_at) FROM social_post_comment_reports r WHERE r.comment_id = q.id AND r.status = 'open') AS reports
+       FROM (SELECT x.*, x.author_user_id AS user_id FROM social_post_comments x) q ${WHO}
+      WHERE q.status IN ('pending', 'hidden') OR EXISTS (SELECT 1 FROM social_post_comment_reports r WHERE r.comment_id = q.id AND r.status = 'open')`,
+  );
+  for (const r of pcom) push('post-comment', r);
   const { rows: dms } = await pool.query<QueueRow>(
     `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.body_enc, q.key_id, NULL::int AS image_id, q.status, q.priority, q.flags, q.created_at,
             (SELECT array_agg(r.reason ORDER BY r.id) FROM dm_reports r WHERE r.message_id = q.id AND r.status = 'open') AS reports
@@ -1572,13 +1978,14 @@ communityStaffRouter.post('/api/community/moderation/:kind/:id/:action', async (
   const kind = req.params.kind;
   const action = ['approve', 'remove', 'strike', 'dismiss'].find((a) => a === req.params.action);
   const id = idParam(req.params.id);
-  if (!action || !['village', 'feed', 'image', 'profile', 'story', 'clip', 'clip-comment', 'message'].includes(kind)) throw new HttpError(404, 'Not found');
+  if (!action || !['village', 'feed', 'image', 'profile', 'story', 'clip', 'clip-comment', 'post-comment', 'message'].includes(kind)) throw new HttpError(404, 'Not found');
   const reason = str((req.body as Record<string, unknown> | undefined)?.reason, 'reason', 200) || 'Broke the community guidelines';
   let author: number | null = null;
   const SOCIAL: Record<string, { table: string; by: string; reports?: [string, string] }> = {
     story: { table: 'social_stories', by: 'author_user_id' },
     clip: { table: 'social_clips', by: 'author_user_id', reports: ['social_clip_reports', 'clip_id'] },
     'clip-comment': { table: 'social_clip_comments', by: 'author_user_id' },
+    'post-comment': { table: 'social_post_comments', by: 'author_user_id', reports: ['social_post_comment_reports', 'comment_id'] },
     message: { table: 'dm_messages', by: 'sender_user_id', reports: ['dm_reports', 'message_id'] },
   };
   const sk = SOCIAL[kind];
@@ -1593,6 +2000,9 @@ communityStaffRouter.post('/api/community/moderation/:kind/:id/:action', async (
     if (action === 'approve' && kind === 'story') await pool.query("UPDATE community_images i SET status = 'visible' FROM social_stories s WHERE s.id = $1 AND i.id = s.image_id AND i.status = 'pending'", [id]);
     if (kind === 'clip-comment') {
       await pool.query("UPDATE social_clips c SET comment_count = (SELECT COUNT(*) FROM social_clip_comments x WHERE x.clip_id = c.id AND x.status = 'visible') FROM social_clip_comments y WHERE y.id = $1 AND c.id = y.clip_id", [id]);
+    }
+    if (kind === 'post-comment') {
+      await pool.query("UPDATE social_posts s SET comment_count = (SELECT COUNT(*) FROM social_post_comments x WHERE x.post_id = s.id AND x.status = 'visible') FROM social_post_comments y WHERE y.id = $1 AND s.id = y.post_id", [id]);
     }
     if (action === 'approve' && kind === 'message') await pool.query('UPDATE dm_threads t SET last_at = now() FROM dm_messages m WHERE m.id = $1 AND t.id = m.thread_id', [id]);
   } else if (kind === 'village' || kind === 'feed') {

@@ -6,7 +6,8 @@
  */
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
-import type { ClipComment, ClipItem, CommunityAuthor, CommunityMe, ConsultSlot, DmThread, DmThreadSummary, ReviewNote, SponsoredItem, StoryItem, StoryRailItem } from '@myday/shared';
+import type { ClipComment, ClipItem, CommunityAuthor, CommunityMe, ConsultSlot, DmThread, DmThreadSummary, FriendsData, ReviewNote, SponsoredItem, StoryItem, StoryRailItem } from '@myday/shared';
+import { Filters, Icon as KitIcon, Sheet, since, TopBar } from '../feed/kit';
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { ago } from '../../dates';
@@ -267,12 +268,53 @@ function StoryPerson({ userId, onClose, onNext, onPrev }: { userId: number; onCl
             </button>
           </>
         ) : (
-          <Link to={`/messages/${data.author.userId}`} className="story-reply" onClick={onClose}>
-            Send {data.author.displayName} a message
-          </Link>
+          <StoryReply to={data.author} onPause={setPaused} />
         )}
       </footer>
     </div>
+  );
+}
+
+/** Reply to a story: a message to them (screened like any message), or a quick heart. */
+function StoryReply({ to, onPause }: { to: CommunityAuthor; onPause: (p: boolean) => void }) {
+  const [text, setText] = useState('');
+  const [sent, setSent] = useState<string | null>(null);
+  const send = (body: string): void => {
+    void api(`/api/social/messages/${to.userId}`, 'POST', { body }).then(
+      () => {
+        setText('');
+        setSent('Sent');
+        onPause(false);
+      },
+      (e: unknown) => setSent(errText(e, 'Could not send')),
+    );
+  };
+  return (
+    <form
+      className="sc-story-reply"
+      onPointerDown={(e) => e.stopPropagation()}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (text.trim()) send(text.trim());
+      }}
+    >
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onFocus={() => onPause(true)}
+        onBlur={() => !text && onPause(false)}
+        placeholder={sent ?? `Reply to ${to.displayName}…`}
+        aria-label={`Reply to ${to.displayName}`}
+        maxLength={500}
+        data-testid="story-reply"
+      />
+      <button type="button" className="sc-icon-btn" aria-label="Send a heart" onClick={() => send('♥')} data-testid="story-heart">
+        <KitIcon name="heart" />
+      </button>
+      <button className="sc-icon-btn" aria-label="Send" disabled={!text.trim()} data-testid="story-send">
+        <KitIcon name="send" />
+      </button>
+    </form>
   );
 }
 
@@ -855,52 +897,94 @@ function ClipUpload({ onClose, onPosted }: { onClose: () => void; onPosted: (c: 
 /* ======================= Messages ======================= */
 
 export function MessagesPage() {
-  return <FeedSection title="Messages" testid="messages">{() => <Inbox />}</FeedSection>;
+  const [composing, setComposing] = useState(false);
+  return (
+    <section className="sc-page feed-page" data-testid="messages">
+      <TopBar
+        title="Messages"
+        right={
+          <button type="button" className="sc-icon-btn" aria-label="New message" onClick={() => setComposing(true)} data-testid="dm-new">
+            <KitIcon name="pencil" />
+          </button>
+        }
+      />
+      <Gate>{() => <Inbox />}</Gate>
+      {composing && <NewMessage onClose={() => setComposing(false)} />}
+    </section>
+  );
+}
+
+/** Start a conversation: pick a friend (or search for anyone). */
+function NewMessage({ onClose }: { onClose: () => void }) {
+  const { data } = useLoad<FriendsData>('/api/friends');
+  return (
+    <Sheet title="New message" onClose={onClose} testid="dm-new-sheet">
+      <div className="sc-rows">
+        {data?.friends.map((f) => (
+          <Link key={f.userId} to={`/messages/${f.userId}`} className="sc-row-item">
+            <Avatar a={f} size={40} />
+            <span className="grow">{f.displayName}</span>
+          </Link>
+        ))}
+        {data && !data.friends.length && <p className="sc-meta">No friends yet — open anyone’s profile and tap Message.</p>}
+      </div>
+      <Link to="/feed/explore" className="sc-link small">
+        Find someone
+      </Link>
+    </Sheet>
+  );
 }
 
 function Inbox() {
   const { data, error } = useLoad<{ threads: DmThreadSummary[]; requests: DmThreadSummary[]; unread: number }>('/api/social/messages');
   const [params] = useSearchParams();
   const [showReq, setShowReq] = useState(params.has('requests'));
+  const [find, setFind] = useState('');
   if (error) return <p className="error">{error}</p>;
-  if (!data) return <p className="muted">Loading…</p>;
-  const list = showReq ? data.requests : data.threads;
+  if (!data) return <p className="sc-meta">Loading…</p>;
+  const needle = find.trim().toLowerCase();
+  const list = (showReq ? data.requests : data.threads).filter((t) => !needle || t.other.displayName.toLowerCase().includes(needle));
   return (
     <>
-      <p className="muted small">One-to-one, grown-ups only. Every message is checked before it’s delivered; you can mute, block or report anyone.</p>
-      <div className="chips" role="tablist" aria-label="Messages">
-        <button type="button" role="tab" aria-selected={!showReq} className={showReq ? 'chip' : 'chip on'} onClick={() => setShowReq(false)} data-testid="dm-tab-inbox">
-          Inbox
-        </button>
-        <button type="button" role="tab" aria-selected={showReq} className={showReq ? 'chip on' : 'chip'} onClick={() => setShowReq(true)} data-testid="dm-tab-requests">
-          Requests{data.requests.length ? ` (${data.requests.length})` : ''}
-        </button>
-      </div>
-      {showReq && <p className="muted small">From people you don’t follow. They won’t know you’ve seen it until you reply or accept.</p>}
-      <div className="dm-list" data-testid={showReq ? 'dm-requests' : 'dm-list'}>
+      <label className="sc-search">
+        <KitIcon name="search" size={20} />
+        <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Search messages" aria-label="Search messages" />
+      </label>
+      <Filters
+        items={[
+          { key: 'inbox', label: 'Inbox' },
+          { key: 'requests', label: `Requests${data.requests.length ? ` (${data.requests.length})` : ''}` },
+        ]}
+        on={showReq ? 'requests' : 'inbox'}
+        onPick={(t) => setShowReq(t === 'requests')}
+        testid={(t) => `dm-tab-${t}`}
+      />
+      {showReq && <p className="sc-meta">From people you aren’t friends with. They won’t know you’ve seen it until you reply or accept.</p>}
+      <div className="sc-list" data-testid={showReq ? 'dm-requests' : 'dm-list'}>
         {list.map((t) => (
-          <Link key={t.other.userId} to={`/messages/${t.other.userId}`} className={t.unread ? 'dm-row unread' : 'dm-row'} data-testid="dm-row">
-            <Avatar a={t.other} size={46} />
-            <span className="dm-row-text">
+          <Link key={t.other.userId} to={`/messages/${t.other.userId}`} className={t.unread ? 'sc-card sc-dm-row unread' : 'sc-card sc-dm-row'} data-testid="dm-row">
+            <Avatar a={t.other} size={52} />
+            <span className="sc-dm-text">
               <b>
                 {t.other.displayName}
-                {t.muted && <small className="muted"> · muted</small>}
+                {t.muted && <small className="sc-meta"> · muted</small>}
               </b>
-              <small className="muted">{t.last ? `${t.last.mine ? 'You: ' : ''}${t.last.body}` : 'No messages yet'}</small>
+              <small className="sc-meta">{t.last ? `${t.last.mine ? 'You: ' : ''}${t.last.body}` : 'No messages yet'}</small>
             </span>
-            <span className="dm-row-side">
-              {t.last && <small className="muted">{ago(t.last.at)}</small>}
-              {t.unread > 0 && <span className="feed-nav-badge">{t.unread}</span>}
+            <span className="sc-dm-side">
+              {t.last && <small className="sc-meta">{since(t.last.at)}</small>}
+              {t.unread > 0 && <span className="sc-dot" aria-label={`${t.unread} unread`} />}
             </span>
           </Link>
         ))}
         {!list.length && (
-          <div className="clip-empty">
-            <b>{showReq ? 'No message requests' : 'No messages yet'}</b>
-            {!showReq && <p className="muted small">Open someone’s profile and tap Message to start a conversation.</p>}
+          <div className="sc-empty">
+            <b>{showReq ? 'No message requests' : needle ? 'No one by that name' : 'No messages yet'}</b>
+            {!showReq && !needle && <p className="sc-meta">Open someone’s profile and tap Message to start a conversation.</p>}
           </div>
         )}
       </div>
+      <p className="sc-meta sc-center">One-to-one, grown-ups only. Every message is checked before it’s delivered; you can mute, block or report anyone.</p>
     </>
   );
 }
@@ -908,11 +992,20 @@ function Inbox() {
 export function MessageThreadPage() {
   const { id } = useParams();
   return (
-    <section className="feed-page" data-testid="dm-thread-page">
-      <FeedNav />
+    <section className="sc-page feed-page sc-chat-page" data-testid="dm-thread-page">
       <Gate>{() => <Thread id={id ?? ''} />}</Gate>
     </section>
   );
+}
+
+/** "Today", "Yesterday" or the date — a pill between days. */
+function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  const t = new Date();
+  const y = new Date(Date.now() - 86400000);
+  if (d.toDateString() === t.toDateString()) return 'Today';
+  if (d.toDateString() === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 function Thread({ id }: { id: string }) {
@@ -922,6 +1015,7 @@ function Thread({ id }: { id: string }) {
   const [review, setReview] = useState<ReviewNote | null>(null);
   const [blocked, setBlocked] = useState<Blocked | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [menu, setMenu] = useState(false);
   const [params] = useSearchParams();
   const end = useRef<HTMLDivElement>(null);
   const confirm = useConfirm();
@@ -940,30 +1034,39 @@ function Thread({ id }: { id: string }) {
     if (consult && data && !body) setBody(`Hi ${data.other.displayName} — I’d like to book a consult. When do you have time?`);
   }, [consult, data?.other.userId]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error) return <p className="error">{error}</p>;
-  if (!data) return <p className="muted">Loading…</p>;
+  if (!data) return <p className="sc-meta">Loading…</p>;
   const o = data.other;
+  let day = '';
   return (
-    <div className="dm-thread" data-testid="dm-thread">
-      <header className="dm-head">
-        <button type="button" className="link" onClick={() => navigate('/messages')} aria-label="All messages">
-          ←
+    <div className="sc-chat" data-testid="dm-thread">
+      <header className="sc-bar sc-chat-head">
+        <button type="button" className="sc-icon-btn" onClick={() => navigate('/messages')} aria-label="All messages" data-testid="back">
+          <KitIcon name="back" />
         </button>
-        <Link to={`/people/${o.userId}`} className="dm-head-who">
-          <Avatar a={o} size={36} />
+        <Link to={`/people/${o.userId}`} className="sc-chat-who">
+          <Avatar a={o} size={40} />
           <b>{o.displayName}</b>
         </Link>
         <span className="grow" />
-        <SlipMenu>
+        <button type="button" className="sc-icon-btn" aria-label="More" aria-expanded={menu} onClick={() => setMenu(!menu)} data-testid="dm-more">
+          <KitIcon name="more" />
+        </button>
+      </header>
+      {menu && (
+        <div className="sc-menu right">
           <button
-            className="link small"
+            className="sc-menu-item"
             data-testid="dm-mute"
-            onClick={() => void api<DmThread>(`/api/social/messages/${o.userId}/mute`, 'POST', { muted: !data.muted }).then(setData)}
+            onClick={() => {
+              setMenu(false);
+              void api<DmThread>(`/api/social/messages/${o.userId}/mute`, 'POST', { muted: !data.muted }).then(setData);
+            }}
           >
             {data.muted ? 'Unmute' : 'Mute'}
           </button>
           {!data.blocked && (
             <button
-              className="link danger small"
+              className="sc-menu-item danger"
               data-testid="dm-block"
               onClick={() =>
                 void confirm({ title: `Block ${o.displayName}?`, body: 'Neither of you can message the other, and you won’t see each other’s posts.', confirmLabel: 'Block', danger: true }).then(
@@ -974,29 +1077,24 @@ function Thread({ id }: { id: string }) {
               Block
             </button>
           )}
-        </SlipMenu>
-      </header>
-      {data.muted && <p className="small muted dm-note">Muted — you won’t get notified about this conversation.</p>}
+        </div>
+      )}
+      {data.muted && <p className="sc-meta sc-center">Muted — you won’t get notified about this conversation.</p>}
       {data.request && !data.blocked && (
-        <div className="card dm-request" data-testid="dm-request">
-          <p className="small">
+        <div className="sc-card sc-note" data-testid="dm-request">
+          <p>
             <b>{o.displayName}</b> wants to message you. Accept to chat — or decline (they won’t be told).
           </p>
-          <div className="row">
-            <button type="button" className="btn small" onClick={() => void api<DmThread>(`/api/social/messages/${o.userId}/accept`, 'POST').then(setData)} data-testid="dm-accept">
+          <div className="sc-row">
+            <button type="button" className="sc-btn small" onClick={() => void api<DmThread>(`/api/social/messages/${o.userId}/accept`, 'POST').then(setData)} data-testid="dm-accept">
               Accept
             </button>
-            <button
-              type="button"
-              className="btn ghost small"
-              onClick={() => void api(`/api/social/messages/${o.userId}/decline`, 'POST').then(() => navigate('/messages?requests=1'))}
-              data-testid="dm-decline"
-            >
+            <button type="button" className="sc-btn ghost small" onClick={() => void api(`/api/social/messages/${o.userId}/decline`, 'POST').then(() => navigate('/messages?requests=1'))} data-testid="dm-decline">
               Decline
             </button>
             <button
               type="button"
-              className="link danger small"
+              className="sc-link small danger"
               onClick={() =>
                 void confirm({ title: `Block ${o.displayName}?`, body: 'Neither of you can message the other, and you won’t see each other’s posts.', confirmLabel: 'Block', danger: true }).then(
                   (y) => void (y && api(`/api/community/people/${o.userId}/block`, 'POST').then(() => navigate('/messages?requests=1'))),
@@ -1009,39 +1107,47 @@ function Thread({ id }: { id: string }) {
           </div>
         </div>
       )}
-      <div className="dm-messages" data-testid="dm-messages">
-        {data.messages.map((m) => (
-          <div key={m.id} className={m.mine ? 'dm-msg mine' : 'dm-msg'} data-testid="dm-message">
-            <p>{m.body}</p>
-            <small>
-              {ago(m.at)}
-              {m.status !== 'visible' && ' · under review — not delivered yet'}
-            </small>
-            {!m.mine && <ReportButton path={`/api/social/messages/report/${m.id}`} onDone={setMsg} />}
-          </div>
-        ))}
-        {!data.messages.length && !data.blocked && <p className="muted small dm-note">Say hello to {o.displayName}. Be kind — messages are checked before they’re delivered.</p>}
+      <div className="sc-bubbles" data-testid="dm-messages">
+        {data.messages.map((m) => {
+          const d = dayLabel(m.at);
+          const head = d !== day;
+          day = d;
+          return (
+            <Fragment key={m.id}>
+              {head && <span className="sc-day">{d}</span>}
+              <div className={m.mine ? 'sc-bubble mine' : 'sc-bubble'} data-testid="dm-message">
+                <p>{m.body}</p>
+                <small>
+                  {new Date(m.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                  {m.status !== 'visible' && ' · under review — not delivered yet'}
+                </small>
+                {!m.mine && <ReportButton path={`/api/social/messages/report/${m.id}`} onDone={setMsg} />}
+              </div>
+            </Fragment>
+          );
+        })}
+        {!data.messages.length && !data.blocked && <p className="sc-meta sc-center">Say hello to {o.displayName}. Be kind — messages are checked before they’re delivered.</p>}
         <div ref={end} />
       </div>
       {msg && (
-        <p className="desk-note" role="status">
+        <p className="sc-toast" role="status" onClick={() => setMsg(null)}>
           {msg}
         </p>
       )}
       {review?.crisis && <CrisisCard />}
       {review?.underReview && !review.crisis && (
-        <p className="card note" role="status" data-testid="under-review">
+        <p className="sc-card sc-note" role="status" data-testid="under-review">
           <b>Under review.</b> A moderator will look before {o.displayName} sees it.
         </p>
       )}
       <BlockedNote b={blocked} />
       {data.blocked ? (
-        <p className="card note" data-testid="dm-blocked">
+        <p className="sc-card sc-note" data-testid="dm-blocked">
           You can’t message each other.
         </p>
       ) : (
         <form
-          className="dm-compose"
+          className="sc-float-compose chat"
           onSubmit={(e) => {
             e.preventDefault();
             if (!body.trim()) return;
@@ -1059,8 +1165,8 @@ function Thread({ id }: { id: string }) {
           }}
         >
           <textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={2000} rows={1} placeholder={`Message ${o.displayName}`} aria-label="Message" data-testid="dm-input" />
-          <button className="btn small" disabled={busy || !body.trim()} data-testid="dm-send">
-            Send
+          <button className="sc-send" disabled={busy || !body.trim()} aria-label="Send" data-testid="dm-send">
+            <KitIcon name="send" size={22} />
           </button>
         </form>
       )}

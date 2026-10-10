@@ -2,17 +2,13 @@
  * The small, always-loaded part of the Feed: where to land after "Join the Feed", and the header for
  * people who joined just for the Feed (no household). The Feed itself loads lazily (Social.tsx).
  */
-import { useEffect, useRef, useState } from 'react';
-import { NavLink, useLocation } from 'react-router';
-import { useLoad } from '../../api';
-import { useSession } from '../../session';
-import { FeedHorn, NavIcon } from '../../components/NavIcon';
+import { useEffect, useState } from 'react';
+import { FeedHorn } from '../../components/NavIcon';
 import { api as apiCall } from '../../api';
 import { setBadge } from './push';
-import { signOut } from '../../signout';
-import { APP_URL, clearInstall, FEED_APP, iosSafari, pendingInstall, standalone } from '../../apps';
+import { clearInstall, FEED_APP, iosSafari, pendingInstall, standalone } from '../../apps';
+import { TopBar } from '../feed/kit';
 import type { ReactNode } from 'react';
-import type { CommunityMe } from '@myday/shared';
 
 export const AGE_KEY = 'myday.feed18';
 export const NEXT_KEY = 'myday.next';
@@ -41,52 +37,15 @@ export function takeNext(): string | null {
   return v && /^\/[a-z/]*$/.test(v) ? v : null;
 }
 
-/** Header for a Feed-only account: the Feed, and a way to set up the rest of MyDay later. */
-export function SocialHeader() {
-  const { me } = useSession();
-  // In the Feed app, MyDay is the other app (the family planner): its door, signed in (same account).
-  const myday = FEED_APP && APP_URL ? `/api/auth/go?to=myday&next=${me.household ? '/' : '/start'}` : '/start';
-  return (
-    <header className="top social-top" data-testid="social-shell">
-      <FeedHorn tile size={30} className="mark-horn" />
-      <b>The Feed</b>
-      <span className="grow" />
-      <ProfileButton />
-      <a href={myday} className="link light small" data-testid="setup-household">
-        {FEED_APP && me.household ? 'MyDay' : 'Set up MyDay'}
-      </a>
-      <button type="button" className="link light small" onClick={() => void signOut()}>
-        Sign out
-      </button>
-    </header>
-  );
-}
-
-/** Your profile, one tap from every Feed screen: your photo (or initial) in the header. */
-function ProfileButton() {
-  const { data } = useLoad<CommunityMe>('/api/community/me');
-  const p = data?.profile;
-  return (
-    <NavLink to="/me" className="profile-button" aria-label="Your profile" data-testid="profile-entry">
-      {p?.avatarUrl ? <img src={p.avatarUrl} alt="" /> : <span aria-hidden="true">{(p?.displayName ?? '•').slice(0, 1)}</span>}
-    </NavLink>
-  );
-}
-
-/** A Feed page's title, with the Feed's own mark (the bulb horn — never the MyDay mark). */
+/** A Feed page's title: the Soft Card header (back, the horn, the title). */
 export function FeedTitle({ children }: { children: ReactNode }) {
-  return (
-    <header className="page-head feed-head">
-      <FeedHorn tile size={52} className="feed-head-mark" />
-      <h1 className="page-title">{children}</h1>
-    </header>
-  );
+  return <TopBar title={children} />;
 }
 
 /* ---------- the Feed's section bar ---------- */
 
 /** New notifications (the bell's number, and the Feed app's home-screen badge): checked every minute. */
-function useFeedUnread(): number {
+export function useFeedUnread(): number {
   const [n, setN] = useState(0);
   useEffect(() => {
     let live = true;
@@ -114,58 +73,9 @@ function useFeedUnread(): number {
   return n;
 }
 
-const SECTIONS: Array<{ to: string; label: string; end?: boolean; household?: boolean }> = [
-  { to: '/feed', label: 'Feed', end: true },
-  { to: '/feed/stories', label: 'Stories' },
-  { to: '/clips', label: 'Clips' },
-  { to: '/messages', label: 'Messages' },
-  { to: '/circles', label: 'Circles', household: true },
-  { to: '/village', label: 'Villages' },
-];
-
-/** One navigation for everything social: Feed · Stories · Clips · Messages · Circles · Villages. */
+/** The old section bar: the dock (Home · Friends · + · Profile · Bell) does its job now. */
 export function FeedNav() {
-  const { me } = useSession();
-  const inbox = useLoad<{ unread: number }>('/api/social/messages');
-  const off = new Set(me.household?.modulesOff ?? []);
-  // Circles live with a household (people who joined just for the Feed don't have one), inside MyDay.
-  const links = SECTIONS.filter((s) => !s.household || (!FEED_APP && me.household && !off.has('circles')));
-  const unread = inbox.data?.unread ?? 0;
-  const notes = useFeedUnread();
-  const bar = useRef<HTMLElement>(null);
-  const { pathname } = useLocation();
-  // The section you're in is always visible in the bar (it scrolls sideways on phones).
-  useEffect(() => {
-    const el = bar.current;
-    const on = el?.querySelector<HTMLElement>('.active');
-    if (el && on) el.scrollLeft = on.offsetLeft - (el.clientWidth - on.offsetWidth) / 2;
-  }, [pathname]);
-  return (
-    <nav className="feed-nav" aria-label="The Feed" data-testid="feed-nav" ref={bar}>
-      {links.map((s) => (
-        <NavLink key={s.to} to={s.to} end={s.end} className="feed-nav-link">
-          {s.to === '/feed' && <FeedHorn size={16} />}
-          {s.label}
-          {s.to === '/messages' && unread > 0 && (
-            <span className="feed-nav-badge" data-testid="dm-unread" aria-label={`${unread} unread`}>
-              {unread}
-            </span>
-          )}
-        </NavLink>
-      ))}
-      <NavLink to="/search" className="feed-nav-link feed-nav-bell feed-nav-search" aria-label="Search the Feed" data-testid="feed-search">
-        <NavIcon name="search" size={18} />
-      </NavLink>
-      <NavLink to="/notifications" className="feed-nav-link feed-nav-bell" aria-label={notes ? `Notifications, ${notes} new` : 'Notifications'} data-testid="notif-bell">
-        <NavIcon name="bell" size={18} />
-        {notes > 0 && (
-          <span className="feed-nav-badge" data-testid="notif-badge">
-            {notes > 99 ? '99+' : notes}
-          </span>
-        )}
-      </NavLink>
-    </nav>
-  );
+  return null;
 }
 
 /* ---------- the Feed app: Add to Home Screen ---------- */

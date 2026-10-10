@@ -2379,6 +2379,18 @@ export interface CommunityProfile {
   provider: ProviderInfo | null;
   /** @username (null until they pick one). */
   username: string | null;
+  /** Cover photo (null = the Feed's own cover). */
+  coverUrl: string | null;
+  work: string | null;
+  /** Friends = mutual follows (the UI never says "followers"). */
+  friends: number;
+  relationship: Relationship;
+  mutualFriends: { count: number; people: CommunityAuthor[] };
+  verified: boolean;
+  interestLabels: string[];
+  pinned: { kind: 'post' | 'clip'; id: number } | null;
+  /** Your own profile only: who sees your new posts by default (Settings → Privacy). */
+  defaultAudience?: PostAudience;
   /** Your own profile only: your date of birth (private), and where your provider credentials stand. */
   dob?: string | null;
   providerStatus?: ProviderSubmission | null;
@@ -2483,7 +2495,7 @@ export interface DmThread {
 /** Search across the Feed: people, posts, villages (and topics — #hashtags). */
 export interface FeedSearch {
   q: string;
-  people: Array<{ userId: number; displayName: string; username: string | null; avatarUrl: string | null; followers: number; followedByMe: boolean }>;
+  people: Array<{ userId: number; displayName: string; username: string | null; avatarUrl: string | null; followers: number; followedByMe: boolean; followsMe?: boolean; friends?: number; mutualFriends?: number; verified?: boolean }>;
   posts: FeedPost[];
   villages: VillageInfo[];
   topics: Array<{ tag: string; count: number }>;
@@ -2653,6 +2665,9 @@ export interface CommunityAuthor {
   displayName: string;
   parentBadge: boolean;
   avatarUrl: string | null;
+  /** A verified licensed provider (the blue check). */
+  verified?: boolean;
+  username?: string | null;
 }
 
 /** What the pre-screen said about something you just posted. */
@@ -2748,6 +2763,92 @@ export interface FeedPost {
   trusted: TrustedAnswer | null;
   /** From someone you don't follow, shown once the people you follow run out ("Suggested for you"). */
   discover?: boolean;
+  /** Long-press reactions: counts by kind, and yours (null = none). `likes` is the total. */
+  reactions?: Record<FeedReaction, number>;
+  myReaction?: FeedReaction | null;
+  comments?: number;
+  /** Who sees it, and who may comment. */
+  audience?: PostAudience;
+  commentsFrom?: CommentsFrom;
+  /** You may comment (audience + who-can-comment + blocks). */
+  canComment?: boolean;
+  feeling?: FeedFeeling | null;
+  place?: string | null;
+  poll?: FeedPoll | null;
+}
+
+export const FEED_REACTIONS = [
+  { key: 'like', label: 'Like' },
+  { key: 'relate', label: 'Relate' },
+  { key: 'helpful', label: 'Helpful' },
+  { key: 'funny', label: 'Funny' },
+] as const;
+export type FeedReaction = (typeof FEED_REACTIONS)[number]['key'];
+
+export type PostAudience = 'public' | 'friends';
+export type CommentsFrom = 'anyone' | 'friends' | 'nobody';
+
+/** "Feeling …" tags for a post. */
+export const FEED_FEELINGS = [
+  { key: 'proud', label: 'proud' },
+  { key: 'hopeful', label: 'hopeful' },
+  { key: 'grateful', label: 'grateful' },
+  { key: 'calm', label: 'calm' },
+  { key: 'motivated', label: 'motivated' },
+  { key: 'tired', label: 'tired' },
+  { key: 'overwhelmed', label: 'overwhelmed' },
+  { key: 'frustrated', label: 'frustrated' },
+  { key: 'scattered', label: 'scattered' },
+  { key: 'curious', label: 'curious' },
+] as const;
+export type FeedFeeling = (typeof FEED_FEELINGS)[number]['key'];
+
+export interface FeedPoll {
+  options: Array<{ text: string; votes: number }>;
+  total: number;
+  /** Your vote (index), or null. */
+  myVote: number | null;
+}
+
+/** A comment on a post. */
+export interface PostComment {
+  id: number;
+  author: CommunityAuthor;
+  body: string;
+  at: string;
+  status: CommunityStatus;
+  mine: boolean;
+  likes: number;
+  likedByMe: boolean;
+  parentId: number | null;
+}
+
+/** Friends = people you both follow. A follow that isn't returned yet is a friend request. */
+export type Relationship = 'self' | 'friends' | 'requested' | 'incoming' | 'none';
+
+export interface FriendPerson {
+  userId: number;
+  displayName: string;
+  username: string | null;
+  avatarUrl: string | null;
+  verified: boolean;
+  mutualFriends: number;
+  friends: number;
+}
+
+export interface FriendsData {
+  requests: FriendPerson[];
+  friends: FriendPerson[];
+  suggestions: FriendPerson[];
+}
+
+/** A profile's Media tab: photos from posts and clips, the pinned one first. */
+export interface MediaTile {
+  kind: 'post' | 'clip';
+  id: number;
+  imageUrl: string | null;
+  views: number | null;
+  pinned: boolean;
 }
 
 /**
@@ -2857,7 +2958,7 @@ export interface WebItem {
 }
 
 export interface CommunityQueueItem {
-  kind: 'village' | 'feed' | 'image' | 'profile' | 'story' | 'clip' | 'clip-comment' | 'message';
+  kind: 'village' | 'feed' | 'image' | 'profile' | 'story' | 'clip' | 'clip-comment' | 'post-comment' | 'message';
   id: number;
   author: { userId: number; displayName: string; email: string; strikes: number };
   title: string | null;

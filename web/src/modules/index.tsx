@@ -16,10 +16,17 @@ const Meetings = lazy(() => import('./meetings/Meetings'));
 const MeetingPage = lazy(() => import('./meetings/Meetings').then((m) => ({ default: m.MeetingPage })));
 const Village = lazy(() => import('./community/Community').then((m) => ({ default: m.Village })));
 const VillageThreadPage = lazy(() => import('./community/Community').then((m) => ({ default: m.VillageThreadPage })));
-const Feed = lazy(() => import('./community/Community').then((m) => ({ default: m.Feed })));
-const PersonPage = lazy(() => import('./community/Community').then((m) => ({ default: m.PersonPage })));
-const HandlePage = lazy(() => import('./community/Community').then((m) => ({ default: m.HandlePage })));
-export const MyProfilePage = lazy(() => import('./community/Community').then((m) => ({ default: m.MyProfilePage })));
+const Feed = lazy(() => import('./feed/Home').then((m) => ({ default: m.FeedHome })));
+const ExplorePage = lazy(() => import('./feed/Home').then((m) => ({ default: m.ExplorePage })));
+const CreatePage = lazy(() => import('./feed/Home').then((m) => ({ default: m.CreatePage })));
+const PostPage = lazy(() => import('./feed/Home').then((m) => ({ default: m.PostPage })));
+const PersonPage = lazy(() => import('./feed/People').then((m) => ({ default: m.PersonPage })));
+const HandlePage = lazy(() => import('./feed/People').then((m) => ({ default: m.HandlePage })));
+const FriendsPage = lazy(() => import('./feed/People').then((m) => ({ default: m.FriendsPage })));
+const EditProfilePage = lazy(() => import('./feed/People').then((m) => ({ default: m.EditProfilePage })));
+const FeedSettingsPage = lazy(() => import('./feed/People').then((m) => ({ default: m.SettingsPage })));
+const FeedNotifSettingsPage = lazy(() => import('./feed/People').then((m) => ({ default: m.NotificationSettingsPage })));
+export const MyProfilePage = lazy(() => import('./feed/People').then((m) => ({ default: m.MyProfilePage })));
 const StoriesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.StoriesPage })));
 const ClipsPage = lazy(() => import('./social/Social').then((m) => ({ default: m.ClipsPage })));
 const MessagesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessagesPage })));
@@ -168,6 +175,13 @@ export const MODULES: ModuleRoute[] = [
   // Messages · Circles · Villages share its section bar instead of having menu entries of their own.
   { path: '/feed', element: <Feed />, audience: 'adult', nav: { label: 'The Feed', icon: 'feed', group: 'connect' } },
   { path: '/feed/stories', element: <StoriesPage />, audience: 'adult' },
+  { path: '/feed/explore', element: <ExplorePage />, audience: 'adult' },
+  { path: '/feed/create', element: <CreatePage />, audience: 'adult' },
+  { path: '/feed/friends', element: <FriendsPage />, audience: 'adult' },
+  { path: '/feed/post/:id', element: <PostPage />, audience: 'adult' },
+  { path: '/feed/profile/edit', element: <EditProfilePage />, audience: 'adult' },
+  { path: '/feed/settings', element: <FeedSettingsPage />, audience: 'adult' },
+  { path: '/feed/settings/notifications', element: <FeedNotifSettingsPage />, audience: 'adult' },
   { path: '/clips', element: <ClipsPage />, audience: 'adult' },
   { path: '/messages', element: <MessagesPage />, audience: 'adult' },
   { path: '/notifications', element: <NotificationsPage />, audience: 'adult' },
