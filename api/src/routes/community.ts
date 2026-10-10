@@ -1369,6 +1369,17 @@ communityRouter.get('/api/community/people/:id', async (req, res) => {
   res.json(view);
 });
 
+/** A public profile by @username (/u/<handle>): who it is, if you may see them. */
+communityRouter.get('/api/community/handle/:username', async (req, res) => {
+  const m = await member(req);
+  const { rows } = await pool.query<{ user_id: number }>('SELECT user_id FROM social_profiles WHERE username = $1 AND banned_at IS NULL', [
+    String(req.params.username).toLowerCase().replace(/^@/, '').slice(0, 20),
+  ]);
+  const id = rows[0]?.user_id;
+  if (!id || (id !== m.userId && (await block(m.userId, id)))) throw new HttpError(404, 'No such person');
+  res.json({ userId: id });
+});
+
 communityRouter.post('/api/community/people/:id/follow', async (req, res) => {
   const m = await member(req);
   const id = idParam(req.params.id);

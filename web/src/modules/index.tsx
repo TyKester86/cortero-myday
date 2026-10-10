@@ -18,6 +18,8 @@ const Village = lazy(() => import('./community/Community').then((m) => ({ defaul
 const VillageThreadPage = lazy(() => import('./community/Community').then((m) => ({ default: m.VillageThreadPage })));
 const Feed = lazy(() => import('./community/Community').then((m) => ({ default: m.Feed })));
 const PersonPage = lazy(() => import('./community/Community').then((m) => ({ default: m.PersonPage })));
+const HandlePage = lazy(() => import('./community/Community').then((m) => ({ default: m.HandlePage })));
+export const MyProfilePage = lazy(() => import('./community/Community').then((m) => ({ default: m.MyProfilePage })));
 const StoriesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.StoriesPage })));
 const ClipsPage = lazy(() => import('./social/Social').then((m) => ({ default: m.ClipsPage })));
 const MessagesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.MessagesPage })));
@@ -179,6 +181,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/village', element: <Village />, audience: 'adult' },
   { path: '/village/:id', element: <VillageThreadPage />, audience: 'adult' },
   { path: '/people/:id', element: <PersonPage />, audience: 'adult' },
+  { path: '/u/:handle', element: <HandlePage />, audience: 'adult' },
   // The Provider Business Suite (verified providers; the page explains itself to everyone else).
   { path: '/business', element: <BusinessPage />, audience: 'adult' },
   { path: '/community/moderation', element: <CommunityModeration />, audience: 'admin' },

@@ -3665,6 +3665,8 @@ async function feedAppSuite() {
 
   section('Push, with smart timing: what’s said to you now; likes and follows together, later; never in quiet hours; your choice');
   const deliver = async (at) => (await nb.post(`/api/dev/feed/deliver?token=${DEV_TOKEN}${at ? `&at=${encodeURIComponent(at)}` : ''}`)).data;
+  // Whatever time the walk runs: no quiet hours until the quiet-hours check below sets them.
+  await nb.put('/api/feed/notifications/prefs', { quietStart: '00:00', quietEnd: '00:00' });
   await deliver(new Date(Date.now() + 3 * 86400000).toISOString()); // clear the backlog from above
   eq('a device subscribes to the Feed app’s push', (await nb.post('/api/feed/push/subscribe', { endpoint: 'https://push.example.test/nova-1', keys: { p256dh: 'BNova', auth: 'aNova' } })).status, 201);
   await twin.post('/api/feed/push/subscribe', { endpoint: 'https://push.example.test/twin-1', keys: { p256dh: 'BTwin', auth: 'aTwin' } });
@@ -3832,6 +3834,11 @@ async function feedAppSuite() {
   eq('unsubscribe (no sign-in needed) → no more digest emails', [un.status, (await twin.get('/api/feed/notifications/prefs')).data.digestEmail], [200, false]);
   eq('…a forged unsubscribe link does nothing', (await new Client('unsub2', 'MyDay-e2e', FEED).get(`/api/feed/unsubscribe?u=${nbId}&t=nope`)).status, 400);
   eq('the digest ping can be turned off too', (await twin.put('/api/feed/notifications/prefs', { digests: false })).data.digests, false);
+
+  eq('profiles by @handle: found (any case), unknown → 404, blocked → 404', [(await twin.get('/api/community/handle/NOVA.READS')).data.userId, (await twin.get('/api/community/handle/nobody_here')).status], [nbId, 404]);
+  await tyF.post(`/api/community/people/${nbId}/block`);
+  eq('…across a block it isn’t there', (await tyF.get('/api/community/handle/nova.reads')).status, 404);
+  await tyF.del(`/api/community/people/${nbId}/block`);
 
   section('Creators earn: tips and monthly support, paid through Stripe to the creator (optional — the Feed is free)');
   const ci0 = (await nb.get('/api/creator')).data;
@@ -4558,6 +4565,17 @@ async function uiGate() {
     check('back after 4 days: “Welcome back — here’s what you missed”', /what you missed/.test(await jp.getByTestId('catchup-card').innerText()));
     await jp.getByTestId('catchup-dismiss').click();
     await jp.getByTestId('catchup-card').waitFor({ state: 'detached', timeout: 10000 });
+    // Her profile is one tap from any Feed screen (the header), at /me; anyone's at /u/<handle>.
+    for (const screen of ['/messages', '/village', '/notifications']) {
+      await jp.goto(`${FEED}${screen}`);
+      await jp.getByTestId('profile-entry').click();
+      await jp.waitForURL(`${FEED}/me`, { timeout: 10000 });
+    }
+    await jp.getByTestId('profile-card').waitFor({ timeout: 10000 });
+    eq('one tap from any Feed screen (header) → /me: her own profile, with Edit', [await jp.getByTestId('profile-handle').innerText(), await jp.getByTestId('edit-profile').count()], ['@rae_makes', 1]);
+    await jp.goto(`${FEED}/u/nova.reads`);
+    await jp.getByTestId('profile-handle').waitFor({ timeout: 10000 });
+    eq('/u/<handle>: someone’s public profile, with their posts', [await jp.getByTestId('profile-handle').innerText(), /zine/i.test(await jp.getByTestId('person').innerText()), await jp.getByTestId('edit-profile').count()], ['@nova.reads', true, 0]);
     await jp.goto(`${FEED}/people/${raeId}`);
     await jp.getByTestId('profile-tab-about').click();
     await jp.getByTestId('your-stats').waitFor({ timeout: 10000 });

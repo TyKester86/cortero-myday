@@ -16,7 +16,7 @@ import Join from './Join';
 import { Privacy, Terms } from './Legal';
 import Login from './Login';
 import { navFor } from './modules/nav';
-import { MODULES } from './modules';
+import { MODULES, MyProfilePage } from './modules';
 import { InstallFeed, SocialHeader, takeNext } from './modules/social/shell';
 import { APP_URL, FEED_APP, FEED_URL, standalone } from './apps';
 import { signOut } from './signout';
@@ -232,10 +232,10 @@ function Shell() {
 const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ default: m.FeedLanding })));
 
 /** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
-const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings'];
-const SOCIAL = /^\/(feed|clips|messages|people|village|business|notifications|search|invite|earnings)(\/|$)/;
+const SOCIAL_PATHS = ['/feed', '/feed/stories', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
+const SOCIAL = /^\/(feed|clips|messages|people|village|business|notifications|search|invite|earnings|u)(\/|$)/;
 /** Every page that belongs to the Feed (Circles too). */
-const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles|notifications|search|invite|earnings)(\/|$)/;
+const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles|notifications|search|invite|earnings|u)(\/|$)/;
 
 /** A Feed-only account (or anyone in the Feed app): the social pages, with a way to MyDay for later. */
 function SocialShell() {
@@ -253,6 +253,7 @@ function SocialShell() {
             {MODULES.filter((m) => SOCIAL_PATHS.includes(m.path)).map((m) => (
               <Route key={m.path} path={m.path} element={m.element} />
             ))}
+            <Route path="/me" element={<MyProfilePage />} />
             <Route path="*" element={<Navigate to="/feed" replace />} />
           </Routes>
         </Suspense>

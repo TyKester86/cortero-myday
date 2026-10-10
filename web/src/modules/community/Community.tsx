@@ -936,6 +936,26 @@ export function PersonPage() {
   );
 }
 
+/** Your own profile, at a clean address (/me in the Feed app). */
+export function MyProfilePage() {
+  return (
+    <section data-testid="person" className="feed-page person-page">
+      <Gate>{(me) => (me.profile ? <Person id={String(me.profile.userId)} /> : null)}</Gate>
+    </section>
+  );
+}
+
+/** Anyone's public profile by @username (/u/<handle>). */
+export function HandlePage() {
+  const { handle } = useParams();
+  const { data, error } = useLoad<{ userId: number }>(`/api/community/handle/${encodeURIComponent(handle ?? '')}`);
+  return (
+    <section data-testid="person" className="feed-page person-page">
+      <Gate>{() => (error ? <p className="muted">No one here by that name.</p> : data ? <Person id={String(data.userId)} /> : <p className="muted">Loading…</p>)}</Gate>
+    </section>
+  );
+}
+
 const PROFILE_TABS = [
   { key: 'posts', label: 'Posts' },
   { key: 'clips', label: 'Clips' },
@@ -1058,6 +1078,11 @@ function Person({ id }: { id: string }) {
           {data.avatarUrl ? <img src={data.avatarUrl} alt={`${data.displayName}’s photo`} /> : <span>{data.displayName.slice(0, 1)}</span>}
         </div>
         <h1 className="profile-name">{data.displayName}</h1>
+        {data.username && (
+          <p className="profile-handle muted" data-testid="profile-handle">
+            @{data.username}
+          </p>
+        )}
         {!pro && data.parentBadge && <span className="badge-stamp">Parent</span>}
         {data.bio ? <p className="profile-bio">{data.bio}</p> : data.me && <p className="profile-bio muted">Add a line about you — no kids’ names or schools.</p>}
         {pro ? (

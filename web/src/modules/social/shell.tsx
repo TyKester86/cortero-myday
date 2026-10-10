@@ -12,6 +12,7 @@ import { setBadge } from './push';
 import { signOut } from '../../signout';
 import { APP_URL, clearInstall, FEED_APP, iosSafari, pendingInstall, standalone } from '../../apps';
 import type { ReactNode } from 'react';
+import type { CommunityMe } from '@myday/shared';
 
 export const AGE_KEY = 'myday.feed18';
 export const NEXT_KEY = 'myday.next';
@@ -50,6 +51,7 @@ export function SocialHeader() {
       <FeedHorn tile size={30} className="mark-horn" />
       <b>The Feed</b>
       <span className="grow" />
+      <ProfileButton />
       <a href={myday} className="link light small" data-testid="setup-household">
         {FEED_APP && me.household ? 'MyDay' : 'Set up MyDay'}
       </a>
@@ -57,6 +59,17 @@ export function SocialHeader() {
         Sign out
       </button>
     </header>
+  );
+}
+
+/** Your profile, one tap from every Feed screen: your photo (or initial) in the header. */
+function ProfileButton() {
+  const { data } = useLoad<CommunityMe>('/api/community/me');
+  const p = data?.profile;
+  return (
+    <NavLink to="/me" className="profile-button" aria-label="Your profile" data-testid="profile-entry">
+      {p?.avatarUrl ? <img src={p.avatarUrl} alt="" /> : <span aria-hidden="true">{(p?.displayName ?? '•').slice(0, 1)}</span>}
+    </NavLink>
   );
 }
 
