@@ -158,6 +158,7 @@ const serverEnv = (fakeNow) => ({
   TZ_HOUSEHOLD: 'America/Chicago',
   PUBLIC_URL: BASE,
   FEED_APP_URL: FEED,
+  FEED_APP_ALIASES: 'old-feed.example.test,www.old-feed.example.test',
   DATABASE_URL: dbUrl,
   SESSION_SECRET: SECRET,
   DEV_LOGIN_TOKEN: DEV_TOKEN,
@@ -3458,6 +3459,9 @@ async function feedAppSuite() {
   eq('…its manifest: “The Feed”, standalone, its own colors, horn icons 192 + 512, maskable too', [man.name, man.short_name, man.display, man.start_url, man.scope, man.background_color, man.icons.filter((i) => i.purpose === 'maskable').map((i) => i.sizes), ['192x192', '512x512'].every((z) => man.icons.some((i) => i.sizes === z && i.purpose === 'any'))], ['The Feed', 'The Feed', 'standalone', '/feed?source=pwa', '/', '#12100E', ['192x192', '512x512'], true]);
   const files = [...man.icons.map((i) => i.src), ...(h.match(/\/icons\/feed-splash-\d+x\d+\.png/g) ?? []), '/icons/feed-favicon-32.png', '/icons/feed-og.png'];
   eq('…every icon and launch screen it names is there', (await Promise.all(files.map(async (f) => (await fa.get(f)).status))).every((x) => x === 200), true);
+  const oldName = await hostFetch(`http://old-feed.example.test:${PORT}/invite/someone?x=1`, { method: 'GET', headers: {} });
+  const oldWww = await hostFetch(`http://www.old-feed.example.test:${PORT}/`, { method: 'GET', headers: {} });
+  eq('the Feed app has one address: its older names move there for good (path kept)', [oldName.status, oldName.headers.get('location'), oldWww.status, oldWww.headers.get('location')], [301, `${FEED}/invite/someone?x=1`, 301, `${FEED}/`]);
   eq('…an older link to /manifest.webmanifest there gets the Feed’s manifest; MyDay keeps its own', [(await fa.get('/manifest.webmanifest')).data.name, (await anon.get('/manifest.webmanifest')).data.name], ['The Feed', 'MyDay']);
   const md = String((await anon.get('/today')).data);
   eq('MyDay’s pages know where the Feed app lives — and stay MyDay', [new RegExp(`<meta name="myday-feed-url" content="${FEED}"`).test(md), /myday-app-mode/.test(md), /<title>MyDay<\/title>/.test(md)], [true, false, true]);

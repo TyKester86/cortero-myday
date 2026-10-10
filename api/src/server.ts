@@ -42,6 +42,12 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1); // behind Caddy
 app.use(securityHeaders(config.production));
 
+// The Feed app lives at one address (one install, one sign-in, one push): its older names move there for good.
+app.use((req, res, next) => {
+  if (config.feedAppUrl && config.feedAppAliases.includes(req.hostname)) res.redirect(301, `${config.feedAppUrl}${req.originalUrl}`);
+  else next();
+});
+
 app.get('/api/health', (_req, res: Response<HealthCheck>) => {
   res.json({ ok: true });
 });

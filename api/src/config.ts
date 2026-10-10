@@ -14,7 +14,12 @@ export const config = {
   tz: opt('TZ_HOUSEHOLD', 'America/Chicago'),
   publicUrl: opt('PUBLIC_URL', 'http://localhost:5173').replace(/\/$/, ''),
   /** The Feed's own app (its own domain, same server and database). Empty: no separate Feed app. */
-  feedAppUrl: opt('FEED_APP_URL', opt('NODE_ENV') === 'production' ? 'https://thefeedsocial.com' : '').replace(/\/$/, ''),
+  feedAppUrl: opt('FEED_APP_URL', opt('NODE_ENV') === 'production' ? 'https://app.thefeedsocial.com' : '').replace(/\/$/, ''),
+  /** Other names the Feed has used: they send people (permanently) to the Feed app's one address. */
+  feedAppAliases: opt('FEED_APP_ALIASES', opt('NODE_ENV') === 'production' ? 'thefeedsocial.com,www.thefeedsocial.com' : '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean),
   databaseUrl: req('DATABASE_URL'),
   /** Checked at server start (not here) so `migrate` runs without it. */
   sessionSecret: opt('SESSION_SECRET'),
