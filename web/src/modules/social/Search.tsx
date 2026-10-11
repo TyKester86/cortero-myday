@@ -10,6 +10,7 @@ import { count } from '../../format';
 import { Gate } from '../community/Community';
 import { Avatar, Filters, FriendButton, Icon, Name, relOf, short } from '../feed/kit';
 import { PostCard } from '../feed/PostCard';
+import { ProviderBadge } from '../feed/Providers';
 
 type Tab = 'all' | 'people' | 'posts' | 'villages' | 'media';
 const TABS: Array<{ key: Tab; label: string }> = [
@@ -106,6 +107,7 @@ function Search() {
                   <Avatar a={p} size={48} />
                   <span>
                     <Name a={p} link={false} />
+                    {p.verified && <ProviderBadge compact />}
                     <small className="sc-meta">
                       {p.username ? `@${p.username} · ` : ''}
                       {p.mutualFriends ? `${p.mutualFriends} mutual` : `${short(p.friends ?? 0)} ${(p.friends ?? 0) === 1 ? 'friend' : 'friends'}`}

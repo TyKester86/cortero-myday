@@ -46,7 +46,7 @@ export function BusinessPage() {
     if (sid) void api('/api/business/checkout/confirm?session_id=' + encodeURIComponent(sid)).then(done, done);
     else done();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const notProvider = error && /verified licensed providers/.test(error);
+  const notProvider = error && /Verified provider background/.test(error);
   return (
     <section className="feed-page business" data-testid="business">
       <FeedTitle>Business</FeedTitle>
@@ -54,8 +54,10 @@ export function BusinessPage() {
       {notProvider ? (
         <div className="card" data-testid="business-locked">
           <h2>For verified providers</h2>
-          <p>The Business Suite — boosts, ad campaigns, analytics and consult booking — opens once MyDay has verified your license.</p>
-          <p className="small muted">Add your license from your profile: Edit profile → “Are you a licensed provider?”.</p>
+          <p>The Business Suite — boosts, ads to your profile, and analytics — opens once your provider background is verified (free: your NPI, checked against the NPI Registry and the OIG exclusion list).</p>
+          <p className="small muted">
+            <a href="/providers">Verify my provider background →</a>
+          </p>
         </div>
       ) : error ? (
         <p className="error">{error}</p>
@@ -64,7 +66,7 @@ export function BusinessPage() {
       ) : (
         <>
           <nav className="desk-tabs" aria-label="Business">
-            {TABS.map((t) => (
+            {TABS.filter((t) => t.key !== 'consults' || data.bookable).map((t) => (
               <button key={t.key} className={tab === t.key ? 'desk-tab on' : 'desk-tab'} aria-pressed={tab === t.key} onClick={() => setTab(t.key)} data-testid={`biz-tab-${t.key}`}>
                 {t.label}
               </button>
@@ -76,9 +78,9 @@ export function BusinessPage() {
             </p>
           )}
           {data.payments === 'none' && <p className="card note small">Payments aren’t switched on for this server yet — you can draft, but ads can’t go live.</p>}
-          {tab === 'analytics' && <Analytics />}
+          {tab === 'analytics' && <Analytics bookable={!!data.bookable} />}
           {tab === 'ads' && <Ads o={data} onChange={(campaigns) => setData({ ...data, campaigns })} onNote={setNote} />}
-          {tab === 'consults' && <Consults slots={data.slots} onChange={(slots) => setData({ ...data, slots })} />}
+          {tab === 'consults' && data.bookable && <Consults slots={data.slots} onChange={(slots) => setData({ ...data, slots })} />}
         </>
       )}
     </section>
@@ -101,7 +103,7 @@ function Spark({ points, label }: { points: number[]; label: string }) {
   );
 }
 
-function Analytics() {
+function Analytics({ bookable }: { bookable: boolean }) {
   const [range, setRange] = useState(30);
   const { data, error } = useLoad<BusinessAnalytics>(`/api/business/analytics?range=${range}`);
   const t = data?.totals;
@@ -113,8 +115,12 @@ function Analytics() {
         ['clip-views', 'Clip views', num(t.clipViews)],
         ['story-views', 'Story views', num(t.storyViews)],
         ['engagement', 'Engagement', `${num(t.engagement)} · ${t.engagementRate}%`],
-        ['bookings', 'Consult bookings', num(t.consultBookings)],
-        ['revenue', 'Revenue', money(t.revenueCents)],
+        ...(bookable
+          ? ([
+              ['bookings', 'Consult bookings', num(t.consultBookings)],
+              ['revenue', 'Revenue', money(t.revenueCents)],
+            ] as Array<[string, string, string]>)
+          : []),
         ['ad-impressions', 'Ad impressions', num(t.adImpressions)],
         ['ad-clicks', 'Ad clicks', num(t.adClicks)],
       ]
@@ -204,7 +210,7 @@ function Ads({ o, onChange, onNote }: { o: BusinessOverview; onChange: (c: AdCam
         </button>
       </div>
       {mode === 'boost' && <BoostPicker packages={o.packages} onClose={() => setMode('list')} />}
-      {mode === 'campaign' && <CampaignForm cpm={o.cpmCents} onClose={() => setMode('list')} />}
+      {mode === 'campaign' && <CampaignForm cpm={o.cpmCents} bookable={!!o.bookable} onClose={() => setMode('list')} />}
       <div className="biz-campaigns" data-testid="biz-campaigns">
         {o.campaigns.map((c) => (
           <article key={c.id} className="card biz-campaign" data-testid="biz-campaign">
@@ -358,7 +364,7 @@ function BoostPicker({ packages, onClose }: { packages: BoostPackage[]; onClose:
   );
 }
 
-function CampaignForm({ cpm, onClose }: { cpm: number; onClose: () => void }) {
+function CampaignForm({ cpm, bookable, onClose }: { cpm: number; bookable: boolean; onClose: () => void }) {
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const [f, setF] = useState({ name: '', headline: '', body: '', destination: 'profile', destinationUrl: '', budget: '50', startsOn: today, endsOn: '' });
@@ -411,9 +417,9 @@ function CampaignForm({ cpm, onClose }: { cpm: number; onClose: () => void }) {
       <label>
         Where a tap goes
         <select value={f.destination} onChange={(e) => setF({ ...f, destination: e.target.value })} data-testid="ad-destination">
-          <option value="profile">Your provider page</option>
-          <option value="consult">Book a consult</option>
-          <option value="url">Your website</option>
+          <option value="profile">Your profile on the Feed</option>
+          {bookable && <option value="consult">Book a consult</option>}
+          {bookable && <option value="url">Your website</option>}
         </select>
       </label>
       {f.destination === 'url' && (

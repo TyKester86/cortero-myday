@@ -2110,3 +2110,56 @@ body.sc-body {
   margin: 0;
   max-width: 30em;
 }
+
+/* Provider Knowledge Base: "Verified provider background" — its own lane (outline, slate), not the
+   future clinical badge's (which will be filled). */
+.sc-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1.5px solid #5b7c99;
+  color: #3f5f7c;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.sc-provider-badge.compact {
+  padding: 1px 8px;
+  font-size: 11.5px;
+  border-width: 1px;
+}
+.sc-provider-disclaimer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #eef2f6;
+  color: #3f5f7c;
+  font-size: 14px;
+}
+.sc-provider-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 14px;
+}
+.sc-provider-form select {
+  border: 0;
+  border-radius: 12px;
+  background: var(--sc-soft);
+  font: inherit;
+  padding: 11px 14px;
+  width: 100%;
+}
+.sc-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}

@@ -51,6 +51,7 @@ import {
   type FriendPerson,
   type FriendsData,
   type FeedSort,
+  type ProviderInfo,
   type MediaTile,
   type Relationship,
   FEED_FEELINGS,
@@ -63,6 +64,8 @@ import {
 } from '@myday/shared';
 import { onFeedApp } from '../lib/hosts.js';
 import { milestone, notify, notifyMentions } from '../lib/feednotify.js';
+import { providerGuard, taxonomyLabel } from '../lib/providers.js';
+import { PROVIDER_DISCLAIMER } from './providers.js';
 import { diversifyFeed, FEED_WEIGHTS, scoreFeedPost, type FeedScore, type Relation } from '../lib/feedrank.js';
 import { feedStreak } from '../lib/feedstreak.js';
 import { config } from '../config.js';
@@ -193,7 +196,7 @@ export const imageUrl = (id: number | null): string | null => (id ? `/api/commun
 
 export const AUTHOR_COLS = `p.user_id AS a_id, p.display_name AS a_name, p.parent_badge AS a_badge,
   CASE WHEN ai.status = 'visible' THEN p.avatar_id END AS a_avatar, p.username AS a_username,
-  EXISTS (SELECT 1 FROM provider_credentials apc WHERE apc.user_id = p.user_id AND apc.status = 'verified') AS a_verified`;
+  feed_provider_badge(p.user_id) AS a_verified`;
 export const AUTHOR_JOIN = (col: string): string => `JOIN social_profiles p ON p.user_id = ${col} LEFT JOIN community_images ai ON ai.id = p.avatar_id`;
 
 export interface AuthorCols {
@@ -253,6 +256,19 @@ export async function decide(r: ScreenResult, where: string): Promise<Decision> 
   return { status: r.hold ? 'pending' : 'visible', priority: r.crisis ? 2 : r.hold ? 1 : 0, flags: r.reasons, note };
 }
 
+/** Providers' guardrails on top of everyone's screening (crisis → 988 is untouched). */
+export async function guarded(d: Decision, userId: number, text: string, where: 'post' | 'comment' | 'message'): Promise<Decision> {
+  const g = text ? await providerGuard(userId, text, where) : null;
+  if (!g) return d;
+  return {
+    status: 'pending',
+    priority: Math.max(d.priority, 1),
+    flags: [...d.flags, g.flag as ScreenReason],
+    note: { ...d.note, underReview: true, reasons: [...d.note.reasons, g.reason] },
+  };
+}
+const PROVIDER_FLAGS: Record<string, string> = { provider_diagnosis: 'A provider diagnosing in public', provider_solicitation: 'A provider offering services / steering to bookings' };
+
 export async function block(viewer: number, other: number): Promise<boolean> {
   const { rowCount } = await pool.query(
     'SELECT 1 FROM social_blocks WHERE (blocker_user_id = $1 AND blocked_user_id = $2) OR (blocker_user_id = $2 AND blocked_user_id = $1)',
@@ -301,14 +317,14 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
   const e = ex[0];
   // Days in a row they showed up — with one protected rest day a week (lib/feedstreak.ts).
   const streak = (await feedStreak(userId)).current;
-  const { rows: prov } = await pool.query<{ license_type: string; license_state: string; license_number: string; specialties: string[]; status: string; submitted_at: Date; verified_at: Date | null; reject_reason: string | null }>(
-    'SELECT license_type, license_state, license_number, specialties, status, submitted_at, verified_at, reject_reason FROM provider_credentials WHERE user_id = $1',
+  const { rows: prov } = await pool.query<{ taxonomy_code: string; credentials: string | null; license_states: string[]; verified_at: Date | null; badge_state: string }>(
+    'SELECT taxonomy_code, credentials, license_states, verified_at, badge_state FROM provider_verifications WHERE user_id = $1',
     [userId],
   );
   const pc = prov[0];
-  const provider =
-    pc && pc.status === 'verified' && pc.verified_at
-      ? { licenseType: pc.license_type, licenseState: pc.license_state, licenseNumber: pc.license_number, verifiedAt: pc.verified_at.toISOString().slice(0, 10), specialties: pc.specialties }
+  const provider: ProviderInfo | null =
+    pc && pc.badge_state === 'active'
+      ? { badge: 'Verified provider background', specialty: taxonomyLabel(pc.taxonomy_code), credentials: pc.credentials, licenseStates: pc.license_states, verifiedAt: (pc.verified_at ?? new Date()).toISOString().slice(0, 10), disclaimer: PROVIDER_DISCLAIMER }
       : null;
   const achievements: Array<{ key: string; label: string }> = [];
   if (p.created_at < new Date('2027-01-01T00:00:00Z')) achievements.push({ key: 'early', label: 'Early Member' });
@@ -317,7 +333,7 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
   if ((e?.photos ?? 0) > 0) achievements.push({ key: 'photo', label: 'Photo Pick' });
   if ((e?.clips ?? 0) > 0) achievements.push({ key: 'clips', label: 'Clip Creator' });
   if ((e?.helpful ?? 0) >= 3) achievements.push({ key: 'helper', label: 'Community Helper' });
-  if (provider) achievements.push({ key: 'provider', label: 'Verified Provider' });
+  if (provider) achievements.push({ key: 'provider', label: 'Verified provider background' });
   const me = viewer === userId;
   const { rows: rel } = await pool.query<{ out: boolean; inn: boolean; friends: number; mutual: number; cover: number | null }>(
     `SELECT EXISTS (SELECT 1 FROM social_follows WHERE follower_user_id = $1 AND followed_user_id = $2) AS out,
@@ -373,9 +389,6 @@ export async function profileView(viewer: number, userId: number): Promise<Commu
       ? {
           defaultAudience: p.default_audience,
           dob,
-          providerStatus: pc
-            ? { status: pc.status as 'submitted' | 'verified' | 'rejected', licenseType: pc.license_type, licenseState: pc.license_state, licenseNumber: pc.license_number, specialties: pc.specialties, submittedAt: pc.submitted_at.toISOString(), rejectReason: pc.reject_reason }
-            : null,
         }
       : {}),
   };
@@ -633,7 +646,7 @@ async function suggestions(userId: number, limit: number): Promise<FeedSuggestio
             ARRAY(SELECT unnest(p.interests) INTERSECT SELECT unnest((SELECT interests FROM me))) AS shared,
             ARRAY(SELECT v.name FROM village_members a JOIN village_members b ON b.village_id = a.village_id AND b.user_id = $1
                     JOIN villages v ON v.id = a.village_id WHERE a.user_id = p.user_id) AS villages,
-            EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = p.user_id AND pc.status = 'verified') AS provider
+            feed_provider_badge(p.user_id) AS provider
        FROM social_profiles p
       WHERE p.user_id <> $1 AND p.banned_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id)
@@ -664,7 +677,7 @@ async function suggestions(userId: number, limit: number): Promise<FeedSuggestio
         : r.villages[0]
           ? `In ${r.villages[0]} with you`
           : r.provider
-            ? 'Verified provider'
+            ? 'Verified provider background'
             : 'Popular in the Feed',
   }));
 }
@@ -795,7 +808,7 @@ communityRouter.post('/api/village/threads', async (req, res) => {
   const vid = await villageId(b.village);
   const title = str(b.title, 'title', 120, true);
   const body = str(b.body, 'body', 5000, true);
-  const d = await decide(await screenText(`${title}\n\n${body}`), 'village');
+  const d = await guarded(await decide(await screenText(`${title}\n\n${body}`), 'village'), m.userId, `${title}\n\n${body}`, 'post');
   const keyId = currentKeyId();
   const id = await tx(async (c) => {
     const { rows } = await c.query<{ id: number }>(
@@ -840,7 +853,7 @@ communityRouter.post('/api/village/threads/:id/replies', async (req, res) => {
   const th = await threadView(m.userId, id);
   if (th.status !== 'visible') throw new HttpError(409, 'This thread is under review');
   const body = str((req.body as Record<string, unknown>).body, 'body', 5000, true);
-  const d = await decide(await screenText(body), 'village');
+  const d = await guarded(await decide(await screenText(body), 'village'), m.userId, body, 'comment');
   const keyId = currentKeyId();
   await pool.query('INSERT INTO forum_posts (thread_id, author_user_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
     id, m.userId, sealText(body, keyId), keyId, d.status, d.priority, d.flags,
@@ -1491,7 +1504,7 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
   const s = words ? await screenText(words) : { hold: false, crisis: false, reasons: [] };
   if (imagePending) s.hold = true;
   if (imagePending && !s.reasons.includes('image')) s.reasons.push('image');
-  const d = await decide(s, 'feed');
+  const d = await guarded(await decide(s, 'feed'), m.userId, words, 'post');
   const keyId = currentKeyId();
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags, hashtags, audience, comments_from, feeling, place)
@@ -1604,7 +1617,7 @@ communityRouter.post('/api/feed/posts/:id/comments', async (req, res) => {
     const { rowCount } = await pool.query("SELECT 1 FROM social_post_comments WHERE id = $1 AND post_id = $2 AND status = 'visible'", [parentId, id]);
     if (!rowCount) throw new HttpError(400, 'That comment is gone');
   }
-  const d = await decide(await screenText(body), 'feed comment');
+  const d = await guarded(await decide(await screenText(body), 'feed comment'), m.userId, body, 'comment');
   const keyId = currentKeyId();
   const { rows } = await pool.query<{ id: number }>(
     'INSERT INTO social_post_comments (post_id, author_user_id, parent_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
@@ -1773,7 +1786,7 @@ communityRouter.get('/api/feed/search', async (req, res) => {
       `SELECT p.user_id, p.display_name, p.username,
               EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = p.user_id AND f.followed_user_id = $1) AS follows_me,
               feed_friend_count(p.user_id) AS friends, feed_mutual_friends($1, p.user_id) AS mutual,
-              EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = p.user_id AND pc.status = 'verified') AS verified,
+              feed_provider_badge(p.user_id) AS verified,
               (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar,
               (SELECT COUNT(*)::int FROM social_follows f WHERE f.followed_user_id = p.user_id) AS followers,
               EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = p.user_id) AS followed
@@ -1865,7 +1878,7 @@ communityRouter.delete('/api/community/people/:id/follow', async (req, res) => {
 
 const FRIEND_COLS = `p.user_id, p.display_name, p.username,
   (SELECT id FROM community_images ci WHERE ci.id = p.avatar_id AND ci.status = 'visible') AS avatar,
-  EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = p.user_id AND pc.status = 'verified') AS verified,
+  feed_provider_badge(p.user_id) AS verified,
   feed_mutual_friends($1, p.user_id) AS mutual, feed_friend_count(p.user_id) AS friends`;
 type FriendRow = { user_id: number; display_name: string; username: string | null; avatar: number | null; verified: boolean; mutual: number; friends: number };
 const toFriend = (r: FriendRow): FriendPerson => ({
@@ -2011,7 +2024,7 @@ async function queue(): Promise<CommunityQueue> {
       imageUrl: imageUrl(r.image_id),
       status: r.status,
       priority: r.priority,
-      reasons: r.flags.map((f) => SCREEN_REASONS[f as ScreenReason] ?? f),
+      reasons: r.flags.map((f) => SCREEN_REASONS[f as ScreenReason] ?? PROVIDER_FLAGS[f] ?? f),
       reports: r.reports ?? [],
       at: r.created_at.toISOString(),
     });

@@ -139,6 +139,59 @@ const rssServer = createHttp((req, res) => {
 await new Promise((r) => rssServer.listen(0, '127.0.0.1', r));
 const RSS_BASE = `http://127.0.0.1:${rssServer.address().port}`;
 const RSS = `${RSS_BASE}/rss`;
+
+// Provider Knowledge Base: a stand-in for the public NPI Registry (NPPES) and the OIG LEIE file.
+const npiOf = (base9) => {
+  const d = `80840${base9}`;
+  let sum = 0;
+  for (let i = 0; i < d.length; i++) {
+    let x = Number(d[d.length - 1 - i]);
+    if (i % 2 === 0) {
+      x *= 2;
+      if (x > 9) x -= 9;
+    }
+    sum += x;
+  }
+  return `${base9}${(10 - (sum % 10)) % 10}`;
+};
+const NPI = {
+  sam: npiOf('100000001'), kayla: npiOf('100000002'), good: npiOf('100000003'), review: npiOf('100000004'), notmh: npiOf('100000005'),
+  excluded: npiOf('100000006'), later: npiOf('100000007'), solicit: npiOf('100000008'), unknown: npiOf('999999990'),
+};
+const NPPES = {
+  [NPI.sam]: ['SAMUEL', 'OKAFOR', '1041C0700X', 'Social Worker, Clinical'],
+  [NPI.kayla]: ['KAYLA', 'NGUYEN', '103T00000X', 'Psychologist'],
+  [NPI.good]: ['JORDAN', 'RIVERA', '2084P0800X', 'Psychiatry & Neurology, Psychiatry'],
+  [NPI.review]: ['AVERY', 'LINDQVIST', '101YP2500X', 'Counselor, Professional'],
+  [NPI.notmh]: ['PAT', 'MORENO', '207R00000X', 'Internal Medicine'],
+  [NPI.excluded]: ['CASEY', 'DOYLE', '103T00000X', 'Psychologist'],
+  [NPI.later]: ['RILEY', 'HART', '106H00000X', 'Marriage & Family Therapist'],
+  [NPI.solicit]: ['DREW', 'PATEL', '101YM0800X', 'Counselor, Mental Health'],
+};
+const OIG_HEAD = 'LASTNAME,FIRSTNAME,MIDNAME,BUSNAME,GENERAL,SPECIALTY,UPIN,NPI,DOB,ADDRESS,CITY,STATE,ZIP,EXCLTYPE,EXCLDATE,REINDATE,WAIVERDATE,WVRSTATE';
+const oigRows = [
+  `DOYLE,CASEY,,,"INDIVIDUAL",PSYCHOLOGIST,,${NPI.excluded},19700101,"1 MAIN ST",TULSA,OK,74101,1128a1,20200101,00000000,00000000,`,
+  'SMITH,JOHN,Q,,INDIVIDUAL,NURSE,,0000000000,19650505,"2 ELM ST",DALLAS,TX,75201,1128b4,20190101,00000000,00000000,',
+];
+const registry = createHttp((req, res) => {
+  const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/nppes') {
+    const n = u.searchParams.get('number');
+    const r = NPPES[n];
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(r ? { result_count: 1, results: [{ number: n, enumeration_type: 'NPI-1', basic: { first_name: r[0], last_name: r[1] }, taxonomies: [{ code: r[2], desc: r[3], primary: true }] }] } : { result_count: 0, results: [] }));
+    return;
+  }
+  if (u.pathname === '/oig.csv') {
+    res.setHeader('Content-Type', 'text/csv');
+    res.end(`${OIG_HEAD}\r\n${oigRows.join('\r\n')}\r\n`);
+    return;
+  }
+  res.statusCode = 404;
+  res.end();
+});
+await new Promise((r) => registry.listen(0, '127.0.0.1', r));
+const REG = `http://127.0.0.1:${registry.address().port}`;
 let robotChromium = '';
 try {
   robotChromium = createRequire(path.join(root, 'package.json'))('playwright').chromium.executablePath();
@@ -184,6 +237,8 @@ const serverEnv = (fakeNow) => ({
   GROCERY_STUB: '1',
   FLIGHT_STUB: '1',
   ROBOT_STUB: '1',
+  NPPES_URL: `${REG}/nppes`,
+  OIG_CSV_URL: `${REG}/oig.csv`,
   WEB_FEEDS: `testpub|Test Publisher|${RSS},testmind|Test Mind|${RSS_BASE}/mind|adhd,testnews|Test News|${RSS_BASE}/gnews|gnews`,
   ROBOT_ALLOW_LOCAL: '1',
   ...(robotChromium ? { ROBOT_CHROMIUM: robotChromium } : {}),
@@ -2965,7 +3020,8 @@ async function stripeBilling() {
   const [{ price_cents: oldPrice }] = await sql('SELECT price_cents FROM billing_plans WHERE is_default');
   await sql('UPDATE billing_plans SET price_cents = 1299 WHERE is_default');
   const PORT2 = PORT + 1;
-  const env2 = { ...serverEnv(), PORT: String(PORT2), PUBLIC_URL: `http://localhost:${PORT2}`, BILLING_PROVIDER: 'stripe', STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_fake', STRIPE_API_BASE: fakeUrl };
+  // CLINICAL_TIER on this second server only: the clinical tier's booking (dormant on the real one) still works when commissioned.
+  const env2 = { ...serverEnv(), PORT: String(PORT2), PUBLIC_URL: `http://localhost:${PORT2}`, CLINICAL_TIER: '1', BILLING_PROVIDER: 'stripe', STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_fake', STRIPE_API_BASE: fakeUrl };
   const s2 = spawn(process.execPath, ['dist/server.js'], { cwd: apiDir, env: env2, stdio: ['ignore', 'ignore', 'pipe'] });
   const B2 = `http://localhost:${PORT2}`;
   for (let i = 0; i < 100; i++) {
@@ -3046,7 +3102,7 @@ async function stripeBilling() {
     when.setUTCMinutes(0, 0, 0);
     const slot = (await call2(sam, 'POST', '/api/business/slots', { startsAt: when.toISOString(), minutes: 50, priceCents: 2500 })).data.slots.find((x) => x.priceCents === 2500 && x.status === 'open');
     const bk = await call2(robinStripe(), 'POST', `/api/consults/${slot.id}/book`);
-    eq('a paid consult → Stripe Checkout; the slot is held meanwhile', [bk.status, bk.data.url.startsWith('https://checkout.stripe.test/cs_'), (await call2(sam, 'GET', '/api/business')).data.slots.find((x) => x.id === slot.id)?.status], [201, true, 'held']);
+    eq('the clinical tier, switched on (not live): a paid consult → Stripe Checkout; the slot is held meanwhile', [bk.status, bk.data.url.startsWith('https://checkout.stripe.test/cs_'), (await call2(sam, 'GET', '/api/business')).data.slots.find((x) => x.id === slot.id)?.status], [201, true, 'held']);
     const conf = await call2(robinStripe(), 'GET', `/api/business/checkout/confirm?session_id=${bk.data.url.split('/').pop()}`);
     eq('back from Checkout: MyDay asks Stripe → paid → booked (even before the webhook)', [conf.data.ok, (await call2(sam, 'GET', '/api/business')).data.slots.find((x) => x.id === slot.id)?.status], [true, 'booked']);
     eq('…and it’s revenue in Sam’s analytics', (await call2(sam, 'GET', '/api/business/analytics?range=7')).data.totals.revenueCents >= 2500, true);
@@ -3402,20 +3458,92 @@ async function socialSuite() {
   eq('the whole Feed works without a household', [(await solo.get('/api/feed')).status, (await solo.get('/api/social/stories')).status, (await solo.get('/api/social/clips')).status, (await solo.post(`/api/social/messages/${samId}`, { body: 'Hi Sam!' })).status, (await solo.get('/api/villages')).status], [200, 200, 200, 201, 200]);
   eq('…but not the household parts (or Circles)', [(await solo.get('/api/household')).status, (await solo.get('/api/circles')).status].every((s) => s >= 400), true);
 
-  section('Providers: a provider page only after MyDay verifies the license');
-  eq('a real state is required', (await sam.put('/api/social/provider', { licenseType: 'LCSW', licenseState: 'ZZ', licenseNumber: '123' })).status, 400);
-  eq('Sam submits a license', (await sam.put('/api/social/provider', { licenseType: 'Licensed Clinical Social Worker (LCSW)', licenseState: 'ok', licenseNumber: 'CSW-1042', specialties: ['ADHD', 'Parent coaching'] })).data.status, 'submitted');
-  eq('unverified: no provider page, no badge — for anyone', [(await ty.get(`/api/community/people/${samId}`)).data.provider, (await sam.get(`/api/community/people/${samId}`)).data.provider], [null, null]);
-  eq('…Sam sees it’s submitted', (await sam.get(`/api/community/people/${samId}`)).data.providerStatus?.status, 'submitted');
-  eq('only MyDay admins see the verification queue', [(await ty.get('/api/social/providers/queue')).status, (await ty.post(`/api/social/providers/${samId}/verify`)).status], [403, 403]);
-  eq('the queue', (await smod.get('/api/social/providers/queue')).data.providers.map((p) => [p.userId, p.licenseState, p.licenseNumber]), [[samId, 'OK', 'CSW-1042']]);
-  await smod.post(`/api/social/providers/${samId}/reject`, { reason: 'Number not found on the OK board' });
-  eq('rejected: still no badge; Sam sees why', [(await ty.get(`/api/community/people/${samId}`)).data.provider, (await sam.get(`/api/community/people/${samId}`)).data.providerStatus?.rejectReason], [null, 'Number not found on the OK board']);
-  await sam.put('/api/social/provider', { licenseType: 'Licensed Clinical Social Worker (LCSW)', licenseState: 'OK', licenseNumber: 'CSW-10420', specialties: ['ADHD', 'Parent coaching', 'Anxiety'] });
-  eq('verify', (await smod.post(`/api/social/providers/${samId}/verify`)).data.status, 'verified');
-  const pv = (await ty.get(`/api/community/people/${samId}`)).data.provider;
-  eq('verified: the provider page shows license type, state, number, verified date, specialties', [pv?.licenseType, pv?.licenseState, pv?.licenseNumber, !!pv?.verifiedAt, pv?.specialties], ['Licensed Clinical Social Worker (LCSW)', 'OK', 'CSW-10420', true, ['ADHD', 'Parent coaching', 'Anxiety']]);
-  eq('…and a Verified Provider achievement', (await ty.get(`/api/community/people/${samId}`)).data.achievements.some((a) => a.key === 'provider'), true);
+  section('Provider Knowledge Base: free verification (NPI Registry + OIG exclusions) before any account');
+  const mirror = await smod.post(`/api/dev/providers/oig?token=${DEV_TOKEN}&url=${encodeURIComponent(`${REG}/oig.csv`)}`);
+  eq('the OIG exclusion list is mirrored — names and NPIs, never the file’s dates of birth', [mirror.status, mirror.data.rows, (await sql("SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'oig_exclusions' AND column_name ILIKE '%dob%'"))[0].n], [200, 2, 0]);
+  const pform = (o) => ({ legalName: 'Jordan Rivera', displayName: 'Jordan', npi: NPI.good, taxonomy: '2084P0800X', licenseStates: ['OK', 'TX'], credentials: 'MD', bio: 'Adult ADHD psychiatrist. Here to share what helps.', agree: true, ...o });
+  const tax = (await anon.get('/api/providers/taxonomies')).data;
+  eq('the sign-up offers mental-health specialties only, with the rules and the disclaimer', [tax.taxonomies.length > 10, tax.taxonomies.some((t) => t.code === '207R00000X'), tax.disclaimer], [true, false, 'Not your therapist. Posts are educational, not medical advice.']);
+  const signInWithPass = async (c, email, pass) => {
+    const n0 = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+    await c.post('/api/auth/email', { email, age: pass });
+    const link = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(n0).find((m) => m.to === email)?.text.match(/https?:\/\/\S+/)?.[0] ?? '';
+    await c.get(link.slice(BASE.length));
+    return (await c.get('/api/me')).data.userId;
+  };
+  const pvJ = new Client('prov-jordan');
+  const ckJ = await pvJ.post('/api/providers/check', pform());
+  eq('acceptance 1: a valid NPI + matching name → verified, with a pass to sign in (still no account)', [ckJ.status, ckJ.data.status, /^prov\./.test(ckJ.data.pass ?? ''), (await sql('SELECT COUNT(*)::int AS n FROM provider_verifications WHERE npi = $1', [NPI.good]))[0].n], [200, 'verified', true, 0]);
+  const jordanId = await signInWithPass(pvJ, 'jordan-provider@example.test', ckJ.data.pass);
+  const jMe = (await pvJ.get('/api/providers/me')).data.provider;
+  eq('…signed in: the account exists and the badge is live right away — no date of birth asked or kept', [jMe?.status, jMe?.badge, (await sql('SELECT birth_date FROM users WHERE id = $1', [jordanId]))[0].birth_date, !!(await pvJ.get('/api/community/me')).data.profile], ['verified', 'active', null, true]);
+  const jProf = (await ty.get(`/api/community/people/${jordanId}`)).data;
+  eq('…the profile: “Verified provider background”, specialty, credentials, self-reported states, and the disclaimer', [jProf.verified, jProf.provider?.badge, jProf.provider?.specialty, jProf.provider?.credentials, jProf.provider?.licenseStates, jProf.provider?.disclaimer], [true, 'Verified provider background', 'Psychiatry', 'MD', ['OK', 'TX'], 'Not your therapist. Posts are educational, not medical advice.']);
+  eq('…stored: the NPI and the results — no SSN, no date of birth anywhere in the record', (await sql("SELECT string_agg(column_name, ',') AS c FROM information_schema.columns WHERE table_name = 'provider_verifications' AND (column_name ILIKE '%ssn%' OR column_name ILIKE '%dob%' OR column_name ILIKE '%birth%')"))[0].c, null);
+  const jPost = (await pvJ.post('/api/feed/posts', { body: 'Body doubling works because it borrows structure. Try a 25-minute session with a friend on video.' })).data.post;
+  eq('acceptance 5: their post carries the badge', (await ty.get(`/api/feed/posts/${jPost.id}`)).data.post.author.verified, true);
+  await pvJ.post(`/api/feed/posts/${jPost.id}/comments`, { body: 'Happy to answer questions about how body doubling works.' });
+  eq('…and their comments, and search', [(await ty.get(`/api/feed/posts/${jPost.id}/comments`)).data.comments.find((c) => c.author.userId === jordanId)?.author.verified, (await ty.get('/api/feed/search?q=jordan')).data.people.find((x) => x.userId === jordanId)?.verified], [true, true]);
+  eq('…posting rights are a member’s: no ranking input for the badge (Feed Rank weighs closeness, freshness, affinity, discussion)', Object.keys((await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'feedrank.js')).href)).FEED_WEIGHTS), ['C', 'F', 'A', 'D']);
+
+  section('Provider Knowledge Base: rejected, needs review, excluded — and the old license form is retired');
+  const fake = await anon.post('/api/providers/check', pform({ npi: '1234567890' }));
+  const unknown = await anon.post('/api/providers/check', pform({ npi: NPI.unknown }));
+  eq('acceptance 2: a fake NPI (bad check digit) or one the registry doesn’t know → rejected “NPI not found”; no pass, nothing kept', [fake.status, fake.data.reason, unknown.status, unknown.data.reason, !!fake.data.pass || !!unknown.data.pass, (await sql('SELECT COUNT(*)::int AS n FROM provider_applications WHERE npi = ANY($1)', [['1234567890', NPI.unknown]]))[0].n], [422, 'NPI not found', 422, 'NPI not found', false, 0]);
+  const notMh = await anon.post('/api/providers/check', pform({ legalName: 'Pat Moreno', displayName: 'Pat', npi: NPI.notmh }));
+  eq('…an NPI with no mental-health taxonomy → rejected with why', [notMh.status, notMh.data.reason], [422, 'Not a mental-health provider on the NPI record']);
+  const excl = await anon.post('/api/providers/check', pform({ legalName: 'Casey Doyle', displayName: 'Casey', npi: NPI.excluded, taxonomy: '103T00000X' }));
+  eq('acceptance 4: an NPI on the OIG exclusion list → rejected “excluded”; no account', [excl.status, excl.data.status, excl.data.reason, !!excl.data.pass], [422, 'rejected', 'Excluded (OIG exclusion list)', false]);
+  const pvM = new Client('prov-morgan');
+  const ckM = await pvM.post('/api/providers/check', pform({ legalName: 'Morgan Blake', displayName: 'Morgan', npi: NPI.review, taxonomy: '101YP2500X', credentials: 'LPC' }));
+  eq('acceptance 3: a real NPI with the wrong name → needs review, “we’re reviewing your credentials”', [ckM.data.status, /reviewing your credentials/i.test(ckM.data.message)], ['needs_review', true]);
+  const morganId = await signInWithPass(pvM, 'morgan-provider@example.test', ckM.data.pass);
+  eq('…they can join, but no badge until a person clears it', [(await pvM.get('/api/providers/me')).data.provider?.status, (await pvM.get('/api/providers/me')).data.provider?.badge, (await ty.get(`/api/community/people/${morganId}`)).data.verified], ['needs_review', 'none', false]);
+  eq('…the review queue is staff-only, and shows the registry’s name next to theirs', [(await ty.get('/api/providers/review')).status, (await smod.get('/api/providers/review')).data.providers.find((x) => x.userId === morganId)?.registryName], [403, 'AVERY LINDQVIST']);
+  await smod.post(`/api/providers/${morganId}/decision`, { decision: 'verify' });
+  eq('…cleared → the badge is live, and they hear it', [(await ty.get(`/api/community/people/${morganId}`)).data.verified, (await pvM.get('/api/feed/notifications')).data.items.some((n) => n.kind === 'provider' && /verified/i.test(n.text))], [true, true]);
+  eq('the old license form is retired (410)', (await sam.put('/api/social/provider', { licenseType: 'LCSW', licenseState: 'OK', licenseNumber: '1' })).status, 410);
+  const samCk = await sam.post('/api/providers/check', pform({ legalName: 'Samuel Okafor', displayName: 'Sam', npi: NPI.sam, taxonomy: '1041C0700X', credentials: 'LCSW, ADHD-CCSP', licenseStates: ['OK'], bio: '' }));
+  eq('an existing member verifies from inside the Feed (no pass needed): badge live', [samCk.data.status, (await ty.get(`/api/community/people/${samId}`)).data.provider?.badge], ['verified', 'Verified provider background']);
+  eq('…one NPI, one account', (await pvM.post('/api/providers/check', pform({ legalName: 'Samuel Okafor', displayName: 'Sam', npi: NPI.sam, taxonomy: '1041C0700X' }))).status, 409);
+  eq('…and the “Verified provider background” achievement', (await ty.get(`/api/community/people/${samId}`)).data.achievements.some((a) => a.key === 'provider'), true);
+
+  section('Provider Knowledge Base: guardrails — no diagnosing in public, no solicitation (two strikes), 988 for everyone');
+  const dx = (await pvJ.post('/api/feed/posts', { body: 'Honestly it sounds like you have ADHD — everyone who forgets keys does.' })).data;
+  eq('a provider diagnosing in a post → held for a moderator (with why)', [dx.review.underReview, dx.review.reasons.some((r) => /diagnose/i.test(r)), dx.post.status], [true, true, 'pending']);
+  const dxq = (await smod.get('/api/community/moderation/queue')).data.items.find((i) => i.kind === 'feed' && i.id === dx.post.id);
+  eq('…it’s in the moderation queue, labelled', dxq?.reasons.some((r) => /provider diagnosing/i.test(r)), true);
+  const crisis = (await pvJ.post('/api/feed/posts', { body: 'I want to die tonight.' })).data;
+  eq('acceptance 6: crisis words from a provider surface 988, exactly like anyone', [crisis.review.crisis, crisis.review.underReview], [true, true]);
+  const drew = new Client('prov-drew');
+  await drew.get(`/dev-login?token=${DEV_TOKEN}&email=prov-drew@example.test`);
+  await drew.put('/api/community/profile', { displayName: 'Drew', adult: true, guidelines: true, dob: '1984-04-04' });
+  await drew.post('/api/providers/check', pform({ legalName: 'Drew Patel', displayName: 'Drew', npi: NPI.solicit, taxonomy: '101YM0800X', credentials: 'LMHC' }));
+  const drewId = (await drew.get('/api/me')).data.userId;
+  eq('Drew (verified) starts with the badge', (await ty.get(`/api/community/people/${drewId}`)).data.verified, true);
+  const sol1 = (await drew.post(`/api/social/messages/${samId}`, { body: 'Hi Sam! I offer therapy sessions — book a session with me this week.' })).data;
+  const sth = (await sam.get(`/api/social/messages/${drewId}`)).data;
+  eq('acceptance 10: a provider DM offering services → held, never delivered; first strike = a warning and the badge paused', [sol1.review.underReview, sth.messages?.length ?? 0, (await drew.get('/api/providers/me')).data.provider.badge, (await drew.get('/api/providers/me')).data.provider.strikes, (await ty.get(`/api/community/people/${drewId}`)).data.verified], [true, 0, 'suspended', 1, false]);
+  eq('…they’re told', (await drew.get('/api/feed/notifications')).data.items.some((n) => n.kind === 'provider' && /paused/i.test(n.text)), true);
+  await drew.post(`/api/social/messages/${samId}`, { body: 'We accept new patients — check my practice website.' });
+  eq('…second strike: the badge is removed', [(await drew.get('/api/providers/me')).data.provider.badge, (await drew.get('/api/providers/me')).data.provider.strikes], ['revoked', 2]);
+  eq('ordinary members aren’t affected by the provider rules (the same words from Ty are just a message)', (await ty.post(`/api/social/messages/${samId}`, { body: 'I offer therapy sessions? No — I just love my therapist.' })).data.review.underReview, false);
+
+  section('Provider Knowledge Base: the monthly OIG re-check revokes a newly listed provider');
+  const riley = new Client('prov-riley');
+  await riley.get(`/dev-login?token=${DEV_TOKEN}&email=prov-riley@example.test`);
+  await riley.put('/api/community/profile', { displayName: 'Riley', adult: true, guidelines: true, dob: '1979-07-07' });
+  await riley.post('/api/providers/check', pform({ legalName: 'Riley Hart', displayName: 'Riley', npi: NPI.later, taxonomy: '106H00000X', credentials: 'LMFT' }));
+  const rileyId = (await riley.get('/api/me')).data.userId;
+  eq('Riley is verified (not on the list today)', (await ty.get(`/api/community/people/${rileyId}`)).data.verified, true);
+  oigRows.push(`HART,RILEY,,,INDIVIDUAL,THERAPIST,,${NPI.later},19790707,"3 OAK ST",TULSA,OK,74102,1128a1,20261001,00000000,00000000,`);
+  const re = (await smod.post(`/api/dev/providers/oig?token=${DEV_TOKEN}&url=${encodeURIComponent(`${REG}/oig.csv`)}`)).data;
+  eq('acceptance 7: next month’s list has Riley → the re-check revokes the badge and tells them', [re.recheck.revoked, (await riley.get('/api/providers/me')).data.provider.badge, (await riley.get('/api/providers/me')).data.provider.reason, (await ty.get(`/api/community/people/${rileyId}`)).data.verified, (await riley.get('/api/feed/notifications')).data.items.some((n) => n.kind === 'provider' && /exclusion list/i.test(n.text))], [1, 'revoked', 'Excluded (OIG exclusion list)', false, true]);
+  eq('…everyone else keeps theirs', [(await ty.get(`/api/community/people/${jordanId}`)).data.verified, (await ty.get(`/api/community/people/${samId}`)).data.verified], [true, true]);
+
+  section('Provider Knowledge Base: nothing is bookable (the clinical tier stays dormant)');
+  eq('acceptance 8 (API): no slots, no booking, no consults — for anyone', [(await ty.get(`/api/providers/${samId}/slots`)).status, (await sam.post('/api/business/slots', { startsAt: new Date(Date.now() + 86400000).toISOString(), minutes: 30, priceCents: 0 })).status, (await ty.post('/api/consults/1/book')).status, (await ty.get('/api/consults/mine')).status], [404, 404, 404, 404]);
+  eq('…the provider record reserves the clinical tier but never sets it', (await sql('SELECT verification_tier, bookable, board_check FROM provider_verifications WHERE user_id = $1', [samId]))[0], { verification_tier: 'knowledge', bookable: false, board_check: null });
 
   section('The public landing page: /feed signed out — indexable, 18+ gate, no member posts');
   const pre = await anon.get('/api/public/feed-preview');
@@ -4071,9 +4199,12 @@ async function businessSuite() {
   eq('…nothing was saved or charged', (await sam.get('/api/business')).data.campaigns.length, 0);
   const chk = (await sam.post('/api/business/ads/check', { headline: 'FDA-approved focus formula', body: 'A miracle for ADHD kids' })).data;
   eq('“Check my ad” says why without saving', [chk.ok, chk.reasons.length >= 2], [false, true]);
-  const fine = (await sam.post('/api/business/ads/check', { headline: 'ADHD evaluations for adults', body: 'Telehealth across Oklahoma. Accepting new patients this fall.' })).data;
-  eq('describing a service is fine', fine.ok, true);
-  eq('a website destination must be https', (await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD coaching', body: 'Weekly sessions.', destination: 'url', destinationUrl: 'http://example.com', budgetCents: 2000 })).status, 400);
+  const fine = (await sam.post('/api/business/ads/check', { headline: 'What an adult ADHD evaluation involves', body: 'A plain-language guide on my profile: the questions, the forms, what to ask your doctor.' })).data;
+  eq('sharing knowledge is fine', fine.ok, true);
+  const offer = (await sam.post('/api/business/ads/check', { headline: 'ADHD evaluations for adults', body: 'Telehealth across Oklahoma. Accepting new patients this fall.' })).data;
+  eq('…offering services or bookings isn’t (providers here aren’t bookable)', [offer.ok, offer.reasons.some((r) => /bookable|services/i.test(r))], [false, true]);
+  eq('ads point to your profile on the Feed: no booking destination, no outside link', [(await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD tips', body: 'Weekly tips on my profile.', destination: 'consult' })).data.code, (await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD tips', body: 'Weekly tips on my profile.', destination: 'url', destinationUrl: 'https://example.com' })).data.code], ['destination', 'destination']);
+  if (false) eq('a website destination must be https', (await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD coaching', body: 'Weekly sessions.', destination: 'url', destinationUrl: 'http://example.com', budgetCents: 2000 })).status, 400);
   eq('a budget has a floor', (await sam.post('/api/business/campaigns', { name: 'x', headline: 'ADHD coaching', body: 'Weekly sessions.', budgetCents: 500 })).status, 400);
 
   section('Boost a post or clip: package → checkout → “Sponsored” in the Feed, with impressions and clicks');
@@ -4084,8 +4215,8 @@ async function businessSuite() {
   eq('…a real package', (await sam.post('/api/business/boost', { targetKind: 'clip', targetId: samClip.id, package: 'mega' })).status, 400);
   const boost = (await sam.post('/api/business/boost', { targetKind: 'clip', targetId: samClip.id, package: 'starter' })).data;
   eq('boost: paid (stub) → live, 1,000 impressions for $15', [boost.url, boost.campaign.status, boost.campaign.impressionsBought, boost.campaign.budgetCents, boost.campaign.kind], ['/business?paid=ad', 'active', 1000, 1500, 'boost']);
-  const camp = (await sam.post('/api/business/campaigns', { name: 'Fall intake', headline: 'ADHD evaluations for adults', body: 'Telehealth across Oklahoma. Accepting new patients this fall.', destination: 'consult', budgetCents: 2400 })).data;
-  eq('campaign: creative + destination + budget → impressions at the CPM, live', [camp.campaign.status, camp.campaign.impressionsBought, camp.campaign.destination, camp.campaign.headline], ['active', 2000, 'consult', 'ADHD evaluations for adults']);
+  const camp = (await sam.post('/api/business/campaigns', { name: 'Fall guide', headline: 'What an adult ADHD evaluation involves', body: 'A plain-language guide on my profile: the questions, the forms, what to ask your doctor.', destination: 'profile', budgetCents: 2400 })).data;
+  eq('campaign: creative + destination (your profile) + budget → impressions at the CPM, live', [camp.campaign.status, camp.campaign.impressionsBought, camp.campaign.destination, camp.campaign.headline], ['active', 2000, 'profile', 'What an adult ADHD evaluation involves']);
   const total = async () => (await sam.get('/api/business')).data.campaigns.reduce((n, c) => n + c.impressions, 0);
   const f1 = (await ty.get('/api/feed?tab=everyone')).data;
   eq('Ty’s Feed: one Sponsored item from Sam, with a call to action', [f1.sponsored?.provider.userId, typeof f1.sponsored?.cta, f1.sponsored?.campaignId > 0], [samId, 'string', true]);
@@ -4099,7 +4230,7 @@ async function businessSuite() {
   const sc = (await ty.get('/api/social/clips')).data;
   eq('Clips: the boosted clip shows as a sponsored clip', [sc.sponsored?.clip?.id, sc.sponsored?.kind], [samClip.id, 'clip']);
   const click = (await ty.post(`/api/ads/${camp.campaign.id}/click`)).data;
-  eq('a tap → the destination (consult booking on Sam’s page) and a click', click.href, `/people/${samId}?book=1`);
+  eq('a tap → the destination (Sam’s profile) and a click', click.href, `/people/${samId}`);
   await ty.post(`/api/ads/${camp.campaign.id}/click`);
   await sam.post(`/api/ads/${camp.campaign.id}/click`);
   eq('clicks count once per person; your own don’t count', (await sam.get('/api/business')).data.campaigns.find((c) => c.id === camp.campaign.id).clicks, 1);
@@ -4120,34 +4251,15 @@ async function businessSuite() {
   eq('impressions used up → finished, not served', (await sam.get('/api/business')).data.campaigns.find((c) => c.id === boost.campaign.id).status, 'completed');
   await sql('UPDATE ad_campaigns SET impressions = 3 WHERE id = $1', [boost.campaign.id]);
 
-  section('Consult booking: slots on the provider page, free or paid, into analytics and revenue');
-  const tomorrow = new Date(Date.now() + 26 * 3600_000);
-  tomorrow.setUTCMinutes(0, 0, 0);
-  const later = new Date(tomorrow.getTime() + 24 * 3600_000);
-  eq('a slot in the past is refused', (await sam.post('/api/business/slots', { startsAt: new Date(Date.now() - 3600_000).toISOString(), minutes: 30, priceCents: 0 })).status, 400);
-  await sam.post('/api/business/slots', { startsAt: tomorrow.toISOString(), minutes: 30, priceCents: 0 });
-  const slots = (await sam.post('/api/business/slots', { startsAt: later.toISOString(), minutes: 45, priceCents: 7500 })).data.slots;
-  eq('Sam offers two times: free 30 min, $75 for 45 min', slots.map((s) => [s.minutes, s.priceCents, s.status]), [[30, 0, 'open'], [45, 7500, 'open']]);
-  eq('…not the same time twice', (await sam.post('/api/business/slots', { startsAt: tomorrow.toISOString(), minutes: 30, priceCents: 0 })).status, 409);
-  const open = (await ty.get(`/api/providers/${samId}/slots`)).data.slots;
-  eq('Ty sees Sam’s open times', open.length, 2);
-  const freeSlot = open.find((s) => s.priceCents === 0);
-  const paidSlot = open.find((s) => s.priceCents === 7500);
-  eq('book the free one → booked right away', (await ty.post(`/api/consults/${freeSlot.id}/book`)).data, { booked: true, url: null });
-  eq('…someone else can’t take it now', [(await kayla.post(`/api/consults/${freeSlot.id}/book`)).status, (await kayla.post(`/api/consults/${freeSlot.id}/book`)).data.code], [409, 'slot_taken']);
-  eq('kids can’t book', (await avery.post(`/api/consults/${paidSlot.id}/book`)).status, 403);
-  eq('the provider can’t book their own', (await sam.post(`/api/consults/${paidSlot.id}/book`)).status, 409);
-  const paidBook = (await kayla.post(`/api/consults/${paidSlot.id}/book`)).data;
-  eq('book the paid one → checkout (stub: paid) → booked', [paidBook.booked, paidBook.url], [true, `/people/${samId}?paid=consult`]);
-  const mine = (await sam.get('/api/business')).data.slots;
-  eq('Sam sees who booked (first names)', mine.map((s) => [s.status, s.bookedBy]), [['booked', 'Ty'], ['booked', 'Kayla']]);
-  eq('Kayla sees her consult', (await kayla.get('/api/consults/mine')).data.consults.map((c) => [c.provider.displayName, c.paidCents]), [['Sam', 7500]]);
-  eq('a booked slot can’t be removed', (await sam.del(`/api/business/slots/${paidSlot.id}`)).status, 409);
+  section('Consult booking is the clinical tier’s — dormant: no slots, nothing to book, nothing in the suite');
+  const overview = (await sam.get('/api/business')).data;
+  eq('the suite: not bookable, no slots', [overview.bookable, overview.slots], [false, []]);
+  eq('…and the booking routes don’t exist at this tier', [(await sam.post('/api/business/slots', { startsAt: new Date(Date.now() + 26 * 3600_000).toISOString(), minutes: 30, priceCents: 0 })).status, (await ty.get(`/api/providers/${samId}/slots`)).status], [404, 404]);
 
   section('Analytics: per provider, 7/30/90 days, they move with real engagement, CSV, no cross-provider data');
   const a0 = (await sam.get('/api/business/analytics?range=7')).data;
   eq('7 days of daily numbers', [a0.rangeDays, a0.daily.length], [7, 7]);
-  eq('consult bookings and revenue land in analytics', [a0.totals.consultBookings, a0.totals.revenueCents], [2, 7500]);
+  eq('no bookings at this tier (nothing to count)', [a0.totals.consultBookings, a0.totals.revenueCents], [0, 0]);
   check('ad impressions and clicks land in analytics', a0.totals.adImpressions >= 3 && a0.totals.adClicks === 1, JSON.stringify(a0.totals));
   // Robin (a grown-up who hasn't touched Sam's things today) engages: every number moves by one.
   await robin.get(`/api/community/people/${samId}`);
@@ -4166,8 +4278,7 @@ async function businessSuite() {
   const csv = await sam.get('/api/business/analytics.csv?range=7');
   eq('CSV export: a file, a header, one row per day', [csv.status, /text\/csv/.test(csv.headers.get('content-type')), /attachment; filename="myday-analytics-7d.csv"/.test(csv.headers.get('content-disposition')), String(csv.data).trim().split('\n').length, String(csv.data).split('\n')[0]], [200, true, true, 8, 'date,profile_views,new_followers,followers,content_views,engagement,consult_bookings,revenue_usd']);
   // Kayla becomes a verified provider too: her analytics never include Sam's numbers.
-  await kayla.put('/api/social/provider', { licenseType: 'Psychologist (PhD/PsyD)', licenseState: 'OK', licenseNumber: 'PSY-2231', specialties: ['ADHD'] });
-  await bmod.post(`/api/social/providers/${kaylaId}/verify`);
+  await kayla.post('/api/providers/check', { legalName: 'Kayla Nguyen', displayName: 'Kayla', npi: NPI.kayla, taxonomy: '103T00000X', licenseStates: ['OK'], credentials: 'PhD', agree: true });
   const ka = (await kayla.get(`/api/business/analytics?range=90&provider=${samId}&userId=${samId}`)).data;
   eq('no cross-provider leakage: Kayla sees only her own (asking for Sam’s changes nothing)', [ka.totals.clipViews, ka.totals.consultBookings, ka.totals.revenueCents, ka.totals.adImpressions, ka.top.some((t) => t.id === samClip.id)], [0, 0, 0, 0, false]);
   eq('…and Sam’s campaigns aren’t hers', (await kayla.get('/api/business')).data.campaigns.length, 0);
@@ -4466,12 +4577,11 @@ async function uiGate() {
     await page.getByTestId('provider-badge').waitFor({ timeout: 10000 });
     await page.getByTestId('profile-tab-about').click();
     const creds = await page.getByTestId('provider-credentials').innerText();
-    eq('provider page: the blue check, “Verified · licensed provider”, credentials + specialties (About), Book consult + Message', [/verified\W+licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.getByTestId('profile-card').locator('.sc-check').count(), /CSW-10420/.test(creds) && /Oklahoma/.test(creds), await page.getByTestId('provider-credentials').locator('.sc-chip-outline').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
-    await page.getByTestId('book-consult').click();
-    await page.getByTestId('book-sheet').waitFor({ timeout: 10000 });
-    await page.getByTestId('book-sheet').getByRole('link', { name: /Send .* a message/ }).click();
+    eq('provider page: “Verified provider background” and the disclaimer; About shows specialty, credentials, self-reported states — and no booking anywhere', [/Verified provider background/.test(await page.getByTestId('profile-card').innerText()), /Not your therapist/.test(await page.getByTestId('profile-card').innerText()), /Clinical Social Worker/.test(creds) && /LCSW/.test(creds) && /self-reported/.test(creds), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count(), await page.getByTestId('book-sheet').count()], [true, true, true, 0, 1, 0]);
+    if (false) eq('provider page (old)', [/verified\W+licensed provider/i.test(await page.getByTestId('provider-badge').innerText()), await page.getByTestId('profile-card').locator('.sc-check').count(), /CSW-10420/.test(creds) && /Oklahoma/.test(creds), await page.getByTestId('provider-credentials').locator('.sc-chip-outline').count(), await page.getByTestId('book-consult').count(), await page.getByTestId('profile-message').count()], [true, 1, true, 3, 1, 1]);
+    await page.getByTestId('profile-message').click();
     await page.getByTestId('dm-thread').waitFor({ timeout: 10000 });
-    check('…Book consult with no open times → a message to the provider, ready to send', /book a consult/i.test(await page.getByTestId('dm-input').inputValue()));
+    check('…Message opens a plain conversation (no booking prompt)', !/book/i.test(await page.getByTestId('dm-input').inputValue()));
     eq('…and the Hana button steps aside so it never covers Send', await page.getByTestId('hana-fab').count(), 0);
     await page.getByTestId('dm-input').fill('UI hello from Ty');
     await page.getByTestId('dm-send').click();
@@ -4513,23 +4623,17 @@ async function uiGate() {
     await page.getByTestId('profile-card').getByText('Dad, planner nerd').waitFor({ timeout: 10000 });
     check('…Save → back on the profile with it', true);
 
-    section('UI: Provider Business Suite — Sponsored in the Feed, booking a consult, analytics, ads with the claim screen');
-    const openSlot = new Date(Date.now() + 3 * 86400_000);
-    openSlot.setUTCMinutes(30, 0, 0);
-    await sam.post('/api/business/slots', { startsAt: openSlot.toISOString(), minutes: 20, priceCents: 0 });
-    // Only the consult campaign is live for this check (boosts paused), so the card's button books.
+    section('UI: Provider Business Suite — Sponsored in the Feed (to the profile), analytics, ads with the claim screen; no booking');
+    // Only the profile campaign is live for this check (boosts paused).
     for (const c of (await sam.get('/api/business')).data.campaigns) if (c.kind === 'boost' && c.status === 'active') await sam.post(`/api/business/campaigns/${c.id}/pause`);
     await page.goto(`${BASE}/feed`);
     const spons = page.getByTestId('sponsored');
     await spons.waitFor({ timeout: 10000 });
     eq('Ty’s Feed: a card labelled “Sponsored” from the verified provider, with its call to action', [(await spons.getByTestId('sponsored-label').innerText()).trim().toUpperCase(), /Sam/.test(await spons.innerText()), await spons.getByTestId('sponsored-cta').count()], ['SPONSORED', true, 1]);
+    eq('…its call to action is the profile, never a booking', (await spons.getByTestId('sponsored-cta').innerText()).trim(), 'View profile');
     await spons.getByTestId('sponsored-cta').click();
-    await page.getByTestId('book-sheet').waitFor({ timeout: 10000 });
-    check('…tap “Book a consult” → Sam’s page with the open times', (await page.getByTestId('book-slot').count()) >= 1);
-    await page.getByTestId('book-slot').first().click();
-    await page.getByTestId('book-msg').waitFor({ timeout: 10000 });
-    check('…book a free time → “Booked ✓”', /Booked/.test(await page.getByTestId('book-msg').innerText()));
-    await page.keyboard.press('Escape');
+    await page.getByTestId('profile-card').waitFor({ timeout: 10000 });
+    eq('…tap → Sam’s profile (no booking sheet, no open times)', [await page.getByTestId('book-sheet').count(), await page.getByTestId('book-slot').count()], [0, 0]);
     const bizCtx = await browser.newContext(phone);
     const bizPage = await bizCtx.newPage();
     watch(bizPage);
@@ -4539,7 +4643,7 @@ async function uiGate() {
     await bizPage.getByTestId('business-link').click();
     await bizPage.getByTestId('biz-analytics').waitFor({ timeout: 10000 });
     await bizPage.getByTestId('biz-profile-views').waitFor({ timeout: 10000 });
-    eq('Business → Analytics: profile views, followers, views, engagement, bookings, revenue, ads — and CSV', [await bizPage.locator('.biz-tile').count(), await bizPage.getByTestId('biz-csv').getAttribute('href'), /\$/.test(await bizPage.getByTestId('biz-revenue').innerText())], [10, '/api/business/analytics.csv?range=30', true]);
+    eq('Business → Analytics: profile views, followers, views, engagement, ads — and CSV (no bookings at this tier)', [await bizPage.locator('.biz-tile').count(), await bizPage.getByTestId('biz-csv').getAttribute('href'), (await bizPage.getByTestId('biz-revenue').count()) === 0], [8, '/api/business/analytics.csv?range=30', true]);
     await bizPage.getByTestId('biz-range-7').click();
     await bizPage.getByTestId('biz-csv').and(bizPage.locator('[href$="range=7"]')).waitFor({ timeout: 10000 });
     check('…7 / 30 / 90 day ranges', true);
@@ -4559,9 +4663,9 @@ async function uiGate() {
     await bizPage.getByTestId('boost-pay').click();
     await bizPage.getByTestId('biz-note').waitFor({ timeout: 15000 });
     check('Boost: pick a post or clip and a package → pay → “your ad is live”', /ad is live/.test(await bizPage.getByTestId('biz-note').innerText()));
-    await bizPage.getByTestId('biz-tab-consults').click();
-    await bizPage.getByTestId('biz-slot').first().waitFor({ timeout: 10000 });
-    check('Consults: Sam sees the times and who booked', /Booked by Ty/.test(await bizPage.getByTestId('biz-slots').innerText()));
+    eq('acceptance 8 (UI): no Consults tab, no booking or website choice for ads — anywhere in the provider’s suite', [await bizPage.getByTestId('biz-tab-consults').count(), await bizPage.locator('[data-testid="ad-destination"] option').count()], [0, 0]);
+    await bizPage.getByTestId('biz-campaign-open').click();
+    eq('…an ad can only point to their profile', await bizPage.getByTestId('ad-destination').locator('option').allInnerTexts(), ['Your profile on the Feed']);
     await bizCtx.close();
     await page.goto(`${BASE}/business`);
     await page.getByTestId('business-locked').waitFor({ timeout: 10000 });
@@ -6053,7 +6157,7 @@ try {
   await stopServer();
   alertHook.close();
   // The errand fake store + look-alike site; their open keep-alive sockets would keep a passing run from exiting.
-  for (const s of [storeServer, phishServer, rssServer]) {
+  for (const s of [storeServer, phishServer, rssServer, registry]) {
     s.closeAllConnections();
     s.close();
   }

@@ -243,10 +243,11 @@ function Shell() {
   );
 }
 
+const ProviderSignupPage = lazy(() => import('./modules/feed/Providers').then((m) => ({ default: m.ProviderSignupPage })));
 const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ default: m.FeedLanding })));
 
 /** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
-const SOCIAL_PATHS = ['/feed', '/feed/stories', '/feed/explore', '/feed/create', '/feed/friends', '/feed/post/:id', '/feed/profile/edit', '/feed/settings', '/feed/settings/notifications', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
+const SOCIAL_PATHS = ['/feed', '/feed/stories', '/feed/explore', '/feed/create', '/feed/friends', '/feed/post/:id', '/feed/profile/edit', '/feed/settings', '/feed/settings/notifications', '/feed/settings/provider', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
 const SOCIAL = /^\/(feed|clips|messages|people|village|business|notifications|search|invite|earnings|u)(\/|$)/;
 /** Every page that belongs to the Feed (Circles too). */
 const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles|notifications|search|invite|earnings|u)(\/|$)/;
@@ -349,6 +350,18 @@ export default function App() {
   // Public pages: readable signed out.
   if (path === '/privacy') return <Privacy />;
   if (path === '/terms') return <Terms />;
+  // The provider sign-up: its own path, verification before any account (signed in, it verifies this account).
+  if (path === '/providers') {
+    return (
+      <BrowserRouter>
+        <ConfirmProvider>
+          <Suspense fallback={<div className="center muted">Loading…</div>}>
+            <ProviderSignupPage />
+          </Suspense>
+        </ConfirmProvider>
+      </BrowserRouter>
+    );
+  }
   if (FEED_APP) {
     return (
       <BrowserRouter>

@@ -9,6 +9,7 @@ import { api } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { CheckNote, ReportButton, RichText, TrustedCard, VerifyButton } from '../community/Community';
 import { Avatar, Icon, Name, errText, short, since } from './kit';
+import { ProviderBadge } from './Providers';
 
 const REACTION_FACE: Record<FeedReaction, string> = { like: '♥', relate: 'Same', helpful: 'Helpful', funny: 'Ha' };
 const LONG_PRESS_MS = 450;
@@ -158,6 +159,7 @@ export function PostCard({
           <span className="sc-post-who">
             <Name a={p.author} />
             <span className="sc-meta"> · {since(p.at)}</span>
+            {p.author.verified && <ProviderBadge compact />}
             {p.audience === 'friends' && (
               <span className="sc-meta sc-aud" title="Friends only" aria-label="Friends only">
                 {' '}

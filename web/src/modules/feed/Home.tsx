@@ -14,6 +14,7 @@ import { CatchupCard, EndlessPosts, MemoriesCard, StreakChip } from '../social/E
 import { InstallFeed } from '../social/shell';
 import { Avatar, Filters, FriendButton, HomeBar, Icon, IconLink, Name, Sheet, TopBar, errText, short, since, useMe } from './kit';
 import { PostCard } from './PostCard';
+import { ProviderBadge } from './Providers';
 
 /* ======================= Home ======================= */
 
@@ -536,6 +537,7 @@ function PostDetail({ id }: { id: string }) {
       <div className="sc-comment-main">
         <span>
           <Name a={c.author} /> <span className="sc-meta">· {since(c.at)}</span>
+          {c.author.verified && <ProviderBadge compact />}
           {c.status !== 'visible' && <span className="sc-chip warn">Under review</span>}
         </span>
         <p>

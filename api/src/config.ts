@@ -16,6 +16,11 @@ export const config = {
   /** The Feed's own app (its own domain, same server and database). Empty: no separate Feed app. */
   feedAppUrl: opt('FEED_APP_URL', opt('NODE_ENV') === 'production' ? 'https://app.thefeedsocial.com' : '').replace(/\/$/, ''),
   /** Other names the Feed has used: they send people (permanently) to the Feed app's one address. */
+  // Provider Knowledge Base: the free NPI Registry and the OIG exclusion list (mirrored monthly).
+  nppesUrl: opt('NPPES_URL', 'https://npiregistry.cms.hhs.gov/api/'),
+  oigCsvUrl: opt('OIG_CSV_URL', 'https://oig.hhs.gov/exclusions/downloadables/UPDATED.csv'),
+  // The clinical tier ("Licensed & verified": paid board check, booking) — dormant until commissioned.
+  clinicalTier: opt('CLINICAL_TIER') === '1',
   feedAppAliases: opt('FEED_APP_ALIASES', opt('NODE_ENV') === 'production' ? 'thefeedsocial.com,www.thefeedsocial.com' : '')
     .split(',')
     .map((h) => h.trim().toLowerCase())

@@ -14,9 +14,9 @@ import { asSystem, pool } from '../db.js';
 import { inQuietHours, localTime, realPush, stubbed } from './push.js';
 import { registerJob } from './schedulers.js';
 
-export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined' | 'tip' | 'supporter' | 'friend_request' | 'friend_accept';
+export type FeedNoticeKind = 'like' | 'comment' | 'reply' | 'follow' | 'mention' | 'dm' | 'request' | 'village' | 'milestone' | 'invite' | 'joined' | 'tip' | 'supporter' | 'friend_request' | 'friend_accept' | 'provider';
 
-const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined', 'tip', 'supporter', 'friend_request', 'friend_accept']);
+const NOW_KINDS = new Set<FeedNoticeKind>(['reply', 'mention', 'dm', 'milestone', 'invite', 'joined', 'tip', 'supporter', 'friend_request', 'friend_accept', 'provider']);
 const BATCH_MINUTES = 15;
 const REPING_HOURS = 2;
 const DAILY_CAP = 8;
@@ -36,6 +36,7 @@ const PREF_OF: Record<FeedNoticeKind, string> = {
   supporter: 'milestones',
   friend_request: 'follows',
   friend_accept: 'follows',
+  provider: 'milestones',
 };
 
 export interface Notice {
@@ -133,6 +134,8 @@ function words(kind: FeedNoticeKind, names: string[], count: number, snippet: st
       return `${who} sent you a friend request`;
     case 'friend_accept':
       return `${who} accepted your friend request`;
+    case 'provider':
+      return snippet ?? 'An update on your provider verification';
   }
 }
 

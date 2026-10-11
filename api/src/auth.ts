@@ -28,6 +28,8 @@ import { asSystem, inHousehold, pool, setHousehold } from './db.js';
 import { logEvent } from './lib/events.js';
 import { HttpError, idParam } from './lib/http.js';
 import { verifyAgeToken } from './lib/age.js';
+import { verifyProviderPass } from './lib/providers.js';
+import { claimProviderApplication } from './routes/providers.js';
 import { notify } from './lib/feednotify.js';
 import { memberById, requireAdult } from './lib/members.js';
 import {
@@ -141,6 +143,8 @@ export async function upsertUser(
   birthDate: string | null = null,
   /** Who invited them (username from an invite link). */
   ref: string | null = null,
+  /** A checked provider application (Provider Knowledge Base): an NPI-verified provider is an adult, no date of birth asked. */
+  providerApp: string | null = null,
 ): Promise<{ userId: number; pendingInvite: string | null }> {
   const email = p.email.toLowerCase();
   return asSystem(async () => {
@@ -173,7 +177,7 @@ export async function upsertUser(
       throw new HttpError(403, `${email} is not on a household roster`);
     }
     // The Feed is 18+: no Feed account is created until age is checked (an invited household member is MyDay's).
-    if (existing === null && app === 'feed' && memberId === null && !birthDate) {
+    if (existing === null && app === 'feed' && memberId === null && !birthDate && !providerApp) {
       throw new HttpError(403, 'Start with your date of birth — the Feed is for grown-ups 18 and older.', 'age_required');
     }
     if (existing !== null) {
@@ -182,6 +186,7 @@ export async function upsertUser(
         "UPDATE users SET name = COALESCE(NULLIF($2, ''), name), member_id = COALESCE($3, member_id), last_login_at = now() WHERE id = $1",
         [existing, p.name ?? '', memberId],
       );
+      if (providerApp) await claimProviderApplication(providerApp, existing);
       return { userId: existing, pendingInvite };
     }
     const { rows: inv } = ref ? await pool.query<{ user_id: number }>('SELECT user_id FROM social_profiles WHERE username = $1 AND banned_at IS NULL', [ref]) : { rows: [] };
@@ -198,6 +203,7 @@ export async function upsertUser(
       await notify({ to: inviter, kind: 'joined', actor: id, group: `joined:${id}`, url: `/people/${id}` });
     }
     await logEvent('signup', { via, invited: memberId !== null, app }, memberId, null);
+    if (providerApp) await claimProviderApplication(providerApp, id);
     return { userId: id, pendingInvite };
   });
 }
@@ -308,7 +314,7 @@ authRouter.get('/api/auth/google/callback', async (req, res) => {
   }
   let userId: number;
   try {
-    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday', verifyAgeToken(req.session.feedAge), req.session.feedRef ?? null);
+    const up = await upsertUser(info, req.session.inviteToken, 'google', back ? 'feed' : 'myday', verifyAgeToken(req.session.feedAge), req.session.feedRef ?? null, verifyProviderPass(req.session.feedAge));
     userId = up.userId;
     await startSession(req, userId);
     delete req.session.inviteToken;

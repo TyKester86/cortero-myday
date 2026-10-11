@@ -2393,26 +2393,23 @@ export interface CommunityProfile {
   defaultAudience?: PostAudience;
   /** Your own profile only: your date of birth (private), and where your provider credentials stand. */
   dob?: string | null;
-  providerStatus?: ProviderSubmission | null;
 }
 
-/** Shown on a provider page only after MyDay has verified the license. */
+/**
+ * Provider Knowledge Base: a provider verified for free (NPI Registry + OIG exclusions) — "Verified provider
+ * background". Educational, not clinical: no license claim at this tier, nothing bookable.
+ */
 export interface ProviderInfo {
-  licenseType: string;
-  licenseState: string;
-  licenseNumber: string;
+  badge: 'Verified provider background';
+  /** The mental-health specialty from the NPI record (e.g. "Clinical Social Worker"). */
+  specialty: string;
+  /** Their own credentials line (e.g. "LCSW, ADHD-CCSP"). */
+  credentials: string | null;
+  /** Self-reported, not verified at this tier. */
+  licenseStates: string[];
   verifiedAt: string;
-  specialties: string[];
-}
-
-export interface ProviderSubmission {
-  status: 'submitted' | 'verified' | 'rejected';
-  licenseType: string;
-  licenseState: string;
-  licenseNumber: string;
-  specialties: string[];
-  submittedAt: string;
-  rejectReason: string | null;
+  /** Always shown with the badge. */
+  disclaimer: string;
 }
 
 /* ---------- Stories, Clips, Messages, Villages (all under the Feed) ---------- */
@@ -2604,7 +2601,9 @@ export interface BusinessOverview {
   cpmCents: number;
   payments: 'stripe' | 'stub' | 'none';
   campaigns: AdCampaign[];
+  /** Consult slots — the clinical tier only (empty, and `bookable` false, at the knowledge tier). */
   slots: ConsultSlot[];
+  bookable?: boolean;
 }
 
 export interface BusinessAnalytics {

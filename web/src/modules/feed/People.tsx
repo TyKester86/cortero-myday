@@ -12,8 +12,8 @@ import { NavIcon } from '../../components/NavIcon';
 import { useSession } from '../../session';
 import { signOut } from '../../signout';
 import { APP_URL, FEED_APP } from '../../apps';
-import { ACHIEVEMENT_ICON, EmptySheet, Gate, ProviderForm, ReportButton, STATE_NAMES, uploadPhoto } from '../community/Community';
-import { BookConsult } from '../social/Social';
+import { ACHIEVEMENT_ICON, EmptySheet, Gate, ReportButton, uploadPhoto } from '../community/Community';
+import { ProviderBadge, ProviderDisclaimer } from './Providers';
 import { SupportBox } from '../social/Creator';
 import { YourStats } from '../social/Endless';
 import { NotificationSettings } from '../social/Notifications';
@@ -144,19 +144,11 @@ function Profile({ id }: { id: string }) {
   const [tab, setTab] = useState<Tab>((params.get('tab') as Tab) || 'posts');
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState<'avatarId' | 'coverId' | null>(null);
-  const [booking, setBooking] = useState(params.get('book') === '1');
   const [menu, setMenu] = useState(false);
   const confirm = useConfirm();
-  // Back from paying for a consult: confirm with Stripe (the webhook may still be on its way).
+  // Old consult links (?book=1) land on the plain profile: providers here aren't bookable.
   useEffect(() => {
-    if (params.get('paid') !== 'consult') return;
-    const sid = params.get('session_id');
-    const done = (): void => {
-      setMsg('Booked ✓ — they’ll message you about the call.');
-      setParams({}, { replace: true });
-    };
-    if (sid) void api(`/api/business/checkout/confirm?session_id=${encodeURIComponent(sid)}`).then(done, done);
-    else done();
+    if (params.has('book') || params.has('paid')) setParams({}, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (error) return <p className="sc-meta">{error}</p>;
   if (!data) return <p className="sc-meta">Loading…</p>;
@@ -218,11 +210,7 @@ function Profile({ id }: { id: string }) {
             @{p.username}
           </p>
         )}
-        {pro && (
-          <span className="sc-chip blue" data-testid="provider-badge">
-            Verified · licensed provider
-          </span>
-        )}
+        {pro && <ProviderBadge />}
         {!pro && p.parentBadge && <span className="sc-chip">Parent</span>}
         {line ? <p className="sc-profile-line">{line}</p> : p.me && <p className="sc-profile-line sc-meta">Add a line about you in Edit profile — no kids’ names or schools.</p>}
         <p className="sc-profile-stats" data-testid="follow-counts">
@@ -255,26 +243,19 @@ function Profile({ id }: { id: string }) {
           </div>
         ) : (
           <div className="sc-profile-actions">
-            {pro ? (
-              <button type="button" className="sc-btn" onClick={() => setBooking(true)} data-testid="book-consult">
-                Book consult
-              </button>
-            ) : (
-              <FriendButton userId={p.userId} rel={p.relationship} onChange={(r) => setData({ ...p, relationship: r, friends: p.friends + (r === 'friends' ? 1 : p.relationship === 'friends' ? -1 : 0) })} />
-            )}
+            <FriendButton userId={p.userId} rel={p.relationship} onChange={(r) => setData({ ...p, relationship: r, friends: p.friends + (r === 'friends' ? 1 : p.relationship === 'friends' ? -1 : 0) })} />
             <Link className="sc-btn outline" to={`/messages/${p.userId}`} data-testid="profile-message">
               Message
             </Link>
           </div>
         )}
-        {pro && !p.me && <FriendButton userId={p.userId} rel={p.relationship} onChange={(r) => setData({ ...p, relationship: r })} compact />}
+        {pro && <ProviderDisclaimer text={pro.disclaimer} />}
       </article>
       {msg && (
         <p className="sc-toast" role="status" onClick={() => setMsg(null)}>
           {msg}
         </p>
       )}
-      {booking && pro && !p.me && <BookConsult provider={{ userId: p.userId, displayName: p.displayName, parentBadge: p.parentBadge, avatarUrl: p.avatarUrl }} onClose={() => setBooking(false)} />}
       <div className="sc-tabs-float">
         <PillTabs tabs={[...TABS]} on={tab} onPick={setTab} testid={(t) => `profile-tab-${t}`} />
       </div>
@@ -345,7 +326,7 @@ function ProfileMedia({ p, onPin, onMsg }: { p: CommunityProfile; onPin: (pin: C
 function ProfileAbout({ p }: { p: CommunityProfile }) {
   const joined = new Date(`${p.joinedOn}T12:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   const pro = p.provider;
-  const verifiedOn = pro ? new Date(pro.verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const verifiedOn = pro ? new Date(`${pro.verifiedAt}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   return (
     <div className="sc-list" data-testid="profile-about">
       <section className="sc-card sc-about">
@@ -378,31 +359,27 @@ function ProfileAbout({ p }: { p: CommunityProfile }) {
       )}
       {pro && (
         <section className="sc-card sc-about" data-testid="provider-credentials">
-          <h3>Credentials</h3>
-          <ul className="sc-details">
+          <h3>Provider background</h3>
+          <ProviderBadge testid="provider-badge-about" />
+          <ul className="sc-details" style={{ marginTop: 10 }}>
             <li>
-              <Icon name="shield" size={20} /> <b>{pro.licenseType}</b>
+              <Icon name="shield" size={20} /> <span>Specialty</span> <b>{pro.specialty}</b>
             </li>
+            {pro.credentials && (
+              <li>
+                <Icon name="info" size={20} /> <span>Credentials</span> <b>{pro.credentials}</b>
+              </li>
+            )}
+            {pro.licenseStates.length > 0 && (
+              <li>
+                <Icon name="pin" size={20} /> <span>States</span> <b>{pro.licenseStates.join(', ')} (self-reported)</b>
+              </li>
+            )}
             <li>
-              <Icon name="info" size={20} />
-              <b>
-                {STATE_NAMES[pro.licenseState] ?? pro.licenseState} License #{pro.licenseNumber}
-              </b>
-            </li>
-            <li>
-              <Icon name="sun" size={20} /> <b>Verified • {verifiedOn}</b>
+              <Icon name="sun" size={20} /> <span>Verified</span> <b>{verifiedOn}</b>
             </li>
           </ul>
-          {pro.specialties.length > 0 && (
-            <div className="sc-chips">
-              {pro.specialties.map((s) => (
-                <span key={s} className="sc-chip-outline">
-                  {s}
-                </span>
-              ))}
-            </div>
-          )}
-          <small className="sc-meta">MyDay checked this license before the badge appeared. Posts are general information, not medical advice for you.</small>
+          <small className="sc-meta">The NPI was checked against the public NPI Registry and the OIG exclusion list. {pro.disclaimer}</small>
         </section>
       )}
       {p.interestLabels.length > 0 && (
@@ -568,7 +545,9 @@ function EditProfile({ start }: { start: CommunityProfile }) {
         </div>
       </div>
       <p className="sc-meta sc-center">Your birthday stays private — your profile shows your age only.</p>
-      <ProviderForm current={p.providerStatus ?? null} verified={!!p.provider} />
+      <p className="sc-meta sc-center">
+        <Link to="/feed/settings/provider">Provider background →</Link>
+      </p>
     </form>
   );
 }
@@ -732,6 +711,7 @@ function Settings({ me }: { me: CommunityMe }) {
       <h2 className="sc-h3">Account</h2>
       <div className="sc-card sc-rows">
         <Row icon="user" label="Profile" to="/feed/profile/edit" testid="settings-profile" />
+        <Row icon="shield" label="Provider background" value={p.provider ? 'Verified' : undefined} to="/feed/settings/provider" testid="settings-provider" />
         <Row icon="lock" label="Privacy" value={aud === 'friends' ? 'Friends only' : 'Public'} onClick={() => setSheet('privacy')} testid="settings-privacy" />
         <Row icon="bell" label="Notifications" to="/feed/settings/notifications" testid="settings-notifications" />
       </div>

@@ -13,7 +13,6 @@ import {
   type CommunityQueue,
   type CommunityQueueItem,
   type PostCheck,
-  type ProviderSubmission,
   type TrustedAnswer,
   type ReviewNote,
   type VillageCategory,
@@ -685,110 +684,6 @@ export const STATE_NAMES: Record<string, string> = Object.fromEntries(
 /** An icon for each achievement (the About tab's tiles). */
 export const ACHIEVEMENT_ICON: Record<string, string> = { early: 'star', streak: 'flame', photo: 'camera', clips: 'share', helper: 'heart-hands', provider: 'shield' };
 
-const LICENSE_TYPES = [
-  'Psychiatrist (MD/DO)',
-  'Psychologist (PhD/PsyD)',
-  'Psychiatric Nurse Practitioner (PMHNP)',
-  'Licensed Clinical Social Worker (LCSW)',
-  'Licensed Professional Counselor (LPC)',
-  'Licensed Marriage & Family Therapist (LMFT)',
-  'Pediatrician (MD/DO)',
-  'Occupational Therapist (OT)',
-  'Speech-Language Pathologist (SLP)',
-];
-const US_STATES = 'AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR'.split(' ');
-
-/** Licensed clinicians: submit a license; MyDay verifies it before the provider page (and badge) exists. */
-export function ProviderForm({ current, verified }: { current: ProviderSubmission | null; verified: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [status, setStatus] = useState(current);
-  const [f, setF] = useState({
-    licenseType: current?.licenseType ?? '',
-    licenseState: current?.licenseState ?? '',
-    licenseNumber: current?.licenseNumber ?? '',
-    specialties: current?.specialties.join(', ') ?? '',
-  });
-  const [msg, setMsg] = useState<string | null>(null);
-  return (
-    <section className="slip form provider-form" data-testid="provider-form">
-      <b>Are you a licensed provider?</b>
-      {status?.status === 'verified' || (verified && !status) ? (
-        <p className="small" data-testid="provider-status">
-          ✓ Verified. Your profile shows the provider badge and your credentials. Changing them sends them back for review.
-        </p>
-      ) : status?.status === 'submitted' ? (
-        <p className="small" data-testid="provider-status">
-          Submitted — MyDay is checking your license. Your profile stays a regular profile until it’s verified.
-        </p>
-      ) : status?.status === 'rejected' ? (
-        <p className="small error" data-testid="provider-status">
-          We couldn’t verify that license{status.rejectReason ? `: ${status.rejectReason}` : ''}. Check the details and send it again.
-        </p>
-      ) : (
-        <p className="small muted">Clinicians get a verified provider page — credentials, specialties, and a Book consult button — once MyDay checks the license.</p>
-      )}
-      {!open ? (
-        <button type="button" className="btn small ghost" onClick={() => setOpen(true)} data-testid="provider-open">
-          {status ? 'Update credentials' : 'Add your license'}
-        </button>
-      ) : (
-        <form
-          className="form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setMsg(null);
-            const specialties = f.specialties
-              .split(',')
-              .map((x) => x.trim())
-              .filter(Boolean);
-            void api<{ status: 'submitted' }>('/api/social/provider', 'PUT', { ...f, specialties })
-              .then(() => {
-                setStatus({ status: 'submitted', licenseType: f.licenseType, licenseState: f.licenseState, licenseNumber: f.licenseNumber, specialties, submittedAt: new Date().toISOString(), rejectReason: null });
-                setOpen(false);
-              })
-              .catch((e2: unknown) => setMsg(e2 instanceof Error ? e2.message : 'Could not submit'));
-          }}
-        >
-          <label>
-            License type
-            <input list="license-types" value={f.licenseType} onChange={(e) => setF({ ...f, licenseType: e.target.value })} required maxLength={80} data-testid="provider-type" />
-            <datalist id="license-types">
-              {LICENSE_TYPES.map((t) => (
-                <option key={t} value={t} />
-              ))}
-            </datalist>
-          </label>
-          <div className="row">
-            <label>
-              State
-              <select value={f.licenseState} onChange={(e) => setF({ ...f, licenseState: e.target.value })} required data-testid="provider-state">
-                <option value="">—</option>
-                {US_STATES.map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
-            </label>
-            <label className="grow">
-              License number
-              <input value={f.licenseNumber} onChange={(e) => setF({ ...f, licenseNumber: e.target.value })} required maxLength={40} data-testid="provider-number" />
-            </label>
-          </div>
-          <label>
-            Specialties (up to 6, separated by commas)
-            <input value={f.specialties} onChange={(e) => setF({ ...f, specialties: e.target.value })} placeholder="ADHD, Anxiety, Parent coaching" data-testid="provider-specialties" />
-          </label>
-          {msg && <p className="error">{msg}</p>}
-          <button className="btn small" data-testid="provider-submit">
-            Send for verification
-          </button>
-        </form>
-      )}
-    </section>
-  );
-}
-
-/* ---------- moderation (MyDay admins) ---------- */
-
 const KIND_LABEL: Record<CommunityQueueItem['kind'], string> = {
   village: 'Village',
   feed: 'Feed',
@@ -801,49 +696,66 @@ const KIND_LABEL: Record<CommunityQueueItem['kind'], string> = {
   message: 'Message',
 };
 
-interface ProviderQueueItem {
+interface ProviderReviewItem {
   userId: number;
   displayName: string | null;
-  email: string;
-  licenseType: string;
-  licenseState: string;
-  licenseNumber: string;
-  specialties: string[];
+  legalName: string;
+  registryName: string | null;
+  nameScore: number | null;
+  npi: string;
+  specialty: string;
+  reason: string | null;
+  badge: string;
   submittedAt: string;
 }
 
-/** Licenses waiting for a MyDay admin to check with the state board. */
-function ProviderQueue() {
-  const { data, reload } = useLoad<{ providers: ProviderQueueItem[] }>('/api/social/providers/queue');
+/** Provider Knowledge Base: fuzzy name matches, possible OIG name matches, and paused badges wait here. */
+function ProviderReviewQueue() {
+  const { data, reload } = useLoad<{ providers: ProviderReviewItem[] }>('/api/providers/review');
   const [msg, setMsg] = useState<string | null>(null);
-  if (!data?.providers.length) return null;
-  const act = (id: number, action: 'verify' | 'reject'): void =>
-    void api(`/api/social/providers/${id}/${action}`, 'POST', {})
+  if (!data) return null;
+  const act = (id: number, decision: 'verify' | 'reject' | 'reinstate', reason?: string): void =>
+    void api(`/api/providers/${id}/decision`, 'POST', { decision, reason })
       .then(() => {
-        setMsg(action === 'verify' ? 'Verified — their provider page is live.' : 'Rejected — they’ll see it and can resubmit.');
+        setMsg(decision === 'verify' ? 'Verified — the badge is live.' : decision === 'reinstate' ? 'Badge reinstated.' : 'Rejected — they’ve been told why.');
         reload();
       })
-      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : 'Could not update'));
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : 'Could not save'));
   return (
-    <div className="card" data-testid="provider-queue">
-      <h2>Provider licenses to verify</h2>
-      <p className="small muted">Look the license up on the state board’s site before verifying.</p>
-      {msg && <p role="status">{msg}</p>}
+    <section className="card" data-testid="provider-review-queue">
+      <h2>Provider background — needs a person</h2>
+      {msg && <p className="small muted">{msg}</p>}
+      {!data.providers.length && <p className="muted small">Nothing waiting.</p>}
       {data.providers.map((p) => (
-        <div key={p.userId} className="row provider-queue-item" data-testid="provider-queue-item">
-          <span className="grow">
-            <b>{p.displayName ?? '(no profile yet)'}</b> ({p.email}) · {p.licenseType} · {p.licenseState} #{p.licenseNumber}
-            {p.specialties.length > 0 && <small className="muted"> · {p.specialties.join(', ')}</small>}
-          </span>
-          <button className="btn small" onClick={() => act(p.userId, 'verify')} data-testid="provider-verify">
-            Verify
-          </button>
-          <button className="btn small ghost" onClick={() => act(p.userId, 'reject')}>
-            Reject
-          </button>
+        <div key={p.userId} className="slip" data-testid="provider-review-item">
+          <b>{p.legalName}</b> {p.displayName && <small className="muted">({p.displayName} on the Feed)</small>}
+          <p className="small">
+            NPI {p.npi} · {p.specialty} · NPI Registry name: <b>{p.registryName ?? '—'}</b>
+            {p.nameScore !== null && ` (match ${Math.round(p.nameScore * 100)}%)`}
+          </p>
+          <p className="small muted">{p.reason ?? (p.badge === 'suspended' ? 'Badge paused (solicitation warning)' : '')}</p>
+          <div className="row">
+            {p.badge === 'suspended' && !p.reason ? (
+              <button type="button" className="btn small" onClick={() => act(p.userId, 'reinstate')} data-testid="provider-reinstate">
+                Reinstate badge
+              </button>
+            ) : (
+              <>
+                <button type="button" className="btn small" onClick={() => act(p.userId, 'verify')} data-testid="provider-verify">
+                  Verify
+                </button>
+                <button type="button" className="btn ghost small" onClick={() => act(p.userId, 'reject', 'name mismatch')} data-testid="provider-reject">
+                  Reject (name mismatch)
+                </button>
+                <button type="button" className="link danger small" onClick={() => act(p.userId, 'reject', 'excluded')}>
+                  Reject (excluded)
+                </button>
+              </>
+            )}
+          </div>
         </div>
       ))}
-    </div>
+    </section>
   );
 }
 
@@ -861,7 +773,7 @@ export function CommunityModeration() {
     <section data-testid="community-moderation">
       <h1>Community moderation</h1>
       <p className="muted small">Crisis items first. Approve, remove, or remove + strike (warn → 7-day mute → ban).</p>
-      <ProviderQueue />
+      <ProviderReviewQueue />
       {msg && <p role="status">{msg}</p>}
       {!data.items.length && <p className="muted">The queue is empty.</p>}
       {data.items.map((i) => (

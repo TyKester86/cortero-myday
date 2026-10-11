@@ -55,13 +55,23 @@ const MAX_BUDGET = 500000;
 
 /* ---------- who may use it ---------- */
 
-/** A verified licensed provider (the gate for everything in the suite). */
+/** A provider with the "Verified provider background" badge (the gate for everything in the suite). */
 async function provider(req: Request): Promise<{ userId: number; name: string }> {
   const m = await member(req);
-  const { rows } = await pool.query<{ status: string }>('SELECT status FROM provider_credentials WHERE user_id = $1', [m.userId]);
-  if (rows[0]?.status !== 'verified') throw new HttpError(403, 'The Business Suite is for verified licensed providers — add your license on your profile first.', 'not_verified_provider');
+  const { rows } = await pool.query<{ ok: boolean }>('SELECT feed_provider_badge($1) AS ok', [m.userId]);
+  if (!rows[0]?.ok) throw new HttpError(403, 'The Business Suite is for providers with a “Verified provider background” badge — verify your provider background first.', 'not_verified_provider');
   return { userId: m.userId, name: m.profile.display_name };
 }
+
+/**
+ * Knowledge tier: nothing is bookable and nothing points off the Feed. Consult slots, booking and ads that go to
+ * a booking or an outside link are the clinical tier's ("Licensed & verified"), dormant until it's commissioned.
+ */
+const clinical = (): boolean => config.clinicalTier;
+function clinicalOnly(): void {
+  if (!clinical()) throw new HttpError(404, 'Not found');
+}
+const destOf = (d: string): 'profile' | 'consult' | 'url' => (clinical() ? (d as 'profile' | 'consult' | 'url') : 'profile');
 
 const payments = (): 'stripe' | 'stub' | 'none' => config.billingProvider;
 
@@ -198,7 +208,7 @@ businessRouter.get('/api/business/checkout/confirm', async (req, res) => {
 
 businessRouter.get('/api/business', async (req, res) => {
   const p = await provider(req);
-  const out: BusinessOverview = { packages: boostPackages(), cpmCents: adCpmCents(), payments: payments(), campaigns: await campaignsOf(p.userId), slots: await slotsOf(p.userId) };
+  const out: BusinessOverview = { packages: boostPackages(), cpmCents: adCpmCents(), payments: payments(), campaigns: await campaignsOf(p.userId), slots: clinical() ? await slotsOf(p.userId) : [], bookable: clinical() };
   res.json(out);
 });
 
@@ -242,6 +252,7 @@ businessRouter.post('/api/business/campaigns', async (req, res) => {
   const headline = str(b.headline, 'headline', 80, true);
   const body = str(b.body, 'body', 300, true);
   const destination = b.destination === 'consult' ? 'consult' : b.destination === 'url' ? 'url' : 'profile';
+  if (destination !== 'profile' && !clinical()) throw new HttpError(400, 'Ads point to your profile on the Feed — providers don’t steer people to bookings or outside sites.', 'destination');
   let destinationUrl: string | null = null;
   if (destination === 'url') {
     destinationUrl = str(b.destinationUrl, 'destinationUrl', 300, true);
@@ -326,7 +337,7 @@ export async function sponsoredFor(viewer: number, where: 'feed' | 'clips'): Pro
       WHERE c.status = 'active' AND c.starts_on <= ${TODAY} AND c.provider_user_id <> $1 AND p.banned_at IS NULL
         AND ${NOT_BLOCKED('c.provider_user_id')}
         AND ($2 = 'feed' OR c.target_kind = 'clip')
-        AND EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = c.provider_user_id AND pc.status = 'verified')
+        AND feed_provider_badge(c.provider_user_id)
       ORDER BY EXISTS (SELECT 1 FROM ad_impressions i WHERE i.campaign_id = c.id AND i.viewer_user_id = $1 AND i.day = ${TODAY}), random()
       LIMIT 3`,
     [viewer, where],
@@ -340,7 +351,8 @@ export async function sponsoredFor(viewer: number, where: 'feed' | 'clips'): Pro
     const { rowCount } = await pool.query(`INSERT INTO ad_impressions (campaign_id, viewer_user_id, day) VALUES ($1, $2, ${TODAY}) ON CONFLICT DO NOTHING`, [r.id, viewer]);
     if (rowCount) await pool.query('UPDATE ad_campaigns SET impressions = impressions + 1 WHERE id = $1', [r.id]);
     const a = author(r);
-    const href = r.destination === 'url' && r.destination_url ? r.destination_url : r.destination === 'consult' ? `/people/${a.userId}?book=1` : `/people/${a.userId}`;
+    const dest = destOf(r.destination);
+    const href = dest === 'url' && r.destination_url ? r.destination_url : dest === 'consult' ? `/people/${a.userId}?book=1` : `/people/${a.userId}`;
     return {
       campaignId: r.id,
       kind: r.kind === 'boost' ? (r.target_kind ?? 'post') : 'campaign',
@@ -350,10 +362,10 @@ export async function sponsoredFor(viewer: number, where: 'feed' | 'clips'): Pro
       imageUrl: imageUrl(r.image_id),
       post,
       clip,
-      destination: r.destination,
+      destination: dest,
       href,
-      external: r.destination === 'url',
-      cta: r.destination === 'url' ? 'Learn more' : r.destination === 'consult' ? 'Book a consult' : 'View profile',
+      external: dest === 'url',
+      cta: dest === 'url' ? 'Learn more' : dest === 'consult' ? 'Book a consult' : 'View profile',
     };
   }
   return null;
@@ -372,8 +384,9 @@ businessRouter.post('/api/ads/:id/click', async (req, res) => {
     const { rowCount } = await pool.query('INSERT INTO ad_clicks (campaign_id, viewer_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [id, m.userId]);
     if (rowCount) await pool.query('UPDATE ad_campaigns SET clicks = clicks + 1 WHERE id = $1', [id]);
   }
-  const href = r.destination === 'url' && r.destination_url ? r.destination_url : r.destination === 'consult' ? `/people/${r.provider_user_id}?book=1` : `/people/${r.provider_user_id}`;
-  res.json({ href, external: r.destination === 'url' });
+  const dest = destOf(r.destination);
+  const href = dest === 'url' && r.destination_url ? r.destination_url : dest === 'consult' ? `/people/${r.provider_user_id}?book=1` : `/people/${r.provider_user_id}`;
+  res.json({ href, external: dest === 'url' });
 });
 
 /* ---------- consult slots ---------- */
@@ -416,6 +429,7 @@ async function slotsOf(userId: number): Promise<ConsultSlot[]> {
 }
 
 businessRouter.post('/api/business/slots', async (req, res) => {
+  clinicalOnly();
   const p = await provider(req);
   const b = req.body as Record<string, unknown>;
   const startsAt = new Date(String(b.startsAt ?? ''));
@@ -438,6 +452,7 @@ businessRouter.post('/api/business/slots', async (req, res) => {
 });
 
 businessRouter.delete('/api/business/slots/:id', async (req, res) => {
+  clinicalOnly();
   const p = await provider(req);
   const { rowCount } = await pool.query("UPDATE consult_slots SET status = 'canceled' WHERE id = $1 AND provider_user_id = $2 AND status = 'open'", [idParam(req.params.id), p.userId]);
   if (!rowCount) throw new HttpError(409, 'Only an open slot can be removed');
@@ -446,13 +461,14 @@ businessRouter.delete('/api/business/slots/:id', async (req, res) => {
 
 /** A verified provider's open slots (any grown-up in the Feed). */
 businessRouter.get('/api/providers/:userId/slots', async (req, res) => {
+  clinicalOnly();
   const m = await member(req);
   const who = idParam(req.params.userId);
   if (await block(m.userId, who)) throw new HttpError(404, 'Not found');
   await pool.query(RELEASE_HOLDS);
   const { rows } = await pool.query<SlotRow>(
-    `SELECT s.* FROM consult_slots s JOIN provider_credentials pc ON pc.user_id = s.provider_user_id AND pc.status = 'verified'
-      WHERE s.provider_user_id = $1 AND s.starts_at > now() AND (s.status = 'open' OR s.booked_by = $2) ORDER BY s.starts_at LIMIT 30`,
+    `SELECT s.* FROM consult_slots s
+      WHERE feed_provider_badge(s.provider_user_id) AND s.provider_user_id = $1 AND s.starts_at > now() AND (s.status = 'open' OR s.booked_by = $2) ORDER BY s.starts_at LIMIT 30`,
     [who, m.userId],
   );
   res.json({ slots: rows.map((r) => toSlot(r, m.userId)) });
@@ -460,6 +476,7 @@ businessRouter.get('/api/providers/:userId/slots', async (req, res) => {
 
 /** Book a slot: free → booked now; paid → held 20 minutes while Stripe Checkout takes the payment. */
 businessRouter.post('/api/consults/:slotId/book', async (req, res) => {
+  clinicalOnly();
   const m = await poster(req, false);
   const id = idParam(req.params.slotId);
   await pool.query(RELEASE_HOLDS);
@@ -467,7 +484,7 @@ businessRouter.post('/api/consults/:slotId/book', async (req, res) => {
     `UPDATE consult_slots s SET status = 'held', booked_by = $2, held_until = now() + interval '20 minutes'
        FROM social_profiles sp
       WHERE s.id = $1 AND s.status = 'open' AND s.starts_at > now() AND s.provider_user_id <> $2 AND sp.user_id = s.provider_user_id
-        AND EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.user_id = s.provider_user_id AND pc.status = 'verified')
+        AND feed_provider_badge(s.provider_user_id)
         AND NOT EXISTS (SELECT 1 FROM social_blocks b WHERE (b.blocker_user_id = $2 AND b.blocked_user_id = s.provider_user_id) OR (b.blocker_user_id = s.provider_user_id AND b.blocked_user_id = $2))
       RETURNING s.*, sp.display_name AS name`,
     [id, m.userId],
@@ -485,6 +502,7 @@ businessRouter.post('/api/consults/:slotId/book', async (req, res) => {
 });
 
 businessRouter.get('/api/consults/mine', async (req, res) => {
+  clinicalOnly();
   const m = await member(req);
   const { rows } = await pool.query<SlotRow & AuthorCols>(
     `SELECT s.*, ${AUTHOR_COLS} FROM consult_slots s ${AUTHOR_JOIN('s.provider_user_id')}

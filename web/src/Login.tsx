@@ -18,7 +18,7 @@ export const LOGIN_ERRORS: Record<string, string> = {
  * carrying the sign-up's age proof (a new Feed account needs it).
  */
 function googleHref(age?: string | null, ref?: string | null): string {
-  if (!(FEED_APP && elsewhere(APP_URL))) return '/api/auth/google';
+  if (!(FEED_APP && elsewhere(APP_URL))) return `/api/auth/google${age ? `?age=${encodeURIComponent(age)}` : ''}`;
   return `${APP_URL}/api/auth/google?to=feed${age ? `&age=${encodeURIComponent(age)}` : ''}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`;
 }
 

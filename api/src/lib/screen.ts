@@ -22,6 +22,7 @@
  * the post is held: the screen fails closed.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import { looksLikeSolicitation } from './providers.js';
 import { config } from '../config.js';
 
 export const SCREEN_REASONS = {
@@ -274,6 +275,11 @@ export async function screenAd(text: string): Promise<AdScreen> {
       labels.push(label);
     }
   }
+  // Provider Knowledge Base: at this tier nothing is bookable — ads share knowledge, they don't sell sessions.
+  if (!config.clinicalTier && looksLikeSolicitation(text)) {
+    reasons.push('solicitation');
+    labels.push('Offers services or bookings (providers here share knowledge; they aren’t bookable)');
+  }
   for (const r of ruleScreen(text)) {
     if (r === 'crisis' || r === 'personal_info' || r === 'personal_attack') {
       reasons.push(r);
@@ -290,6 +296,6 @@ export async function screenAd(text: string): Promise<AdScreen> {
       labels.push(...(ai.reasons.length ? ai.reasons : ['Makes a medical claim']));
     }
   }
-  const explain = labels.length ? `${labels.join('; ')}. Ads can describe your services, but they can’t promise medical results.` : '';
+  const explain = labels.length ? `${labels.join('; ')}. Ads can share what you know and point to your profile; they can’t promise medical results or offer bookings.` : '';
   return { reasons, labels, explain };
 }

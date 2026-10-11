@@ -13,7 +13,7 @@ import { notify, notifyMentions } from '../lib/feednotify.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { screenText } from '../lib/screen.js';
 import { currentKeyId, openBytes, openText, sealBytes, sealText } from '../lib/seal.js';
-import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, sponsorHook, block, decide, imageUrl, member, NOT_BLOCKED, poster, profileRow, rankOutcome, SEEN, staff, type AuthorCols } from './community.js';
+import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, sponsorHook, block, decide, guarded, imageUrl, member, NOT_BLOCKED, poster, profileRow, rankOutcome, SEEN, staff, type AuthorCols } from './community.js';
 
 export const socialRouter = Router();
 /** Video uploads take a raw body. */
@@ -502,7 +502,7 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
   const body = str((req.body as Record<string, unknown>).body, 'body', 2000, true);
   // Screened like every post: blocked never sends; held waits for a moderator (the other person doesn't see it);
   // crisis goes to the top of the queue and the writer sees 988.
-  const d = await decide(await screenText(body), 'message');
+  const d = await guarded(await decide(await screenText(body), 'message'), m.userId, body, 'message');
   const id = await threadId(m.userId, other, true);
   const { rowCount: saidBefore } = await pool.query('SELECT 1 FROM dm_messages WHERE thread_id = $1 AND sender_user_id = $2 LIMIT 1', [id, m.userId]);
   const keyId = currentKeyId();
@@ -566,55 +566,12 @@ socialRouter.post('/api/social/messages/report/:messageId', async (req, res) => 
   res.status(201).json({ ok: true });
 });
 
-/* ======================= Providers: credentials, verified by MyDay ======================= */
+/* ======================= Providers: the old license form is retired ======================= */
 
-const STATES = new Set('AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR'.split(' '));
-
-/** Submit (or resubmit) license credentials. A provider page only exists once MyDay verifies them. */
-socialRouter.put('/api/social/provider', async (req, res) => {
-  const m = await member(req);
-  const b = req.body as Record<string, unknown>;
-  const licenseType = str(b.licenseType, 'licenseType', 80, true);
-  const licenseState = str(b.licenseState, 'licenseState', 2, true).toUpperCase();
-  if (!STATES.has(licenseState)) throw new HttpError(400, 'Pick the state that issued the license');
-  const licenseNumber = str(b.licenseNumber, 'licenseNumber', 40, true);
-  if (!/^[A-Za-z0-9-./ ]{2,40}$/.test(licenseNumber)) throw new HttpError(400, 'Check the license number');
-  const specialties = (Array.isArray(b.specialties) ? b.specialties : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 6).map((x) => x.slice(0, 30));
-  await pool.query(
-    `INSERT INTO provider_credentials (user_id, license_type, license_state, license_number, specialties, status, submitted_at, verified_at, verified_by, reject_reason)
-     VALUES ($1, $2, $3, $4, $5, 'submitted', now(), NULL, NULL, NULL)
-     ON CONFLICT (user_id) DO UPDATE SET license_type = EXCLUDED.license_type, license_state = EXCLUDED.license_state, license_number = EXCLUDED.license_number,
-       specialties = EXCLUDED.specialties, status = 'submitted', submitted_at = now(), verified_at = NULL, verified_by = NULL, reject_reason = NULL`,
-    [m.userId, licenseType, licenseState, licenseNumber, specialties],
-  );
-  await logEvent('provider_submitted', {}, null, null);
-  res.json({ status: 'submitted' });
+// Providers now verify through the Provider Knowledge Base (routes/providers.ts: NPI Registry + OIG exclusions).
+socialRouter.put('/api/social/provider', () => {
+  throw new HttpError(410, 'Provider verification moved: verify your NPI on the provider page.', 'moved');
 });
-
-socialStaffRouter.get('/api/social/providers/queue', async (req, res) => {
-  staff(req);
-  const { rows } = await pool.query<{ user_id: number; display_name: string | null; email: string; license_type: string; license_state: string; license_number: string; specialties: string[]; submitted_at: Date }>(
-    `SELECT c.user_id, sp.display_name, u.email, c.license_type, c.license_state, c.license_number, c.specialties, c.submitted_at
-       FROM provider_credentials c JOIN users u ON u.id = c.user_id LEFT JOIN social_profiles sp ON sp.user_id = c.user_id
-      WHERE c.status = 'submitted' ORDER BY c.submitted_at`,
-  );
-  res.json({ providers: rows.map((r) => ({ userId: r.user_id, displayName: r.display_name, email: r.email, licenseType: r.license_type, licenseState: r.license_state, licenseNumber: r.license_number, specialties: r.specialties, submittedAt: r.submitted_at.toISOString() })) });
-});
-
-for (const action of ['verify', 'reject'] as const) {
-  socialStaffRouter.post(`/api/social/providers/:userId/${action}`, async (req, res) => {
-    staff(req);
-    const id = idParam(req.params.userId);
-    const reason = action === 'reject' ? str((req.body as Record<string, unknown> | undefined)?.reason, 'reason', 200) || 'We couldn’t verify that license' : null;
-    const { rowCount } = await pool.query(
-      `UPDATE provider_credentials SET status = $2, verified_at = CASE WHEN $2 = 'verified' THEN now() END, verified_by = $3, reject_reason = $4 WHERE user_id = $1 AND status = 'submitted'`,
-      [id, action === 'verify' ? 'verified' : 'rejected', req.user?.id ?? null, reason],
-    );
-    if (!rowCount) throw new HttpError(404, 'Nothing waiting for review');
-    await logEvent('provider_reviewed', { action }, null, null);
-    res.json({ ok: true, status: action === 'verify' ? 'verified' : 'rejected' });
-  });
-}
 
 /* ======================= The Feed's public landing page (no sign-in) ======================= */
 
