@@ -160,6 +160,42 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M3.5 19.5h17M5 19.5V11l4-3 4 3v8.5M13 19.5v-6l3.5-2.5 3 2.5v6" />
     </>
   ),
+  // Nav destinations that used to borrow another destination's icon (same stroke family).
+  stories: (
+    <>
+      <path d="M12 3.5a8.5 8.5 0 0 1 7.6 4.7M20.4 13.4a8.5 8.5 0 0 1-4.3 6.1M10.9 20.4a8.5 8.5 0 0 1-7.2-5.8M3.7 9.8a8.5 8.5 0 0 1 4.8-5.6" />
+      <circle cx="12" cy="12" r="4" />
+    </>
+  ),
+  circles: (
+    <>
+      <circle cx="12" cy="8.3" r="4" />
+      <circle cx="8.2" cy="15" r="4" />
+      <circle cx="15.8" cy="15" r="4" />
+    </>
+  ),
+  moderation: (
+    <>
+      <path d="M6 21V4" />
+      <path d="M6 4.5h11.5l-2.3 4.3 2.3 4.2H6" />
+    </>
+  ),
+  'bell-settings': (
+    <>
+      <path d="M4 16v-4.5a5.5 5.5 0 0 1 11 0V16l1.3 1.8H2.7z" />
+      <path d="M7.7 20.5a2 2 0 0 0 3.6 0" />
+      <path d="M17 5h4.5M17 9.5h4.5" />
+      <circle cx="18.6" cy="5" r="1.2" />
+      <circle cx="20" cy="9.5" r="1.2" />
+    </>
+  ),
+  'profile-edit': (
+    <>
+      <circle cx="10" cy="8" r="3.6" />
+      <path d="M3.5 19.5c.9-3.4 3.4-5.4 6.5-5.4 1.2 0 2.3.3 3.2.8" />
+      <path d="m15 20.6.6-2.9 4.6-4.6a1.6 1.6 0 0 1 2.3 2.3l-4.6 4.6z" />
+    </>
+  ),
   clip: (
     <>
       <rect x="6" y="3.5" width="12" height="17" rx="2.5" />

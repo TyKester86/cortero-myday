@@ -710,10 +710,10 @@ function Settings({ me }: { me: CommunityMe }) {
     <>
       <h2 className="sc-h3">Account</h2>
       <div className="sc-card sc-rows">
-        <Row icon="user" label="Profile" to="/feed/profile/edit" testid="settings-profile" />
+        <Row icon="profile-edit" label="Profile" to="/feed/profile/edit" testid="settings-profile" />
         <Row icon="shield" label="Provider background" value={p.provider ? 'Verified' : undefined} to="/feed/settings/provider" testid="settings-provider" />
         <Row icon="lock" label="Privacy" value={aud === 'friends' ? 'Friends only' : 'Public'} onClick={() => setSheet('privacy')} testid="settings-privacy" />
-        <Row icon="bell" label="Notifications" to="/feed/settings/notifications" testid="settings-notifications" />
+        <Row icon="bell-settings" label="Notifications" to="/feed/settings/notifications" testid="settings-notifications" />
       </div>
       <h2 className="sc-h3">Community</h2>
       <div className="sc-card sc-rows">
@@ -721,11 +721,11 @@ function Settings({ me }: { me: CommunityMe }) {
         <Row icon="lifebuoy" label="Crisis resources" onClick={() => setSheet('crisis')} testid="settings-crisis" />
         <Row icon="village" label="Villages" to="/village" testid="settings-villages" />
         <Row icon="clip" label="Clips" to="/clips" testid="settings-clips" />
-        {!FEED_APP && session.household && !off.has('circles') && <Row icon="friends" label="Circles" to="/circles" testid="settings-circles" />}
+        {!FEED_APP && session.household && !off.has('circles') && <Row icon="circles" label="Circles" to="/circles" testid="settings-circles" />}
         <Row icon="gift" label="Invite friends" to="/invite" testid="settings-invite" />
         <Row icon="coins" label="Earnings" to="/earnings" testid="settings-earnings" />
         {p.provider && <Row icon="briefcase" label="Business suite" to="/business" testid="settings-business" />}
-        {me.isModerator && <Row icon="shield" label="Moderation queue" to="/community/moderation" testid="settings-moderation" />}
+        {me.isModerator && <Row icon="moderation" label="Moderation queue" to="/community/moderation" testid="settings-moderation" />}
       </div>
       <h2 className="sc-h3">App</h2>
       <div className="sc-card sc-rows">

@@ -44,7 +44,7 @@ const KINDS: Array<[keyof Prefs, string]> = [
 export function NotificationsPage() {
   return (
     <section className="sc-page feed-page" data-testid="notifications">
-      <TopBar title="Notifications" back={false} right={<IconLink to="/feed/settings/notifications" icon="gear" label="Notification settings" testid="notif-settings" />} />
+      <TopBar title="Notifications" back={false} right={<IconLink to="/feed/settings/notifications" icon="bell-settings" label="Notification settings" testid="notif-settings" />} />
       <Gate>{() => <Inbox />}</Gate>
     </section>
   );

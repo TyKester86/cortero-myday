@@ -192,6 +192,9 @@ function Explore() {
         </div>
       )}
       <nav className="sc-explore-links" aria-label="More of the Feed">
+        <Link to="/feed/stories" className="sc-explore-link" data-testid="explore-stories">
+          <Icon name="stories" /> Stories
+        </Link>
         <Link to="/clips" className="sc-explore-link" data-testid="explore-clips">
           <Icon name="clip" /> Clips
         </Link>

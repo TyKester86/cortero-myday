@@ -39,10 +39,12 @@ const P: Record<string, string> = {
   care: '<path d="M6.5 3.5v5a4 4 0 0 0 8 0v-5"/><path d="M10.5 12.5v2.5a4.5 4.5 0 0 0 9 0v-1.5"/><circle cx="19.5" cy="12" r="1.6"/>',
   card: '<rect x="2.8" y="5.5" width="18.4" height="13" rx="2"/><path d="M2.8 10h18.4"/><path d="M6.5 15h3"/>',
   admin: '<path d="M14.5 5.2a4 4 0 0 0-5 5.2l-5.8 5.8a1.6 1.6 0 0 0 2.3 2.3l5.8-5.8a4 4 0 0 0 5.2-5l-2.4 2.4-2.3-.5-.5-2.3z"/>',
-  meetings: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>',
+  // People at a table (Lectures keeps the designed microphone).
+  meetings: '<circle cx="7" cy="7.5" r="2.4"/><circle cx="17" cy="7.5" r="2.4"/><path d="M3.5 14.5c.6-2 1.9-3.1 3.5-3.1s2.9 1.1 3.5 3.1M13.5 14.5c.6-2 1.9-3.1 3.5-3.1s2.9 1.1 3.5 3.1"/><path d="M3 17.5h18M6.5 17.5V21M17.5 17.5V21"/>',
   errands: '<path d="M6 8h12l-1 11.2A2 2 0 0 1 15 21H9a2 2 0 0 1-2-1.8z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/><path d="M9.5 14.5l1.8 1.8 3.4-3.6"/>',
   inbox: '<path d="M3.5 13.5l2.6-7.2A2 2 0 0 1 8 5h8a2 2 0 0 1 1.9 1.3l2.6 7.2V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M3.5 13.5h4.6l1.4 2.5h5l1.4-2.5h4.6"/>',
-  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 2.8v3.6M16 2.8v3.6"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01"/>',
+  // Month grid, so it never reads as the designed Plan calendar.
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 2.8v3.6M16 2.8v3.6"/><path d="M3.5 15.2h17M9.2 10v10.5M14.8 10v10.5"/>',
   village: '<path d="M3.5 5.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3a2 2 0 0 1-2-2z"/><path d="M18 8.5h.5a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2v3l-3.5-3h-4a2 2 0 0 1-1.9-1.4"/>',
   feed: '<rect x="4" y="3.5" width="16" height="17" rx="2.5"/><circle cx="8.5" cy="8.3" r="1.6"/><path d="M11.5 7.5h5M11.5 9.5h3M7.5 13.5h9M7.5 16.5h6"/>',
   library: '<path d="M4 4.5h3.2v15H4z"/><path d="M8.6 4.5h3.2v15H8.6z"/><path d="m13.6 5.6 3-.8 3.6 13.9-3 .8z"/><path d="M4 8h3.2M8.6 8h3.2M4 16h3.2M8.6 16h3.2"/>',
