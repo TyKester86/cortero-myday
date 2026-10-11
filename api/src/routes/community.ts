@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /**
  * Community: The Village (parents forum) and The Feed (in-app social network).
  *
@@ -49,6 +50,7 @@ import {
   type PostComment,
   type FriendPerson,
   type FriendsData,
+  type FeedSort,
   type MediaTile,
   type Relationship,
   FEED_FEELINGS,
@@ -61,6 +63,7 @@ import {
 } from '@myday/shared';
 import { onFeedApp } from '../lib/hosts.js';
 import { milestone, notify, notifyMentions } from '../lib/feednotify.js';
+import { diversifyFeed, FEED_WEIGHTS, scoreFeedPost, type FeedScore, type Relation } from '../lib/feedrank.js';
 import { feedStreak } from '../lib/feedstreak.js';
 import { config } from '../config.js';
 import { asSystem, detached, pool, tx } from '../db.js';
@@ -139,6 +142,7 @@ export interface ProfileRow {
   default_audience: PostAudience;
   pinned_kind: 'post' | 'clip' | null;
   pinned_id: number | null;
+  feed_sort: FeedSort;
 }
 
 /** Where MonetizeMe storefronts live (a creator's shop is <base>/creator/?slug=<slug>). */
@@ -1043,7 +1047,7 @@ function verifyAllowed(userId: number): boolean {
 /** The Business Suite (routes/business.ts) plugs its sponsored item in here, so this module never imports it (no cycle). */
 export const sponsorHook: { feed: ((viewer: number) => Promise<SponsoredItem | null>) | null; clips: ((viewer: number) => Promise<SponsoredItem | null>) | null } = { feed: null, clips: null };
 
-export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone' | 'discover'; author: number | null; before: number | null; id?: number; limit?: number }): Promise<FeedPage> {
+export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone' | 'discover'; author: number | null; before: number | null; id?: number; ids?: number[]; limit?: number }): Promise<FeedPage> {
   const { rows } = await pool.query<FeedRow>(
     `SELECT s.id, s.body_enc, s.key_id, s.image_id, i.status AS img_status, s.status, s.created_at, s.author_user_id, s.like_count, ${AUTHOR_COLS},
             EXISTS (SELECT 1 FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS liked,
@@ -1058,8 +1062,9 @@ export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone
         AND ($3::int IS NULL OR s.author_user_id = $3)
         AND ($4::int IS NULL OR s.id < $4)
         AND ($5::int IS NULL OR s.id = $5)
+        AND ($7::int[] IS NULL OR s.id = ANY($7::int[]))
       ORDER BY s.id DESC LIMIT $6`,
-    [viewer, o.tab, o.author, o.before, o.id ?? null, o.limit ?? (o.author !== null ? 30 : FEED_PAGE)],
+    [viewer, o.tab, o.author, o.before, o.id ?? null, o.limit ?? (o.ids ? o.ids.length : o.author !== null ? 30 : FEED_PAGE), o.ids ?? null],
   );
   const posts = rows.map((r) => toFeed(viewer, r));
   const ids = posts.map((p) => p.id);
@@ -1117,13 +1122,132 @@ async function endlessPage(viewer: number, tab: 'following' | 'everyone', cursor
   return { posts, villages, next: null, windowDays: 0, cursor: phase === 'end' ? null : `${phase}.${before ?? ''}` };
 }
 
+/* ---------- Feed Rank v1: the ranked home feed ---------- */
+
+const RANK_WINDOW_DAYS = 7;
+const RANK_CANDIDATES = 400;
+const RANK_TOP = 150;
+const PER_AUTHOR_PER_DAY = 3;
+const OWN_PINNED_HOURS = 2;
+
+/** One of the viewer's outcomes (like, comment, poll vote, DM started, report), for tuning the ranker. */
+export async function rankOutcome(viewer: number, postId: number | null, authorId: number, kind: 'like' | 'comment' | 'vote' | 'dm' | 'report'): Promise<void> {
+  if (viewer === authorId) return;
+  await pool.query('INSERT INTO feed_rank_outcomes (viewer_id, post_id, author_id, kind) VALUES ($1, $2, $3, $4)', [viewer, postId, authorId, kind]);
+}
+
+/**
+ * One page of the ranked home feed. Candidates: the last 7 days of posts you may see (public, or a friend's
+ * friends-only post), never your own, never someone you blocked or a post you reported, at most 3 per author per
+ * day. Scored (lib/feedrank.ts), the top 150 re-ranked for variety, then paged; the cursor "r.<ms>.<offset>" pins
+ * the moment of the first page so nothing repeats. When they run out: "You're caught up".
+ */
+async function rankedPage(viewer: number, cursor: string | null): Promise<FeedPage & { requestId: string; served: Array<FeedScore & { authorId: number }> }> {
+  const m = /^r\.(\d+)\.(\d+)$/.exec(cursor ?? '');
+  const asOf = m ? new Date(Number(m[1])) : (await pool.query<{ now: Date }>('SELECT now() AS now')).rows[0]!.now;
+  const offset = m ? Number(m[2]) : 0;
+  const { rows: cands } = await pool.query<{ id: number; author: number; created_at: Date; comment_count: number; has_image: boolean; is_poll: boolean; impressions: number; votes: number; reports: number }>(
+    `WITH c AS (
+       SELECT s.id, s.author_user_id AS author, s.created_at, s.comment_count, s.image_id IS NOT NULL AS has_image,
+              ROW_NUMBER() OVER (PARTITION BY s.author_user_id, (s.created_at AT TIME ZONE $3)::date ORDER BY s.created_at) AS nth
+         FROM social_posts s JOIN social_profiles p ON p.user_id = s.author_user_id
+        WHERE s.status = 'visible' AND s.author_user_id <> $1 AND p.banned_at IS NULL AND ${NOT_BLOCKED('s.author_user_id')} AND ${AUDIENCE_OK('s')}
+          AND s.created_at <= $2 AND s.created_at > $2::timestamptz - interval '${RANK_WINDOW_DAYS} days'
+          AND NOT EXISTS (SELECT 1 FROM social_reports r WHERE r.post_id = s.id AND r.reporter_user_id = $1)
+     )
+     SELECT c.id, c.author, c.created_at, c.comment_count, c.has_image,
+            EXISTS (SELECT 1 FROM social_polls pl WHERE pl.post_id = c.id) AS is_poll,
+            (SELECT COUNT(DISTINCT v.viewer_user_id)::int FROM social_post_views v WHERE v.post_id = c.id) AS impressions,
+            (SELECT COUNT(*)::int FROM social_poll_votes pv WHERE pv.post_id = c.id) AS votes,
+            (SELECT COUNT(DISTINCT r.reporter_user_id)::int FROM social_reports r WHERE r.post_id = c.id AND r.status = 'open') AS reports
+       FROM c WHERE c.nth <= ${PER_AUTHOR_PER_DAY} ORDER BY c.created_at DESC LIMIT ${RANK_CANDIDATES}`,
+    [viewer, asOf, config.tz],
+  );
+  const authors = [...new Set(cands.map((c) => c.author))];
+  const { rows: au } = authors.length
+    ? await pool.query<{ id: number; out: boolean; inn: boolean; comments: number; dms: number; votes: number; likes: number; visits: number; created_at: Date; lifetime: number }>(
+        `SELECT a.id,
+                EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = a.id) AS out,
+                EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = a.id AND f.followed_user_id = $1) AS inn,
+                (SELECT COUNT(*)::int FROM social_post_comments x JOIN social_posts s ON s.id = x.post_id WHERE x.author_user_id = $1 AND s.author_user_id = a.id AND x.created_at > $2::timestamptz - interval '30 days') AS comments,
+                (SELECT COUNT(*)::int FROM dm_messages d JOIN dm_threads t ON t.id = d.thread_id WHERE d.sender_user_id = $1 AND (t.user_a = a.id OR t.user_b = a.id) AND d.created_at > $2::timestamptz - interval '30 days') AS dms,
+                (SELECT COUNT(*)::int FROM social_poll_votes v JOIN social_posts s ON s.id = v.post_id WHERE v.user_id = $1 AND s.author_user_id = a.id AND v.created_at > $2::timestamptz - interval '30 days') AS votes,
+                (SELECT COUNT(*)::int FROM social_likes l JOIN social_posts s ON s.id = l.post_id WHERE l.user_id = $1 AND s.author_user_id = a.id AND l.created_at > $2::timestamptz - interval '30 days') AS likes,
+                (SELECT COUNT(*)::int FROM social_profile_views pv WHERE pv.viewer_user_id = $1 AND pv.profile_user_id = a.id AND pv.day > ($2::timestamptz)::date - 30) AS visits,
+                p.created_at,
+                (SELECT COUNT(*)::int FROM social_posts x WHERE x.author_user_id = a.id AND x.status <> 'removed') AS lifetime
+           FROM unnest($3::int[]) AS a(id) JOIN social_profiles p ON p.user_id = a.id`,
+        [viewer, asOf, authors],
+      )
+    : { rows: [] };
+  const byAuthor = new Map(au.map((a) => [a.id, a]));
+  const scored = cands.map((c) => {
+    const a = byAuthor.get(c.author)!;
+    const relation: Relation = a.out && a.inn ? 'mutual' : a.out ? 'following' : a.inn ? 'followed_by' : 'none';
+    const s = scoreFeedPost(
+      { authorId: c.author, relation, comments: a.comments, dms: a.dms, pollVotes: a.votes, likes: a.likes, profileVisits: a.visits, ageDays: (asOf.getTime() - a.created_at.getTime()) / 86_400_000, lifetimePosts: a.lifetime },
+      { id: c.id, authorId: c.author, ageHours: (asOf.getTime() - c.created_at.getTime()) / 3_600_000, commentCount: c.comment_count, isPoll: c.is_poll,
+        pollParticipation: c.is_poll ? Math.min(1, c.votes / Math.max(1, c.impressions, c.votes)) : 0, impressions: c.impressions, reports: c.reports, rich: c.has_image || c.is_poll },
+    );
+    return { ...s, authorId: c.author, rich: c.has_image || c.is_poll };
+  });
+  scored.sort((x, y) => y.score - x.score || y.postId - x.postId);
+  const ranked = diversifyFeed(scored.slice(0, RANK_TOP), RANK_TOP);
+  const slice = ranked.slice(offset, offset + FEED_PAGE);
+  const next = offset + FEED_PAGE < ranked.length ? `r.${asOf.getTime()}.${offset + FEED_PAGE}` : null;
+  const full = slice.length ? (await feedPage(viewer, { tab: 'everyone', author: null, before: null, ids: slice.map((x) => x.postId) })).posts : [];
+  const byId = new Map(full.map((p) => [p.id, p]));
+  const posts = slice.map((x) => byId.get(x.postId)).filter((p): p is FeedPost => !!p);
+  // Just posted? Yours stays on top for a little while (so you see it went up); it's never ranked.
+  if (offset === 0) {
+    const mine = (await feedPage(viewer, { tab: 'everyone', author: viewer, before: null, limit: 5 })).posts.filter((p) => asOf.getTime() - new Date(p.at).getTime() < OWN_PINNED_HOURS * 3_600_000);
+    posts.unshift(...mine);
+  }
+  const oldest = cands.reduce<number | null>((min, c) => (min === null || c.id < min ? c.id : min), null);
+  return {
+    posts,
+    next: null,
+    windowDays: 0,
+    cursor: next,
+    sort: 'ranked',
+    caughtUp: next === null,
+    exploreCursor: `posts.${oldest ?? ''}`,
+    requestId: randomUUID(),
+    served: slice,
+  };
+}
+
 communityRouter.get('/api/feed', async (req, res) => {
   const m = await member(req);
-  const tab = req.query.tab === 'following' ? 'following' : 'everyone';
+  const tabParam = req.query.tab === 'following' ? 'following' : req.query.tab === 'everyone' ? 'everyone' : null;
+  const tab = tabParam ?? 'everyone';
   const authorId = typeof req.query.author === 'string' && req.query.author ? idParam(req.query.author) : null;
   const before = typeof req.query.before === 'string' && req.query.before ? idParam(req.query.before) : null;
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
-  const page = authorId !== null ? await feedPage(m.userId, { tab, author: authorId, before }) : await endlessPage(m.userId, tab, cursor);
+  // "For you" or "Latest": asking for one remembers it.
+  const asked: FeedSort | null = req.query.sort === 'latest' ? 'latest' : req.query.sort === 'ranked' ? 'ranked' : null;
+  if (asked && asked !== m.profile.feed_sort) await pool.query('UPDATE social_profiles SET feed_sort = $2 WHERE user_id = $1', [m.userId, asked]);
+  const sort: FeedSort = asked ?? m.profile.feed_sort ?? 'ranked';
+  // Ranked unless: a profile's posts, an explicit tab (chronological), Latest, or a chronological cursor ("Keep exploring").
+  const ranked = authorId === null && tabParam === null && sort === 'ranked' && (cursor === null || cursor.startsWith('r.'));
+  let page: FeedPage;
+  if (authorId !== null) page = await feedPage(m.userId, { tab, author: authorId, before });
+  else if (ranked) {
+    const r = await rankedPage(m.userId, cursor);
+    const { served, requestId, ...rest } = r;
+    page = rest;
+    if (served.length) {
+      const startAt = cursor ? Number(cursor.split('.')[2]) : 0;
+      const vals: Array<string | number> = [];
+      const tuples = served.map((x, i) => {
+        const row = [requestId, m.userId, x.postId, x.authorId, startAt + i, x.score, x.C, x.F, x.A, x.D, x.E].map((v) => (typeof v === 'number' && !Number.isInteger(v) ? Math.round(v * 100000) / 100000 : v));
+        const base = vals.length;
+        vals.push(...row);
+        return `(${row.map((_, j) => `$${base + j + 1}`).join(',')})`;
+      });
+      await pool.query(`INSERT INTO feed_rank_impressions (request_id, viewer_id, post_id, author_id, position, score, c, f, a, d, e) VALUES ${tuples.join(',')}`, vals);
+    }
+  } else page = { ...(await endlessPage(m.userId, tab, cursor)), sort };
   // Seen: once per person per day (the writers' analytics). Not your own.
   const others = page.posts.filter((p) => !p.mine && p.status === 'visible').map((p) => p.id);
   if (others.length) {
@@ -1405,6 +1529,7 @@ communityRouter.post('/api/feed/posts/:id/like', async (req, res) => {
   else if (had[0]) await pool.query('UPDATE social_likes SET reaction = $3 WHERE post_id = $1 AND user_id = $2', [id, m.userId, want]);
   else {
     await pool.query('INSERT INTO social_likes (post_id, user_id, reaction) VALUES ($1, $2, $3)', [id, m.userId, want]);
+    await rankOutcome(m.userId, id, p.author_user_id, 'like');
     await notify({ to: p.author_user_id, kind: 'like', actor: m.userId, group: `like:post:${id}`, url: `/feed/post/${id}` });
   }
   await pool.query('UPDATE social_posts SET like_count = (SELECT COUNT(*) FROM social_likes WHERE post_id = $1) WHERE id = $1', [id]);
@@ -1432,7 +1557,9 @@ communityRouter.post('/api/feed/posts/:id/vote', async (req, res) => {
      ON CONFLICT (post_id, user_id) DO UPDATE SET option_idx = EXCLUDED.option_idx, created_at = now()`,
     [id, m.userId, opt],
   );
-  res.json({ post: await onePost(m.userId, id) });
+  const voted = await onePost(m.userId, id);
+  await rankOutcome(m.userId, id, voted.author.userId, 'vote');
+  res.json({ post: voted });
 });
 
 type CommentRow = AuthorCols & { id: number; body_enc: Buffer; key_id: string; status: CommunityStatus; created_at: Date; author_user_id: number; like_count: number; liked: boolean; parent_id: number | null };
@@ -1485,6 +1612,7 @@ communityRouter.post('/api/feed/posts/:id/comments', async (req, res) => {
   );
   await pool.query("UPDATE social_posts SET comment_count = (SELECT COUNT(*) FROM social_post_comments WHERE post_id = $1 AND status = 'visible') WHERE id = $1", [id]);
   if (d.status === 'visible') {
+    await rankOutcome(m.userId, id, post.author.userId, 'comment');
     await notify({ to: post.author.userId, kind: 'comment', actor: m.userId, group: `comment:post:${id}`, url: `/feed/post/${id}`, snippet: body });
     if (parentId) {
       const { rows: pa } = await pool.query<{ author_user_id: number }>('SELECT author_user_id FROM social_post_comments WHERE id = $1', [parentId]);
@@ -1536,7 +1664,8 @@ communityRouter.post('/api/feed/posts/:id/report', async (req, res) => {
   const p = await socialPost(m.userId, id);
   if (p.author_user_id === m.userId) throw new HttpError(400, 'You can’t report your own post');
   const reason = str((req.body as Record<string, unknown>).reason, 'reason', 200) || 'Reported';
-  await pool.query('INSERT INTO social_reports (post_id, reporter_user_id, reason) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [id, m.userId, reason]);
+  const rep = await pool.query('INSERT INTO social_reports (post_id, reporter_user_id, reason) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [id, m.userId, reason]);
+  if (rep.rowCount) await rankOutcome(m.userId, id, p.author_user_id, 'report');
   const { rows } = await pool.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM social_reports WHERE post_id = $1 AND status = 'open'", [id]);
   const hidden = (rows[0]?.n ?? 0) >= HIDE_AT_REPORTS;
   if (hidden) await pool.query("UPDATE social_posts SET status = 'hidden', priority = GREATEST(priority, 1) WHERE id = $1 AND status = 'visible'", [id]);
@@ -1954,6 +2083,55 @@ async function queue(): Promise<CommunityQueue> {
   items.sort((a, b) => b.priority - a.priority || a.at.localeCompare(b.at));
   return { items };
 }
+
+/**
+ * Feed Rank weekly review (staff): what the ranker is for — comments + poll votes per session (up = good),
+ * DMs started, return visits — and what it must not do: hides/reports per score decile (down = good).
+ * A "session" is a person's ranked feed on one day. Session length is deliberately not measured or optimized.
+ */
+communityStaffRouter.get('/api/community/moderation/feed-rank', async (req, res) => {
+  staff(req);
+  const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+  const { rows: s } = await pool.query<{ sessions: number; viewers: number; returning: number; comments: number; votes: number; dms: number; likes: number; reports: number }>(
+    `WITH imp AS (SELECT * FROM feed_rank_impressions WHERE created_at > now() - make_interval(days => $1)),
+          sess AS (SELECT DISTINCT viewer_id, (created_at AT TIME ZONE $2)::date AS day FROM imp),
+          o AS (SELECT * FROM feed_rank_outcomes WHERE created_at > now() - make_interval(days => $1) AND viewer_id IN (SELECT viewer_id FROM sess))
+     SELECT (SELECT COUNT(*)::int FROM sess) AS sessions,
+            (SELECT COUNT(DISTINCT viewer_id)::int FROM sess) AS viewers,
+            (SELECT COUNT(*)::int FROM (SELECT viewer_id FROM sess GROUP BY viewer_id HAVING COUNT(*) >= 2) r) AS returning,
+            (SELECT COUNT(*)::int FROM o WHERE kind = 'comment') AS comments,
+            (SELECT COUNT(*)::int FROM o WHERE kind = 'vote') AS votes,
+            (SELECT COUNT(*)::int FROM o WHERE kind = 'dm') AS dms,
+            (SELECT COUNT(*)::int FROM o WHERE kind = 'like') AS likes,
+            (SELECT COUNT(*)::int FROM o WHERE kind = 'report') AS reports`,
+    [days, config.tz],
+  );
+  const { rows: deciles } = await pool.query<{ decile: number; impressions: number; reported: number; engaged: number }>(
+    `WITH imp AS (SELECT i.*, ntile(10) OVER (ORDER BY i.score) AS decile FROM feed_rank_impressions i WHERE i.created_at > now() - make_interval(days => $1))
+     SELECT decile, COUNT(*)::int AS impressions,
+            COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM feed_rank_outcomes o WHERE o.viewer_id = imp.viewer_id AND o.post_id = imp.post_id AND o.kind = 'report'))::int AS reported,
+            COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM feed_rank_outcomes o WHERE o.viewer_id = imp.viewer_id AND o.post_id = imp.post_id AND o.kind IN ('comment', 'vote')))::int AS engaged
+       FROM imp GROUP BY decile ORDER BY decile`,
+    [days],
+  );
+  const t = s[0]!;
+  const per = (n: number): number | null => (t.sessions ? Math.round((n / t.sessions) * 1000) / 1000 : null);
+  res.json({
+    days,
+    weights: FEED_WEIGHTS,
+    sessions: t.sessions,
+    viewers: t.viewers,
+    returnVisitRate: t.viewers ? Math.round((t.returning / t.viewers) * 1000) / 1000 : null,
+    connectionPerSession: per(t.comments + t.votes),
+    commentsPerSession: per(t.comments),
+    pollVotesPerSession: per(t.votes),
+    dmsStartedPerSession: per(t.dms),
+    likesPerSession: per(t.likes),
+    deciles: deciles.map((d) => ({ decile: d.decile, impressions: d.impressions, reportRate: d.impressions ? d.reported / d.impressions : 0, connectionRate: d.impressions ? d.engaged / d.impressions : 0 })),
+    sessionLength: null,
+    note: 'Session length is not measured here on purpose: watch it, never maximize it. If it climbs while connection per session stays flat, retune toward connection.',
+  });
+});
 
 communityStaffRouter.get('/api/community/moderation/queue', async (req, res) => {
   staff(req);

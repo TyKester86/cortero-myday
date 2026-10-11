@@ -13,7 +13,7 @@ import { notify, notifyMentions } from '../lib/feednotify.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { screenText } from '../lib/screen.js';
 import { currentKeyId, openBytes, openText, sealBytes, sealText } from '../lib/seal.js';
-import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, sponsorHook, block, decide, imageUrl, member, NOT_BLOCKED, poster, profileRow, SEEN, staff, type AuthorCols } from './community.js';
+import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, sponsorHook, block, decide, imageUrl, member, NOT_BLOCKED, poster, profileRow, rankOutcome, SEEN, staff, type AuthorCols } from './community.js';
 
 export const socialRouter = Router();
 /** Video uploads take a raw body. */
@@ -53,8 +53,10 @@ socialRouter.get('/api/social/stories', async (req, res) => {
        FROM social_stories s ${AUTHOR_JOIN('s.author_user_id')}
       WHERE s.expires_at > now() AND ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL
       GROUP BY p.user_id, p.display_name, p.parent_badge, p.avatar_id, ai.status, s.author_user_id
-      ORDER BY (s.author_user_id = $1) DESC, (COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM social_story_views v WHERE v.story_id = s.id AND v.viewer_user_id = $1)) > 0) DESC,
-               EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id) DESC, max(s.created_at) DESC
+      ORDER BY (s.author_user_id = $1) DESC,
+               ((COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM social_story_views v WHERE v.story_id = s.id AND v.viewer_user_id = $1)) > 0) AND feed_friends($1, s.author_user_id)) DESC,
+               (COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM social_story_views v WHERE v.story_id = s.id AND v.viewer_user_id = $1)) > 0) DESC,
+               max(s.created_at) DESC
       LIMIT 40`,
     [m.userId],
   );
@@ -502,7 +504,9 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
   // crisis goes to the top of the queue and the writer sees 988.
   const d = await decide(await screenText(body), 'message');
   const id = await threadId(m.userId, other, true);
+  const { rowCount: saidBefore } = await pool.query('SELECT 1 FROM dm_messages WHERE thread_id = $1 AND sender_user_id = $2 LIMIT 1', [id, m.userId]);
   const keyId = currentKeyId();
+  if (!saidBefore) await rankOutcome(m.userId, null, other, 'dm');
   await pool.query('INSERT INTO dm_messages (thread_id, sender_user_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
     id, m.userId, sealText(body, keyId), keyId, d.status, d.priority, d.flags,
   ]);

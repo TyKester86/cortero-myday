@@ -5,7 +5,7 @@
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { CHECKIN_MOODS, type FeedCatchup, type FeedMemory, type FeedPage, type FeedPost, type FeedStats, type FeedStreakInfo, type FeedSuggestion, type FeedVillageItem, type SponsoredItem } from '@myday/shared';
+import { CHECKIN_MOODS, type FeedCatchup, type FeedMemory, type FeedPage, type FeedPost, type FeedSort, type FeedStats, type FeedStreakInfo, type FeedSuggestion, type FeedVillageItem, type SponsoredItem } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { ago } from '../../dates';
 import { count } from '../../format';
@@ -15,10 +15,16 @@ type Card = { kind: 'post'; post: FeedPost } | { kind: 'village'; v: FeedVillage
 
 export function EndlessPosts({
   tab,
+  sort,
+  onSort,
   renderPost,
   renderSponsored,
 }: {
-  tab: 'following' | 'everyone';
+  /** A chronological tab; without one the Feed is the ranked home feed (or Latest, if that's the person's choice). */
+  tab?: 'following' | 'everyone';
+  /** Switch order (remembered on the server); omitted = the saved choice. */
+  sort?: FeedSort;
+  onSort?: (s: FeedSort) => void;
   renderPost: (p: FeedPost, update: (p: FeedPost) => void, gone: (id: number) => void) => React.ReactNode;
   renderSponsored: (s: SponsoredItem) => React.ReactNode;
 }) {
@@ -26,26 +32,33 @@ export function EndlessPosts({
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [sponsored, setSponsored] = useState<SponsoredItem | null>(null);
   const [busy, setBusy] = useState(false);
+  // Ranked: "You're caught up" once every scored post has been shown; "Keep exploring" goes on (older posts, villages).
+  const [caughtUp, setCaughtUp] = useState<{ explore: string | null } | null>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   const loading = useRef(false);
+  const base = tab ? `/api/feed?tab=${tab}` : `/api/feed?${sort ? `sort=${sort}` : ''}`;
   const more = useCallback(async (): Promise<void> => {
-    if (loading.current || cursor === null) return;
+    if (loading.current || cursor === null || caughtUp) return;
     loading.current = true;
     setBusy(true);
     try {
-      const page = await api<FeedPage>(`/api/feed?tab=${tab}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      const page = await api<FeedPage>(`${base}${cursor ? `${base.endsWith('?') ? '' : '&'}cursor=${encodeURIComponent(cursor)}` : ''}`);
       const add: Card[] = [...page.posts.map((post) => ({ kind: 'post' as const, post })), ...(page.villages ?? []).map((v) => ({ kind: 'village' as const, v }))];
       setCards((c) => {
         const seen = new Set(c.map((x) => (x.kind === 'post' ? `p${x.post.id}` : `v${x.v.id}`)));
         return [...c, ...add.filter((x) => !seen.has(x.kind === 'post' ? `p${x.post.id}` : `v${x.v.id}`))];
       });
       if (cursor === undefined && page.sponsored) setSponsored(page.sponsored);
-      setCursor(page.cursor ?? null);
+      if (cursor === undefined && page.sort) onSort?.(page.sort);
+      if (page.caughtUp) {
+        setCaughtUp({ explore: page.exploreCursor ?? null });
+        setCursor(null);
+      } else setCursor(page.cursor ?? null);
     } finally {
       loading.current = false;
       setBusy(false);
     }
-  }, [cursor, tab]);
+  }, [cursor, base, caughtUp]); // eslint-disable-line react-hooks/exhaustive-deps
   // First page, then the next one whenever the bottom comes into view.
   useEffect(() => {
     if (cursor === undefined) void more();
@@ -57,12 +70,12 @@ export function EndlessPosts({
     io.observe(el);
     return () => io.disconnect();
   }, [more, cursor]);
-  // Past the very end: keep checking for new posts (they appear at the top).
+  // Past the very end of a chronological stream: keep checking for new posts (they appear at the top).
   useEffect(() => {
-    if (cursor !== null) return;
+    if (cursor !== null || caughtUp) return;
     const t = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void api<FeedPage>(`/api/feed?tab=${tab}`).then((page) =>
+      void api<FeedPage>(`/api/feed?tab=${tab ?? 'everyone'}`).then((page) =>
         setCards((c) => {
           const have = new Set(c.filter((x) => x.kind === 'post').map((x) => (x as { post: FeedPost }).post.id));
           const fresh = page.posts.filter((p) => !have.has(p.id) && !p.discover);
@@ -71,7 +84,7 @@ export function EndlessPosts({
       );
     }, 45_000);
     return () => clearInterval(t);
-  }, [cursor, tab]);
+  }, [cursor, tab, caughtUp]);
   const update = (p: FeedPost): void => setCards((c) => c.map((x) => (x.kind === 'post' && x.post.id === p.id ? { kind: 'post', post: p } : x)));
   const gone = (id: number): void => setCards((c) => c.filter((x) => !(x.kind === 'post' && x.post.id === id)));
   let discoverShown = false;
@@ -109,7 +122,30 @@ export function EndlessPosts({
           </Fragment>
         );
       })}
-      {cursor === null ? <KeepGoing /> : <div ref={sentinel} className="feed-sentinel" data-testid="feed-more" aria-hidden="true" />}
+      {caughtUp ? (
+        <div className="sc-card feed-caught-up" data-testid="feed-caught-up">
+          <b>You’re caught up</b>
+          <p className="sc-meta">That’s everything new from your friends and the community this week. Nothing more is loading — come back later, or keep going if you want to.</p>
+          {caughtUp.explore && (
+            <button
+              type="button"
+              className="sc-btn outline small"
+              onClick={() => {
+                const next = caughtUp.explore;
+                setCaughtUp(null);
+                setCursor(next);
+              }}
+              data-testid="feed-explore-more"
+            >
+              Keep exploring
+            </button>
+          )}
+        </div>
+      ) : cursor === null ? (
+        <KeepGoing />
+      ) : (
+        <div ref={sentinel} className="feed-sentinel" data-testid="feed-more" aria-hidden="true" />
+      )}
       {busy && <p className="muted desk-note">Loading more…</p>}
     </div>
   );

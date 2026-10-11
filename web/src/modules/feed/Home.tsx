@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import { FEED_FEELINGS, type CommentsFrom, type FeedPage, type FeedPost, type FeedFeeling, type FriendsData, type PostAudience, type PostComment, type ReviewNote, type WebItem } from '@myday/shared';
+import { FEED_FEELINGS, type FeedSort, type CommentsFrom, type FeedPage, type FeedPost, type FeedFeeling, type FriendsData, type PostAudience, type PostComment, type ReviewNote, type WebItem } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { FEED_APP } from '../../apps';
@@ -12,7 +12,7 @@ import { blockedOf, BlockedNote, EmptySheet, Gate, ReportButton, ReviewBanner, R
 import { SponsoredCard, StoryRail } from '../social/Social';
 import { CatchupCard, EndlessPosts, MemoriesCard, StreakChip } from '../social/Endless';
 import { InstallFeed } from '../social/shell';
-import { Avatar, FriendButton, HomeBar, Icon, IconLink, Name, Sheet, TopBar, errText, short, since, useMe } from './kit';
+import { Avatar, Filters, FriendButton, HomeBar, Icon, IconLink, Name, Sheet, TopBar, errText, short, since, useMe } from './kit';
 import { PostCard } from './PostCard';
 
 /* ======================= Home ======================= */
@@ -41,6 +41,9 @@ function HomeBody() {
   const [review, setReview] = useState<ReviewNote | null>((location.state as { review?: ReviewNote } | null)?.review ?? null);
   const [msg, setMsg] = useState<string | null>(null);
   const [round, setRound] = useState(0);
+  // "For you" (ranked, friends first) or "Latest" (newest first): the server remembers the choice.
+  const [sort, setSort] = useState<FeedSort | null>(null);
+  const [asked, setAsked] = useState<FeedSort | undefined>(undefined);
   const top = useRef<number | null>(null);
   const [fresh, setFresh] = useState(false);
   // "New posts": checks quietly; a tap brings them in at the top.
@@ -118,9 +121,24 @@ function HomeBody() {
       <CatchupCard renderPost={card} />
       <MemoriesCard renderPost={card} />
       <StreakChip />
+      <Filters
+        items={[
+          { key: 'ranked', label: 'For you' },
+          { key: 'latest', label: 'Latest' },
+        ]}
+        on={sort ?? 'ranked'}
+        onPick={(k) => {
+          if (k === sort) return;
+          setSort(k);
+          setAsked(k);
+          setRound((n) => n + 1);
+        }}
+        testid={(k) => `feed-sort-${k}`}
+      />
       <EndlessPosts
         key={round}
-        tab="everyone"
+        sort={asked}
+        onSort={setSort}
         renderPost={(p, update, gone) => <PostCard p={p} onChange={update} onMsg={setMsg} onGone={gone} />}
         renderSponsored={(sp) => <SponsoredCard s={sp} />}
       />

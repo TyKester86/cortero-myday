@@ -2867,7 +2867,15 @@ export interface FeedPage {
   villages?: FeedVillageItem[];
   /** At most one paid placement from a verified provider, labelled "Sponsored" (Feed tabs only). */
   sponsored?: SponsoredItem | null;
+  /** Home feed order: "ranked" (Feed Rank v1, friends first) or "latest" (strict newest first). Remembered per person. */
+  sort?: FeedSort;
+  /** Ranked: every scored post has been shown ("You're caught up"). Nothing more loads unless you ask. */
+  caughtUp?: boolean;
+  /** Ranked: where "Keep exploring" continues (older posts, then village conversations). */
+  exploreCursor?: string | null;
 }
+
+export type FeedSort = 'ranked' | 'latest';
 
 export interface FeedVillageItem {
   id: number;

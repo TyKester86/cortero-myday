@@ -2094,3 +2094,19 @@ body.sc-body {
 .sc-notif-text b {
   font-weight: 650;
 }
+
+.sc-app .feed-caught-up {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 18px;
+  text-align: center;
+}
+.sc-app .feed-caught-up b {
+  font-size: 18px;
+}
+.sc-app .feed-caught-up p {
+  margin: 0;
+  max-width: 30em;
+}

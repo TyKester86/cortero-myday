@@ -2312,17 +2312,17 @@ async function careTeam() {
   const rep1 = (await ty.post(`/api/feed/posts/${rude.id}/report`, { reason: 'Unkind or attacking' })).data;
   await ty.post(`/api/feed/posts/${rude.id}/report`, { reason: 'again' });
   await kayla.post(`/api/feed/posts/${rude.id}/report`, { reason: 'Unkind or attacking' });
-  eq('one report per person; still visible at 2', [rep1.hidden, (await sam.get('/api/feed')).data.posts.some((p) => p.id === rude.id)], [false, true]);
+  eq('one report per person; still visible at 2', [rep1.hidden, (await sam.get('/api/feed?tab=everyone')).data.posts.some((p) => p.id === rude.id)], [false, true]);
   const rep3 = (await sam.post(`/api/feed/posts/${rude.id}/report`, { reason: 'Unkind or attacking' })).data;
-  eq('3 reports auto-hide it pending review', [rep3.hidden, (await ty.get('/api/feed')).data.posts.some((p) => p.id === rude.id)], [true, false]);
-  eq('…its writer sees it “under review”', (await ret.get('/api/feed')).data.posts.find((p) => p.id === rude.id)?.status, 'hidden');
+  eq('3 reports auto-hide it pending review', [rep3.hidden, (await ty.get('/api/feed?tab=everyone')).data.posts.some((p) => p.id === rude.id)], [true, false]);
+  eq('…its writer sees it “under review”', (await ret.get('/api/feed?tab=everyone')).data.posts.find((p) => p.id === rude.id)?.status, 'hidden');
   eq('you can’t report your own post', (await ret.post(`/api/feed/posts/${rude.id}/report`, { reason: 'x' })).status, 400);
   check('reported item is in the queue with its reports', (await cmod.get('/api/community/moderation/queue')).data.items.some((i) => i.kind === 'feed' && i.id === rude.id && i.reports.length === 3));
   await kayla.post(`/api/community/people/${samId}/block`);
-  eq('block: you stop seeing each other', [(await kayla.get('/api/feed')).data.posts.some((p) => p.author.userId === samId), (await sam.get(`/api/community/people/${await uid('kayla')}`)).status], [false, 404]);
+  eq('block: you stop seeing each other', [(await kayla.get('/api/feed?tab=everyone')).data.posts.some((p) => p.author.userId === samId), (await sam.get(`/api/community/people/${await uid('kayla')}`)).status], [false, 404]);
   eq('…and can’t follow each other', (await sam.post(`/api/community/people/${await uid('kayla')}/follow`)).status, 404);
   await kayla.del(`/api/community/people/${samId}/block`);
-  eq('unblock', (await kayla.get('/api/feed')).data.posts.some((p) => p.author.userId === samId), true);
+  eq('unblock', (await kayla.get('/api/feed?tab=everyone')).data.posts.some((p) => p.author.userId === samId), true);
   eq('report a profile', (await ty.post(`/api/community/people/${await uid('retired@example.com')}/report`, { reason: 'Spam or selling' })).status, 201);
 
   section('The Feed scrolls on: page after page with no time window; Around the Web; a Shop slot on profiles');
@@ -3826,6 +3826,112 @@ async function feedAppSuite() {
   eq('Following, scrolled to the end: who you follow, then “Suggested for you”, then village conversations', order, ['post', 'discover', 'village']);
   eq('…suggested posts are only from people you don’t follow (and never your own)', walk.filter((w) => w.t === 'discover').every((w) => w.author !== nbId && w.author !== twinId), true);
 
+  section('Feed Rank v1 (the math): friends first, conversation over applause, reported posts sink');
+  const FR = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'feedrank.js')).href);
+  const who = (o) => ({ authorId: 1, relation: 'none', comments: 0, dms: 0, pollVotes: 0, likes: 0, profileVisits: 0, ageDays: 300, lifetimePosts: 40, ...o });
+  const fpost = (o) => ({ id: 1, authorId: 1, ageHours: 3, commentCount: 0, isPoll: false, pollParticipation: 0, impressions: 500, reports: 0, rich: false, ...o });
+  const sc = (a, p) => FR.scoreFeedPost(a, p).score;
+  eq('weights shipped: 0.35 closeness · 0.25 freshness · 0.20 affinity · 0.20 discussion (+ exploration)', FR.FEED_WEIGHTS, { C: 0.35, F: 0.25, A: 0.2, D: 0.2 });
+  eq('acceptance 1: a mutual friend’s quiet post outranks a stranger’s viral one (50 comments)', sc(who({ relation: 'mutual' }), fpost()) > sc(who({ relation: 'none', authorId: 2 }), fpost({ authorId: 2, commentCount: 50 })), true);
+  eq('acceptance 2: a post you’d comment on (you talk with them; it has a conversation) beats a like-only one', sc(who({ comments: 4, dms: 2 }), fpost({ commentCount: 10 })) > sc(who({ likes: 10 }), fpost()), true);
+  eq('conversation over applause: a DM is worth 5 likes (5 DMs move affinity more than 20 likes)', FR.affinity({ comments: 0, dms: 5, pollVotes: 0, likes: 0, profileVisits: 0 }) > FR.affinity({ comments: 0, dms: 0, pollVotes: 0, likes: 20, profileVisits: 0 }), true);
+  eq('polls lift discussion (voting is discussion)', FR.discussion({ commentCount: 0, isPoll: true, pollParticipation: 0.5 }), 0.2);
+  eq('freshness: 18-hour half-life, never below 0.05', [FR.freshness(18), FR.freshness(10000)], [0.5, 0.05]);
+  const fine = FR.scoreFeedPost(who({}), fpost());
+  eq('acceptance 5 (math): reported by 2+ people → ×0.2 pending review', [FR.scoreFeedPost(who({}), fpost({ reports: 1 })).score === fine.score, Math.abs(FR.scoreFeedPost(who({}), fpost({ reports: 2 })).score - fine.score * 0.2) < 1e-12], [true, true]);
+  eq('exploration: a brand-new author’s first post gets the full 0.2 (newcomer + under 30 impressions)', FR.exploration({ ageDays: 1, lifetimePosts: 0 }, { impressions: 0 }), 0.2);
+  const dpool = [...Array.from({ length: 30 }, (_, i) => ({ postId: i + 1, authorId: 1, score: 10 - i * 0.01, rich: false })), ...Array.from({ length: 40 }, (_, i) => ({ postId: 100 + i, authorId: 2 + (i % 10), score: 5 - i * 0.01, rich: i % 3 === 0 }))];
+  const dv = FR.diversifyFeed(dpool, 40);
+  const perAuthor = dv.reduce((m, x) => m.set(x.authorId, (m.get(x.authorId) ?? 0) + 1), new Map());
+  eq('diversity: ≤2 in a row per person, ≤20% of the top 40 (8), no run of 4+ text-only posts while photos/polls remain', [
+    Math.max(...perAuthor.values()) <= 8,
+    dv.every((x, i) => i < 2 || !(x.authorId === dv[i - 1].authorId && x.authorId === dv[i - 2].authorId)),
+    dv.slice(0, 20).every((x, i, a) => i < 3 || x.rich || a[i - 1].rich || a[i - 2].rich || a[i - 3].rich),
+  ], [true, true, true]);
+  eq('…and it stops rather than break a cap (the feed then says “caught up”)', FR.diversifyFeed(dpool.slice(0, 10), 40).length, 2);
+
+  section('Feed Rank v1 (live): the ranked home feed — cursor, caught up, Latest remembered, logs, stories');
+  const frU = {};
+  for (const [k, name] of [['fa', 'Ari'], ['fb', 'Bea'], ['fc', 'Cy'], ['fn', 'Noe'], ['fr1', 'Rae'], ['fr2', 'Rio']]) {
+    const c = new Client(`fr-${k}`);
+    await c.get(`/dev-login?token=${DEV_TOKEN}&email=fr-${k}@example.test`);
+    await c.put('/api/community/profile', { displayName: name, adult: true, guidelines: true, dob: '1990-02-02' });
+    c.id = (await c.get('/api/me')).data.userId;
+    frU[k] = c;
+  }
+  const { fa: frA, fb: frB, fc: frC, fn: frN, fr1: frR1, fr2: frR2 } = frU;
+  for (const [x, y] of [[frA, frB], [frA, frN]]) {
+    await x.post(`/api/community/people/${y.id}/follow`);
+    await y.post(`/api/community/people/${x.id}/follow`);
+  }
+  await sql("UPDATE social_profiles SET created_at = now() - interval '200 days' WHERE user_id = ANY($1::int[])", [[frA.id, frB.id, frC.id]]);
+  const fbPost = (await frB.post('/api/feed/posts', { body: 'FR: friend post — slow morning, two coffees.' })).data.post;
+  const fcPosts = [];
+  for (let i = 0; i < 5; i++) fcPosts.push((await frC.post('/api/feed/posts', { body: `FR: stranger post number ${i + 1} of the day.` })).data.post);
+  const fnPost = (await frN.post('/api/feed/posts', { body: 'FR: my very first post here. Hi!' })).data.post;
+  const faOwn = (await frA.post('/api/feed/posts', { body: 'FR: my own post — it lives on my profile.' })).data.post;
+  const walkRanked = async (c) => {
+    const pages = [];
+    for (let cur = '', n = 0; n < 40; n++) {
+      const pg = (await c.get(`/api/feed${cur ? `?cursor=${encodeURIComponent(cur)}` : ''}`)).data;
+      pages.push(pg);
+      if (!pg.cursor) break;
+      cur = pg.cursor;
+    }
+    return pages;
+  };
+  const faPages = await walkRanked(frA);
+  const faFirst = faPages[0];
+  const faIds = faPages.flatMap((p) => p.posts.map((x) => x.id));
+  eq('the home feed is ranked by default (sort “ranked”), the cursor pins the moment', [faFirst.sort, faPages.slice(0, -1).every((p) => /^r\.\d+\.\d+$/.test(p.cursor))], ['ranked', true]);
+  eq('…no post twice across pages', new Set(faIds).size, faIds.length);
+  eq('acceptance 4: it ends — “You’re caught up” (no cursor), with “Keep exploring” for older posts', [faPages.at(-1).caughtUp, faPages.at(-1).cursor, /^posts\.\d*$/.test(faPages.at(-1).exploreCursor)], [true, null, true]);
+  const rankOf = (id) => faIds.indexOf(id);
+  eq('acceptance 1 (live): a friend’s post sits above a stranger’s', rankOf(fbPost.id) >= 0 && rankOf(fbPost.id) < Math.min(...fcPosts.map((p) => rankOf(p.id)).filter((x) => x >= 0)), true);
+  eq('acceptance 6: a new friend’s very first post is in your feed (newcomer + sampling boost)', rankOf(fnPost.id) >= 0, true);
+  eq('max 3 posts per person per day in the feed (Cy posted 5)', fcPosts.filter((p) => faIds.includes(p.id)).length, 3);
+  eq('your own post: never ranked — just shown on top right after you post it', [faFirst.posts[0]?.id, faIds.filter((x) => x === faOwn.id).length, (await sql('SELECT COUNT(*)::int AS n FROM feed_rank_impressions WHERE post_id = $1', [faOwn.id]))[0].n], [faOwn.id, 1, 0]);
+  const imps = await sql('SELECT * FROM feed_rank_impressions WHERE viewer_id = $1 ORDER BY id', [frA.id]);
+  const one = imps.find((r) => r.post_id === fnPost.id);
+  eq('every ranked post served is logged: position, score and C/F/A/D/E', [imps.length, imps.every((r) => [r.score, r.c, r.f, r.a, r.d, r.e].every((v) => v !== null)), Math.abs(Number(one.score) - (0.35 * one.c + 0.25 * one.f + 0.2 * one.a + 0.2 * one.d + Number(one.e))) < 0.0002, Number(one.e)], [faIds.length - 1, true, true, 0.176]);
+  await frR1.post(`/api/feed/posts/${fcPosts[0].id}/report`, { reason: 'Spam or selling' });
+  await frR2.post(`/api/feed/posts/${fcPosts[0].id}/report`, { reason: 'Spam or selling' });
+  const before5 = imps.filter((r) => r.post_id === fcPosts[0].id).at(-1);
+  await walkRanked(frA);
+  const after5 = (await sql('SELECT * FROM feed_rank_impressions WHERE viewer_id = $1 AND post_id = $2 ORDER BY id DESC LIMIT 1', [frA.id, fcPosts[0].id]))[0];
+  const rawAfter = 0.35 * after5.c + 0.25 * after5.f + 0.2 * after5.a + 0.2 * after5.d + Number(after5.e);
+  eq('acceptance 5 (live): reported by 2 people → its score is ×0.2 (still visible, pending review)', [!!before5, Math.abs(Number(after5.score) - rawAfter * 0.2) < 0.0002], [true, true]);
+  // Latest: strict newest first, remembered.
+  const lat = (await frA.get('/api/feed?sort=latest')).data;
+  eq('acceptance 3: ?sort=latest is strict reverse-chronological', [lat.sort, lat.posts.every((p, i, a) => i === 0 || p.id < a[i - 1].id)], ['latest', true]);
+  eq('…and remembered: the next visit (no parameter) is Latest too', (await frA.get('/api/feed')).data.sort, 'latest');
+  await frA.get('/api/feed?sort=ranked');
+  eq('…switching back is remembered as well', (await frA.get('/api/feed')).data.sort, 'ranked');
+  // Outcomes: like, comment, poll vote, DM started (once), report.
+  await frA.post(`/api/feed/posts/${fbPost.id}/like`);
+  await frA.post(`/api/feed/posts/${fbPost.id}/comments`, { body: 'Two coffees is the way.' });
+  const frPoll = (await frB.post('/api/feed/posts', { body: 'FR poll: tea or coffee?', poll: { options: ['Tea', 'Coffee'] } })).data;
+  const frPollId = (await frB.get(`/api/feed?author=${frB.id}`)).data.posts[0].id;
+  await frA.post(`/api/feed/posts/${frPollId}/vote`, { option: 1 });
+  await frA.post(`/api/social/messages/${frB.id}`, { body: 'Coffee date?' });
+  await frA.post(`/api/social/messages/${frB.id}`, { body: 'Saturday?' });
+  const outs = (await sql('SELECT kind, post_id FROM feed_rank_outcomes WHERE viewer_id = $1 ORDER BY id', [frA.id])).map((r) => r.kind);
+  eq('outcomes logged for tuning: like, comment, poll vote, DM started (once, not every message)', [frPoll.review?.underReview ?? false, outs], [false, ['like', 'comment', 'vote', 'dm']]);
+  eq('…and reports', (await sql("SELECT COUNT(*)::int AS n FROM feed_rank_outcomes WHERE kind = 'report' AND post_id = $1", [fcPosts[0].id]))[0].n, 2);
+  // Stories: unviewed friends first (newest first), then unviewed others, then viewed.
+  await frC.post('/api/social/stories', { text: 'FR story from a stranger' });
+  await frB.post('/api/social/stories', { text: 'FR story from a friend' });
+  await frN.post('/api/social/stories', { text: 'FR story from a friend I already saw' });
+  const seenStory = (await frA.get(`/api/social/stories/${frN.id}`)).data.stories[0];
+  await frA.post(`/api/social/stories/${seenStory.id}/view`);
+  const rail = (await frA.get('/api/social/stories')).data.rail.filter((r) => [frB.id, frC.id, frN.id].includes(r.author.userId)).map((r) => r.author.userId);
+  eq('stories rail: unviewed friends first, then unviewed others, then viewed', rail, [frB.id, frC.id, frN.id]);
+  // The weekly review (staff): connection per session up, reports per decile down; session length never maximized.
+  const frStaff = new Client('fr-staff');
+  await frStaff.get(`/dev-login?token=${DEV_TOKEN}&email=admin@example.com`);
+  const rv = (await frStaff.get('/api/community/moderation/feed-rank?days=7')).data;
+  eq('staff weekly review: connection per session, return visits, report rate per score decile — and session length deliberately not measured', [rv.sessions >= 1, rv.connectionPerSession > 0, rv.deciles.length >= 1, rv.sessionLength, (await frA.get('/api/community/moderation/feed-rank')).status], [true, true, true, null, 403]);
+
   section('Streaks: days you showed up, with one protected rest day a week; check-ins count');
   process.env.DATABASE_URL ??= dbUrl;
   const { streakFrom } = await import(pathToFileURL(path.join(apiDir, 'dist', 'lib', 'feedstreak.js')).href);
@@ -4229,11 +4335,25 @@ async function uiGate() {
     check('…tap an option to vote: the results show', /100%/.test(await pollCard.getByTestId('poll').innerText()));
     await page.goto(`${BASE}/feed`);
     await page.getByTestId('feed-posts').waitFor({ timeout: 10000 });
+    eq('Home: “For you” (ranked) and “Latest”, For you on', [await page.locator('[data-testid^="feed-sort-"]').allInnerTexts(), await page.getByTestId('feed-sort-ranked').getAttribute('aria-selected')], [['For you', 'Latest'], 'true']);
+    for (let n = 0; n < 25 && !(await page.getByTestId('feed-caught-up').count()); n++) {
+      await page.mouse.wheel(0, 20000);
+      await page.waitForTimeout(400);
+    }
+    eq('the ranked feed ends calmly: “You’re caught up” once every scored post is shown (nothing more loads by itself)', [await page.getByTestId('feed-caught-up').count(), /caught up/i.test(await page.getByTestId('feed-caught-up').innerText()), await page.getByTestId('feed-more').count()], [1, true, 0]);
+    await page.getByTestId('feed-explore-more').click();
     for (let n = 0; n < 25 && !(await page.getByTestId('feed-keepgoing').count()); n++) {
       await page.mouse.wheel(0, 20000);
       await page.waitForTimeout(400);
     }
-    eq('the Feed is bottomless: scrolling keeps loading (posts, then village conversations, then people to find) — no end, no Load more', [await page.getByTestId('feed-caught-up').count(), await page.getByTestId('feed-village-card').count() > 0, await page.getByTestId('feed-keepgoing').count(), await page.getByRole('button', { name: /show more|load more/i }).count()], [0, true, 1, 0]);
+    eq('…“Keep exploring” is a choice: then it’s bottomless (older posts, village conversations, people to find) — never a Load more', [await page.getByTestId('feed-caught-up').count(), await page.getByTestId('feed-village-card').count() > 0, await page.getByTestId('feed-keepgoing').count(), await page.getByRole('button', { name: /show more|load more/i }).count()], [0, true, 1, 0]);
+    await page.getByTestId('feed-sort-latest').click();
+    await page.getByTestId('feed-sort-latest').and(page.locator('[aria-selected="true"]')).waitFor({ timeout: 10000 });
+    await page.reload();
+    await page.getByTestId('feed-sort-latest').and(page.locator('[aria-selected="true"]')).waitFor({ timeout: 10000 });
+    check('“Latest” is remembered (after a reload it’s still Latest)', true);
+    await page.getByTestId('feed-sort-ranked').click();
+    await page.getByTestId('feed-sort-ranked').and(page.locator('[aria-selected="true"]')).waitFor({ timeout: 10000 });
     await page.goto(`${BASE}/feed`);
     await page.getByTestId('feed-posts').waitFor({ timeout: 10000 });
     const likeCard = page.getByTestId('feed-post').filter({ hasText: 'packed lunches the night before' });
