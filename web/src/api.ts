@@ -116,7 +116,7 @@ export function useOffline(): { online: boolean; queued: number } {
 }
 
 /** Writes that make sense to queue while offline (not sign-in, uploads, chat or link flows). */
-const NOT_QUEUEABLE = /^\/api\/(auth|chat|hana|money\/(link-token|exchange|sync)|kidmoney\/[^/]+\/bank|push|classroom|households|lectures\/upload)/;
+const NOT_QUEUEABLE = /^\/api\/(auth|oauth|chat|hana|money\/(link-token|exchange|sync)|kidmoney\/[^/]+\/bank|push|classroom|households|lectures\/upload)/;
 
 /** Same-origin JSON call. Types come from @myday/shared at each call site. */
 export async function api<T>(path: string, method: Method = 'GET', body?: unknown): Promise<T> {

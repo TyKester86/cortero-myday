@@ -6141,6 +6141,11 @@ async function feedMember(c, email, name, username) {
 
 async function publishingApiSuite() {
   await startServer(noonOn('Sun'));
+  await pubApiRegistry();
+  await pubApiOAuth();
+}
+
+async function pubApiRegistry() {
   const dev = await feedMember(new Client('api-dev'), 'api-dev@example.test', 'Dana', 'dana_builds');
   const dev2 = await feedMember(new Client('api-dev2'), 'api-dev2@example.test', 'Brook', 'brook_builds');
   const apiAdmin = await feedMember(new Client('api-admin'), 'admin@example.com', 'Admin', 'feed_admin');
@@ -6204,6 +6209,179 @@ async function publishingApiSuite() {
   pubApi.admin = apiAdmin;
 }
 const pubApi = {};
+
+/** What a third-party app's server does: the token endpoint with HTTP Basic (or client_secret_post), form-encoded. */
+const basicAuth = (app, secret = app.secret) => `Basic ${Buffer.from(`${encodeURIComponent(app.clientId)}:${encodeURIComponent(secret)}`).toString('base64')}`;
+async function oauthPost(p, app, form, { auth = 'basic', secret } = {}) {
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const body = new URLSearchParams(form);
+  if (auth === 'basic') headers.Authorization = basicAuth(app, secret);
+  else if (auth === 'post') {
+    body.set('client_id', app.clientId);
+    body.set('client_secret', secret ?? app.secret);
+  }
+  const r = await fetch(BASE + p, { method: 'POST', headers, body: body.toString() });
+  return { status: r.status, data: await r.json().catch(() => null), headers: r.headers };
+}
+/** A Publishing API call with a bearer token (no cookies). */
+async function v1(token, method, p, body, extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let payload;
+  if (body !== undefined) {
+    if (Buffer.isBuffer(body)) payload = body;
+    else {
+      headers['Content-Type'] = 'application/json';
+      payload = JSON.stringify(body);
+    }
+  }
+  const r = await fetch(`${BASE}/api/v1${p}`, { method, headers, body: payload });
+  const text = await r.text();
+  let data = text;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    /* not JSON */
+  }
+  return { status: r.status, data, headers: r.headers };
+}
+const authorizeParams = (app, extra = {}) => ({ response_type: 'code', client_id: app.clientId, redirect_uri: app.redirectUris[0], scope: app.scopes.join(' '), state: 'st-123', ...extra });
+const authorizeQs = (app, extra) => `?${new URLSearchParams(authorizeParams(app, extra))}`;
+/** A person goes through the consent page (its two calls) and ticks `grant`. Returns the redirect. */
+async function consent(person, app, grant = app.scopes, extra = {}) {
+  const info = await person.get(`/api/oauth/authorize/info${authorizeQs(app, extra)}`);
+  if (info.status !== 200) throw new Error(`consent info ${info.status} ${JSON.stringify(info.data)}`);
+  const d = await person.post('/api/oauth/authorize/decision', { ...authorizeParams(app, extra), approve: true, grant });
+  if (d.status !== 200) throw new Error(`consent decision ${d.status} ${JSON.stringify(d.data)}`);
+  return new URL(d.data.redirect);
+}
+/** Consent + code exchange: the token response. */
+async function connect(person, app, grant = app.scopes) {
+  const code = (await consent(person, app, grant)).searchParams.get('code');
+  const t = await oauthPost('/api/oauth/token', app, { grant_type: 'authorization_code', code, redirect_uri: app.redirectUris[0] });
+  if (t.status !== 200) throw new Error(`token ${t.status} ${JSON.stringify(t.data)}`);
+  return t.data;
+}
+const refreshWith = (app, refresh) => oauthPost('/api/oauth/token', app, { grant_type: 'refresh_token', refresh_token: refresh });
+
+async function pubApiOAuth() {
+  const { dev, dev2, appA, appRead } = pubApi;
+  const pat = await feedMember(new Client('api-pat'), 'api-pat@example.test', 'Pat', 'pat_posts');
+  pubApi.pat = pat;
+
+  section('Feed Publishing API 2: OAuth 2.0 authorization code — consent');
+  eq('the consent page needs you signed in', (await new Client('api-out').get(`/api/oauth/authorize/info${authorizeQs(appA)}`)).status, 401);
+  const kid = new Client('api-kid2');
+  await kid.get(`/dev-login?token=${DEV_TOKEN}&member=avery`);
+  const kidInfo = await kid.get(`/api/oauth/authorize/info${authorizeQs(appA)}`);
+  const kidDecide = await kid.post('/api/oauth/authorize/decision', { ...authorizeParams(appA), approve: true, grant: ['posts.write'] });
+  eq('kids and teens can never connect an app (no token, under any scope)', [kidInfo.status, kidInfo.data.code, kidDecide.status, kidDecide.data.code], [403, 'adults_only', 403, 'adults_only']);
+  const unknown = await pat.get(`/api/oauth/authorize/info${authorizeQs({ ...appA, clientId: 'feedapp_nope' })}`);
+  const wrongUri = await pat.get(`/api/oauth/authorize/info${authorizeQs(appA, { redirect_uri: 'https://example.test/callback/evil' })}`);
+  eq('an unknown app or an unregistered redirect URI stops on our page — never redirected', [unknown.status, unknown.data.code, unknown.data.details ?? null, wrongUri.status, wrongUri.data.code, wrongUri.data.details ?? null], [400, 'invalid_client', null, 400, 'invalid_redirect_uri', null]);
+  const prefix = await pat.get(`/api/oauth/authorize/info${authorizeQs(appA, { redirect_uri: 'https://example.test/callback?x=1' })}`);
+  eq('…redirect URIs match exactly (no prefix, no extra query)', prefix.data.code, 'invalid_redirect_uri');
+  const tooMuch = await pat.get(`/api/oauth/authorize/info${authorizeQs(appRead, { scope: 'profile.read posts.write' })}`);
+  const tooMuchBack = new URL(tooMuch.data.details?.redirect ?? 'http://x/');
+  eq('asking for a scope the app isn’t registered for goes back to the app with error=invalid_scope (and its state)', [tooMuch.status, tooMuchBack.origin + tooMuchBack.pathname, tooMuchBack.searchParams.get('error'), tooMuchBack.searchParams.get('state')], [400, 'https://peek.example.test/cb', 'invalid_scope', 'st-123']);
+  const implicit = await pat.get(`/api/oauth/authorize/info${authorizeQs(appA, { response_type: 'token' })}`);
+  eq('only the authorization-code flow (response_type=code)', new URL(implicit.data.details?.redirect ?? 'http://x/').searchParams.get('error'), 'unsupported_response_type');
+  const plain = await pat.get(`/api/oauth/authorize/info${authorizeQs(appA, { code_challenge: 'a'.repeat(43), code_challenge_method: 'plain' })}`);
+  eq('PKCE is S256 only', new URL(plain.data.details?.redirect ?? 'http://x/').searchParams.get('error'), 'invalid_request');
+  const info = await pat.get(`/api/oauth/authorize/info${authorizeQs(appA)}`);
+  eq('the consent page shows the app, the scopes in plain words, and the account being granted', [
+    info.status,
+    info.data.app.name,
+    info.data.app.developer,
+    info.data.scopes.map((s) => s.scope),
+    /profile/i.test(info.data.scopes[0].label) && /Publish posts and photos/.test(info.data.scopes[1].label),
+    info.data.account,
+    info.data.alreadyConnected,
+  ], [200, 'Scheduler A', '@dana_builds', ['profile.read', 'posts.write'], true, { displayName: 'Pat', username: 'pat_posts', email: 'api-pat@example.test' }, false]);
+  const deny = await pat.post('/api/oauth/authorize/decision', { ...authorizeParams(appA), approve: false });
+  const denied = new URL(deny.data.redirect);
+  eq('Cancel goes back to the app with error=access_denied (and its state)', [denied.origin + denied.pathname, denied.searchParams.get('error'), denied.searchParams.get('state'), denied.searchParams.get('code')], ['https://example.test/callback', 'access_denied', 'st-123', null]);
+  const none = await pat.post('/api/oauth/authorize/decision', { ...authorizeParams(appA), approve: true, grant: [] });
+  eq('nothing is pre-ticked: Allow with nothing ticked grants nothing', [none.status, none.data.code], [400, 'invalid_scope']);
+  const extra = await pat.post('/api/oauth/authorize/decision', { ...authorizeParams(appRead), approve: true, grant: ['profile.read', 'posts.write'] });
+  eq('…and you can’t grant more than the app asked for', [extra.status, extra.data.code], [400, 'invalid_scope']);
+  eq('no authorization exists until someone says Allow', (await sql('SELECT COUNT(*)::int AS n FROM feed_api_authorizations'))[0].n, 0);
+
+  section('Feed Publishing API 2: tokens');
+  const back = await consent(pat, appA, ['profile.read', 'posts.write']);
+  const code = back.searchParams.get('code');
+  eq('Allow goes back to the exact redirect URI with a one-time code and the state', [back.origin + back.pathname, /^fdc_/.test(code ?? ''), back.searchParams.get('state')], ['https://example.test/callback', true, 'st-123']);
+  const ex = (form, opts) => oauthPost('/api/oauth/token', appA, { grant_type: 'authorization_code', code, redirect_uri: appA.redirectUris[0], ...form }, opts);
+  const badSecret = await ex({}, { secret: 'fds_wrong' });
+  eq('the token endpoint authenticates the app (wrong secret → 401 invalid_client)', [badSecret.status, badSecret.data.error, badSecret.headers.get('www-authenticate')], [401, 'invalid_client', 'Basic realm="The Feed"']);
+  eq('…another app can’t redeem this app’s code', (await oauthPost('/api/oauth/token', pubApi.appB, { grant_type: 'authorization_code', code, redirect_uri: pubApi.appB.redirectUris[0] })).data.error, 'invalid_grant');
+  eq('…the redirect_uri must be the one used to authorize', (await ex({ redirect_uri: appA.redirectUris[1] })).data.error, 'invalid_grant');
+  const tok = await ex({}, { auth: 'post' });
+  eq('code → tokens (client_secret_post works too): Bearer, 1-hour access, 30-day refresh, the granted scopes', [
+    tok.status,
+    tok.data.token_type,
+    /^fda_/.test(tok.data.access_token),
+    /^fdr_/.test(tok.data.refresh_token),
+    tok.data.expires_in,
+    tok.data.refresh_token_expires_in,
+    tok.data.scope,
+    tok.headers.get('cache-control'),
+  ], [200, 'Bearer', true, true, 3600, 2592000, 'profile.read posts.write', 'no-store']);
+  const stored = await sql('SELECT COUNT(*)::int AS n FROM feed_api_tokens WHERE token_hash IN ($1, $2)', [sha('sha256').update(tok.data.access_token).digest('hex'), sha('sha256').update(tok.data.refresh_token).digest('hex')]);
+  eq('…tokens are stored hashed', stored[0].n, 2);
+  const me = await v1(tok.data.access_token, 'GET', '/me');
+  eq('GET /api/v1/me (profile.read) answers as the person who authorized', [me.status, me.data.username, me.data.displayName, me.data.id > 0], [200, 'pat_posts', 'Pat', true]);
+  const replay = await ex({});
+  eq('a code works once: replaying it fails AND revokes the tokens it produced', [replay.data.error, (await v1(tok.data.access_token, 'GET', '/me')).status, (await refreshWith(appA, tok.data.refresh_token)).data.error], ['invalid_grant', 401, 'invalid_grant']);
+  eq('no token → 401 (with WWW-Authenticate: Bearer)', [(await v1(null, 'GET', '/me')).status, /^Bearer/.test((await v1(null, 'GET', '/me')).headers.get('www-authenticate') ?? '')], [401, true]);
+  const cookieOnly = await fetch(`${BASE}/api/v1/me`, { headers: { Cookie: pat.cookie } });
+  eq('…a browser session cookie is not an API credential', cookieOnly.status, 401);
+
+  // PKCE
+  const verifier = randomBytes(40).toString('base64url');
+  const challenge = sha('sha256').update(verifier).digest('base64url');
+  const pk = await consent(pat, appA, ['profile.read'], { code_challenge: challenge, code_challenge_method: 'S256' });
+  const pkCode = pk.searchParams.get('code');
+  const noVer = await oauthPost('/api/oauth/token', appA, { grant_type: 'authorization_code', code: pkCode, redirect_uri: appA.redirectUris[0], code_verifier: 'x'.repeat(43) });
+  eq('PKCE: a wrong code_verifier fails', noVer.data.error, 'invalid_grant');
+  const pkCode2 = (await consent(pat, appA, ['profile.read'], { code_challenge: challenge, code_challenge_method: 'S256' })).searchParams.get('code');
+  const pkOk = await oauthPost('/api/oauth/token', appA, { grant_type: 'authorization_code', code: pkCode2, redirect_uri: appA.redirectUris[0], code_verifier: verifier });
+  eq('…the right one works (and the token carries only what was ticked)', [pkOk.status, pkOk.data.scope], [200, 'profile.read']);
+  const writeOnly = await connect(pat, appA, ['posts.write']);
+  const noRead = await v1(writeOnly.access_token, 'GET', '/me');
+  eq('a token without profile.read can’t read the profile (403 insufficient_scope)', [noRead.status, noRead.data.code], [403, 'insufficient_scope']);
+  eq('unknown v1 paths are 404 (they never fall through to the app’s own routes)', [(await v1(writeOnly.access_token, 'GET', '/community/me')).status, (await v1(writeOnly.access_token, 'GET', '/community/me')).data.code], [404, 'not_found']);
+
+  section('Feed Publishing API 2: refresh rotation, revocation, Connected apps');
+  const t1 = await connect(pat, appA, ['profile.read', 'posts.write']);
+  const r1 = await refreshWith(appA, t1.refresh_token);
+  eq('refresh → a new access token AND a new refresh token', [r1.status, r1.data.access_token !== t1.access_token, r1.data.refresh_token !== t1.refresh_token, (await v1(r1.data.access_token, 'GET', '/me')).status], [200, true, true, 200]);
+  const reuse = await refreshWith(appA, t1.refresh_token);
+  eq('a rotated-out refresh token fails on reuse…', [reuse.status, reuse.data.error], [400, 'invalid_grant']);
+  eq('…and kills the whole grant (the tokens rotated from it die too)', [(await v1(r1.data.access_token, 'GET', '/me')).status, (await refreshWith(appA, r1.data.refresh_token)).data.error], [401, 'invalid_grant']);
+  const wide = await oauthPost('/api/oauth/token', appA, { grant_type: 'refresh_token', refresh_token: writeOnly.refresh_token, scope: 'profile.read posts.write' });
+  const full = await connect(pat, appA);
+  const narrowed = await oauthPost('/api/oauth/token', appA, { grant_type: 'refresh_token', refresh_token: full.refresh_token, scope: 'profile.read' });
+  eq('refresh can keep or narrow scopes, never widen them', [wide.data.error, narrowed.status, narrowed.data.scope], ['invalid_scope', 200, 'profile.read']);
+  const t2 = await connect(pat, appA);
+  eq('another app can’t use or revoke this app’s refresh token', [(await refreshWith(pubApi.appB, t2.refresh_token)).data.error, (await oauthPost('/api/oauth/revoke', pubApi.appB, { token: t2.access_token })).status, (await v1(t2.access_token, 'GET', '/me')).status], ['invalid_grant', 200, 200]);
+  const rv = await oauthPost('/api/oauth/revoke', appA, { token: t2.access_token, token_type_hint: 'access_token' });
+  eq('the app can revoke an access token (RFC 7009) — it stops working at once', [rv.status, (await v1(t2.access_token, 'GET', '/me')).status, (await refreshWith(appA, t2.refresh_token)).status], [200, 401, 200]);
+  const t3 = await connect(pat, appA);
+  await oauthPost('/api/oauth/revoke', appA, { token: t3.refresh_token });
+  eq('…revoking a refresh token ends its whole grant', [(await v1(t3.access_token, 'GET', '/me')).status, (await refreshWith(appA, t3.refresh_token)).data.error], [401, 'invalid_grant']);
+  eq('…an unknown token is still 200 (nothing to reveal)', (await oauthPost('/api/oauth/revoke', appA, { token: 'fda_unknown' })).status, 200);
+
+  const t4 = await connect(pat, appA);
+  const list = (await pat.get('/api/feed/connected-apps')).data.apps;
+  eq('Settings → Connected apps lists the app with what it can do', [list.length, list[0]?.name, list[0]?.scopes], [1, 'Scheduler A', ['profile.read', 'posts.write']]);
+  eq('…someone else’s list doesn’t show it', (await dev2.get('/api/feed/connected-apps')).data.apps.length, 0);
+  eq('…and they can’t disconnect it for you', (await dev2.del(`/api/feed/connected-apps/${appA.id}`)).status, 404);
+  const dc = await pat.del(`/api/feed/connected-apps/${appA.id}`);
+  eq('Disconnect kills that app’s tokens for you immediately (access and refresh)', [dc.status, (await v1(t4.access_token, 'GET', '/me')).status, (await refreshWith(appA, t4.refresh_token)).data.error, (await pat.get('/api/feed/connected-apps')).data.apps.length], [200, 401, 'invalid_grant', 0]);
+  eq('…the owner’s app list counts connected people', (await dev.get('/api/developer/apps')).data.apps[0].users, 0);
+  pubApi.dev = dev;
+}
 
 async function runAll() {
   await monday();

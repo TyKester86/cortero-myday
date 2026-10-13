@@ -245,9 +245,11 @@ function Shell() {
 
 const ProviderSignupPage = lazy(() => import('./modules/feed/Providers').then((m) => ({ default: m.ProviderSignupPage })));
 const FeedLanding = lazy(() => import('./modules/social/Social').then((m) => ({ default: m.FeedLanding })));
+const OAuthAuthorizePage = lazy(() => import('./modules/feed/Developers').then((m) => ({ default: m.OAuthAuthorizePage })));
+const ResumeAuthorize = lazy(() => import('./modules/feed/Developers').then((m) => ({ default: m.ResumeAuthorize })));
 
 /** The Feed's pages: open to grown-ups who joined just for the Feed (no household). */
-const SOCIAL_PATHS = ['/feed', '/feed/stories', '/feed/explore', '/feed/create', '/feed/friends', '/feed/post/:id', '/feed/profile/edit', '/feed/settings', '/feed/settings/notifications', '/feed/settings/provider', '/feed/developers', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
+const SOCIAL_PATHS = ['/feed', '/feed/stories', '/feed/explore', '/feed/create', '/feed/friends', '/feed/post/:id', '/feed/profile/edit', '/feed/settings', '/feed/settings/notifications', '/feed/settings/provider', '/feed/developers', '/feed/settings/apps', '/clips', '/messages', '/messages/:id', '/people/:id', '/village', '/village/:id', '/business', '/notifications', '/search', '/invite', '/earnings', '/u/:handle'];
 const SOCIAL = /^\/(feed|clips|messages|people|village|business|notifications|search|invite|earnings|u)(\/|$)/;
 /** Every page that belongs to the Feed (Circles too). */
 const FEED_ROUTE = /^\/(feed|clips|messages|people|village|business|circles|notifications|search|invite|earnings|u)(\/|$)/;
@@ -350,6 +352,16 @@ export default function App() {
   // Public pages: readable signed out.
   if (path === '/privacy') return <Privacy />;
   if (path === '/terms') return <Terms />;
+  // The Feed Publishing API's consent page: a third-party app sends people here (it checks sign-in itself).
+  if (path === '/oauth/authorize') {
+    return (
+      <ConfirmProvider>
+        <Suspense fallback={<div className="center muted">Loading…</div>}>
+          <OAuthAuthorizePage />
+        </Suspense>
+      </ConfirmProvider>
+    );
+  }
   // The provider sign-up: its own path, verification before any account (signed in, it verifies this account).
   if (path === '/providers') {
     return (
@@ -373,6 +385,9 @@ export default function App() {
               </Suspense>
             }
           >
+            <Suspense fallback={null}>
+              <ResumeAuthorize />
+            </Suspense>
             <FeedApp />
           </SessionProvider>
         </ConfirmProvider>
@@ -403,6 +418,9 @@ export default function App() {
         }
       >
         {/* The side-by-side grocery list opens in its own small window: no app chrome. */}
+        <Suspense fallback={null}>
+          <ResumeAuthorize />
+        </Suspense>
         {path === '/grocery-list' ? <GroceryPopout /> : <Gate />}
       </SessionProvider>
       </ConfirmProvider>

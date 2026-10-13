@@ -714,6 +714,7 @@ function Settings({ me }: { me: CommunityMe }) {
         <Row icon="shield" label="Provider background" value={p.provider ? 'Verified' : undefined} to="/feed/settings/provider" testid="settings-provider" />
         <Row icon="lock" label="Privacy" value={aud === 'friends' ? 'Friends only' : 'Public'} onClick={() => setSheet('privacy')} testid="settings-privacy" />
         <Row icon="bell-settings" label="Notifications" to="/feed/settings/notifications" testid="settings-notifications" />
+        <Row icon="globe" label="Connected apps" to="/feed/settings/apps" testid="settings-connected-apps" />
       </div>
       <h2 className="sc-h3">Community</h2>
       <div className="sc-card sc-rows">

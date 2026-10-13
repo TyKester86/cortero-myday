@@ -740,30 +740,40 @@ interface UserRow {
 /** Loads req.user / req.member and pins the request to the member's household. */
 export async function loadUser(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const id = req.session.userId;
-  if (id) {
-    const u = await asSystem(async () => {
-      const { rows } = await pool.query<UserRow>(
-        `SELECT u.id, u.email, u.name, u.auth, u.member_id, m.pin_version, (m.archived_at IS NOT NULL) AS archived, m.household_id
-           FROM users u LEFT JOIN household_members m ON m.id = u.member_id WHERE u.id = $1`,
-        [id],
-      );
-      return rows[0];
-    });
-    // A parent resetting or removing a kid's PIN ends that kid's existing sessions.
-    const stalePin = u?.auth === 'pin' && (u.pin_version === null || u.pin_version !== req.session.pinVersion);
-    // Removing someone from the household signs them out everywhere.
-    if (u && !stalePin && !u.archived) {
-      req.user = { id: u.id, email: u.email, name: u.name, auth: u.auth };
-      if (u.household_id !== null && u.member_id !== null) {
-        await setHousehold(u.household_id);
-        req.householdId = u.household_id;
-        req.member = await memberById(u.member_id);
-      } else {
-        req.member = null;
-      }
-    }
-  }
+  if (id) await attachUser(req, id, req.session.pinVersion);
   next();
+}
+
+/**
+ * Sets req.user / req.member for user `id` exactly as a signed-in session would (household pinned, an
+ * archived member or a stale kid PIN gets nobody). The Feed Publishing API's bearer tokens use this too,
+ * so every Feed rule (18+, profile, ban, mute) applies to an app acting for someone unchanged.
+ * `pinVersion` is the session's; `'none'` (tokens) means a PIN account is never accepted.
+ */
+export async function attachUser(req: Request, id: number, pinVersion: number | null | undefined | 'none'): Promise<boolean> {
+  const u = await asSystem(async () => {
+    const { rows } = await pool.query<UserRow>(
+      `SELECT u.id, u.email, u.name, u.auth, u.member_id, m.pin_version, (m.archived_at IS NOT NULL) AS archived, m.household_id
+         FROM users u LEFT JOIN household_members m ON m.id = u.member_id WHERE u.id = $1`,
+      [id],
+    );
+    return rows[0];
+  });
+  // A parent resetting or removing a kid's PIN ends that kid's existing sessions.
+  const stalePin = u?.auth === 'pin' && (pinVersion === 'none' || u.pin_version === null || u.pin_version !== pinVersion);
+  // Removing someone from the household signs them out everywhere.
+  if (u && !stalePin && !u.archived) {
+    req.user = { id: u.id, email: u.email, name: u.name, auth: u.auth };
+    if (u.household_id !== null && u.member_id !== null) {
+      await setHousehold(u.household_id);
+      req.householdId = u.household_id;
+      req.member = await memberById(u.member_id);
+    } else {
+      req.member = null;
+    }
+    return true;
+  }
+  return false;
 }
 
 export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
