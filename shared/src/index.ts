@@ -3092,7 +3092,7 @@ export interface LibrarySearchResult {
 export const FEED_API_SCOPES = ['profile.read', 'posts.write'] as const;
 export type FeedApiScope = (typeof FEED_API_SCOPES)[number];
 export const FEED_API_SCOPE_LABELS: Record<FeedApiScope, string> = {
-  'profile.read': 'See your Feed profile: your name, @username and profile photo',
+  'profile.read': 'See your Feed profile: your name and @username',
   'posts.write': 'Publish posts and photos to The Feed as you (they show “via” this app, and go through the same safety screening as everything else)',
 };
 

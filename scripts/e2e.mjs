@@ -6147,6 +6147,8 @@ async function publishingApiSuite() {
   await pubApiScreening();
   await pubApiLimits();
   await pubApiIsolation();
+  await pubApiDemo();
+  if (process.env.E2E_UI !== '0') await pubApiUi();
 }
 
 async function pubApiRegistry() {
@@ -6589,6 +6591,108 @@ async function pubApiIsolation() {
   const again = await refreshWith(appA, tE.refresh_token);
   eq('a rotated-out refresh token fails on reuse (and takes its grant with it)', [again.status, again.data.error, (await v1(refreshed.data.access_token, 'GET', '/me')).status], [400, 'invalid_grant', 401]);
   void dev;
+}
+
+
+async function pubApiDemo() {
+  section('Feed Publishing API 7: the runnable end-to-end demo (scripts/feed-api-demo.mjs)');
+  const r = spawnSync(process.execPath, [path.join(root, 'scripts', 'feed-api-demo.mjs')], {
+    cwd: root,
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, FEED_API_BASE: BASE, FEED_DEMO_DEV_TOKEN: DEV_TOKEN },
+    encoding: 'utf8',
+  });
+  const steps = (r.stdout.match(/✓/g) ?? []).length;
+  eq('the demo runs green against a live server (authorize → tokens → publish text + photo → status → refresh → delete → reuse refused)', [r.status, /DEMO PASSED/.test(r.stdout), steps], [0, true, 14]);
+  if (r.status !== 0) console.log(r.stdout, r.stderr);
+}
+
+/** The person's side in a real browser: the consent page, "via" on the posts, Connected apps → Disconnect. */
+async function pubApiUi() {
+  const { appA } = pubApi;
+  let chromium;
+  try {
+    ({ chromium } = createRequire(path.join(root, 'package.json'))('playwright'));
+  } catch {
+    check('Playwright installed (npm i, then npx playwright install chromium)', false);
+    return;
+  }
+  section('Feed Publishing API: UI pass (consent page → two API posts “via” the app → Disconnect → publishing fails)');
+  const uma = await feedMember(new Client('api-uma'), 'api-uma@example.test', 'Uma', 'uma_writes');
+  const umaId = (await uma.get('/api/community/me')).data.profile.userId;
+  const browser = await chromium.launch();
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    let nativeDialogs = 0;
+    page.on('dialog', (d) => {
+      nativeDialogs++;
+      void d.dismiss();
+    });
+    // The app's redirect URI is someone else's site: catch the browser arriving there (that's the app's job).
+    let arrived = '';
+    await page.route('https://example.test/**', (route) => {
+      arrived = route.request().url();
+      return route.fulfill({ status: 200, contentType: 'text/html', body: '<p>Scheduler A got the code.</p>' });
+    });
+    await page.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=api-uma@example.test`);
+    const params = authorizeParams(appA);
+    await page.goto(`${BASE}/oauth/authorize?${new URLSearchParams(params)}`);
+    await page.getByTestId('oauth-consent').waitFor({ timeout: 15000 });
+    const boxes = [await page.getByTestId('oauth-scope-profile.read').isChecked(), await page.getByTestId('oauth-scope-posts.write').isChecked()];
+    eq('consent page: the app’s name, the account being granted, and nothing pre-ticked (Allow disabled until you tick)', [
+      await page.getByTestId('oauth-app-name').innerText(),
+      (await page.getByTestId('oauth-account').innerText()).includes('Uma (@uma_writes)'),
+      boxes,
+      await page.getByTestId('oauth-allow').isDisabled(),
+    ], ['Scheduler A wants to connect to your Feed account', true, [false, false], true]);
+    if (process.env.E2E_SHOTS) await page.screenshot({ path: path.join(process.env.E2E_SHOTS, 'feed-api-consent.png'), fullPage: true });
+    await page.getByTestId('oauth-scope-profile.read').check();
+    await page.getByTestId('oauth-scope-posts.write').check();
+    await page.getByTestId('oauth-allow').click();
+    await page.waitForURL(/^https:\/\/example\.test\/callback\?/, { timeout: 15000 });
+    const back = new URL(arrived);
+    eq('Allow → back to the app’s exact redirect URI with a code and its state', [back.origin + back.pathname, /^fdc_/.test(back.searchParams.get('code') ?? ''), back.searchParams.get('state')], ['https://example.test/callback', true, 'st-123']);
+    const tok = (await oauthPost('/api/oauth/token', appA, { grant_type: 'authorization_code', code: back.searchParams.get('code'), redirect_uri: params.redirect_uri })).data;
+    const p1 = (await v1(tok.access_token, 'POST', '/posts', { text: 'Morning pages done before 7. Small win.' })).data.post;
+    const mid = (await v1(tok.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' })).data.id;
+    const p2 = (await v1(tok.access_token, 'POST', '/posts', { text: 'Desk, finally cleared.', mediaIds: [mid] })).data.post;
+
+    await page.goto(`${BASE}/people/${umaId}`);
+    await page.getByTestId('post-via').first().waitFor({ timeout: 15000 });
+    const vias = await page.getByTestId('post-via').allInnerTexts();
+    eq('both API posts show “via Scheduler A” on The Feed', [p1.status, p2.status, vias.filter((v) => v.includes('via Scheduler A')).length], ['published', 'published', 2]);
+    if (process.env.E2E_SHOTS) await page.screenshot({ path: path.join(process.env.E2E_SHOTS, 'feed-api-via.png'), fullPage: true });
+
+    await page.goto(`${BASE}/feed/settings`);
+    await page.getByTestId('settings-connected-apps').click();
+    await page.getByTestId('connected-app').waitFor({ timeout: 15000 });
+    eq('Settings → Connected apps lists Scheduler A', (await page.getByTestId('connected-app').innerText()).includes('Scheduler A'), true);
+    if (process.env.E2E_SHOTS) await page.screenshot({ path: path.join(process.env.E2E_SHOTS, 'feed-api-connected.png'), fullPage: true });
+    await page.getByTestId('connected-revoke').click();
+    await page.getByTestId('confirm').waitFor();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('connected-none').waitFor({ timeout: 15000 });
+    if (process.env.E2E_SHOTS) await page.screenshot({ path: path.join(process.env.E2E_SHOTS, 'feed-api-disconnected.png'), fullPage: true });
+    const later = await v1(tok.access_token, 'POST', '/posts', { text: 'Posting after being disconnected?' });
+    const refreshLater = await refreshWith(appA, tok.refresh_token);
+    eq('after Disconnect, the app’s next publish fails (401), and so does its refresh', [later.status, later.data.code, refreshLater.data.error], [401, 'invalid_token', 'invalid_grant']);
+    eq('…confirmed in-page (no native dialogs), no page errors', [nativeDialogs, errors], [0, []]);
+
+    // Signed out when the app sends you: sign in, and you land back on the same consent request.
+    const outCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const out = await outCtx.newPage();
+    await out.goto(`${BASE}/oauth/authorize?${new URLSearchParams(params)}`);
+    await out.getByTestId('oauth-signed-out').waitFor({ timeout: 15000 });
+    await out.goto(`${BASE}/dev-login?token=${DEV_TOKEN}&email=api-uma@example.test`);
+    await out.waitForURL(/\/oauth\/authorize\?/, { timeout: 15000 });
+    await out.getByTestId('oauth-consent').waitFor({ timeout: 15000 });
+    eq('signed out on the consent page → sign in → back on the same consent request', new URL(out.url()).searchParams.get('client_id'), appA.clientId);
+    await outCtx.close();
+  } finally {
+    await browser.close();
+  }
 }
 
 async function runAll() {
