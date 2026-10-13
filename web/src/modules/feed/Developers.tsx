@@ -382,7 +382,7 @@ function Authorize() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api<AuthorizeInfo>(`/api/oauth/authorize/info${params}`)
+    api<AuthorizeInfo>(`/api/oauth/authorize/info?${params.replace(/^\?/, '')}`)
       .then((info) => setState({ kind: 'ready', info }))
       .catch((e: unknown) => {
         if (e instanceof ApiFail && e.status === 401) {
