@@ -26,6 +26,7 @@ const FriendsPage = lazy(() => import('./feed/People').then((m) => ({ default: m
 const EditProfilePage = lazy(() => import('./feed/People').then((m) => ({ default: m.EditProfilePage })));
 const FeedSettingsPage = lazy(() => import('./feed/People').then((m) => ({ default: m.SettingsPage })));
 const ProviderStatusPage = lazy(() => import('./feed/Providers').then((m) => ({ default: m.ProviderStatusPage })));
+const DevelopersPage = lazy(() => import('./feed/Developers').then((m) => ({ default: m.DevelopersPage })));
 const FeedNotifSettingsPage = lazy(() => import('./feed/People').then((m) => ({ default: m.NotificationSettingsPage })));
 export const MyProfilePage = lazy(() => import('./feed/People').then((m) => ({ default: m.MyProfilePage })));
 const StoriesPage = lazy(() => import('./social/Social').then((m) => ({ default: m.StoriesPage })));
@@ -184,6 +185,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/feed/settings', element: <FeedSettingsPage />, audience: 'adult' },
   { path: '/feed/settings/notifications', element: <FeedNotifSettingsPage />, audience: 'adult' },
   { path: '/feed/settings/provider', element: <ProviderStatusPage />, audience: 'adult' },
+  { path: '/feed/developers', element: <DevelopersPage />, audience: 'adult' },
   { path: '/clips', element: <ClipsPage />, audience: 'adult' },
   { path: '/messages', element: <MessagesPage />, audience: 'adult' },
   { path: '/notifications', element: <NotificationsPage />, audience: 'adult' },

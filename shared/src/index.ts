@@ -3081,3 +3081,48 @@ export interface LibrarySearchResult {
   book: Array<{ slug: string; chapter: string; section: string; excerpt: string; citation: string }>;
   medical: Array<LibraryEntry & { topicSlug: string; citation: string }>;
 }
+
+/* ---------------- The Feed Publishing API (v1) ---------------- */
+
+/** What a third-party app may ask a Feed user for. Plain-words labels are what the consent page shows. */
+export const FEED_API_SCOPES = ['profile.read', 'posts.write'] as const;
+export type FeedApiScope = (typeof FEED_API_SCOPES)[number];
+export const FEED_API_SCOPE_LABELS: Record<FeedApiScope, string> = {
+  'profile.read': 'See your Feed profile: your name, @username and profile photo',
+  'posts.write': 'Publish posts and photos to The Feed as you (they show “via” this app, and go through the same safety screening as everything else)',
+};
+
+/** A registered developer app, as its owner (or an admin) sees it. The client secret is never in here. */
+export interface FeedApiApp {
+  id: number;
+  name: string;
+  description: string;
+  website: string;
+  redirectUris: string[];
+  scopes: FeedApiScope[];
+  clientId: string;
+  status: 'active' | 'suspended';
+  suspendedAt: string | null;
+  suspendedReason: string | null;
+  createdAt: string;
+  /** Live (unrevoked) authorizations. */
+  users: number;
+  /** Admin list only. */
+  owner?: { userId: number; email: string };
+}
+
+/** Returned exactly once: at registration, or when the owner rotates the secret. */
+export interface FeedApiAppCreated {
+  app: FeedApiApp;
+  clientSecret: string;
+}
+
+/** An app a Feed user has connected (Settings → Connected apps). */
+export interface FeedConnectedApp {
+  appId: number;
+  name: string;
+  website: string;
+  scopes: FeedApiScope[];
+  connectedAt: string;
+  status: 'active' | 'suspended';
+}

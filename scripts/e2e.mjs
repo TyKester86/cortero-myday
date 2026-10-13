@@ -6129,8 +6129,83 @@ ${para}`]), para);
   }
 }
 
-try {
-  await setup();
+/* ---------- The Feed Publishing API (v1): registry, OAuth, publishing, screening, limits, isolation ---------- */
+
+/** A grown-up Feed member, signed in by email (no household), with a Feed profile. */
+async function feedMember(c, email, name, username) {
+  await c.get(`/dev-login?token=${DEV_TOKEN}&email=${encodeURIComponent(email)}`);
+  const r = await c.put('/api/community/profile', { displayName: name, username, adult: true, guidelines: true, dob: '1990-05-05' });
+  if (r.status !== 200) throw new Error(`feedMember ${email}: ${r.status} ${JSON.stringify(r.data)}`);
+  return c;
+}
+
+async function publishingApiSuite() {
+  await startServer(noonOn('Sun'));
+  const dev = await feedMember(new Client('api-dev'), 'api-dev@example.test', 'Dana', 'dana_builds');
+  const dev2 = await feedMember(new Client('api-dev2'), 'api-dev2@example.test', 'Brook', 'brook_builds');
+  const apiAdmin = await feedMember(new Client('api-admin'), 'admin@example.com', 'Admin', 'feed_admin');
+
+  section('Feed Publishing API 1: developer app registry');
+  const appBody = (name, extra = {}) => ({
+    name,
+    description: `${name} schedules posts`,
+    website: 'https://example.test',
+    redirectUris: ['https://example.test/callback', 'http://localhost:5555/cb'],
+    scopes: ['profile.read', 'posts.write'],
+    ...extra,
+  });
+  eq('signed-out people can’t register apps', (await new Client('api-anon').post('/api/developer/apps', appBody('Nope'))).status, 401);
+  const kidReg = new Client('api-kid');
+  await kidReg.get(`/dev-login?token=${DEV_TOKEN}&member=avery`);
+  eq('…nor kids or teens (The Feed is 18+)', [(await kidReg.post('/api/developer/apps', appBody('Kid app'))).status, (await kidReg.post('/api/developer/apps', appBody('Kid app'))).data.code], [403, 'adults_only']);
+  const bad = async (extra) => (await dev.post('/api/developer/apps', appBody('Bad', extra))).data.code ?? null;
+  eq('redirect URIs must be https (http only on localhost), with no #fragment, and at least one', [
+    await bad({ redirectUris: ['http://example.test/cb'] }),
+    await bad({ redirectUris: ['https://example.test/cb#x'] }),
+    await bad({ redirectUris: ['not a url'] }),
+    await bad({ redirectUris: [] }),
+  ], ['invalid_redirect_uri', 'invalid_redirect_uri', 'invalid_redirect_uri', 'invalid_redirect_uri']);
+  eq('…and scopes must be real ones (at least one)', [await bad({ scopes: ['posts.write', 'dm.read'] }), await bad({ scopes: [] })], ['invalid_scope', 'invalid_scope']);
+  const regA = await dev.post('/api/developer/apps', appBody('Scheduler A'));
+  const appA = regA.data.app;
+  const secretA = regA.data.clientSecret;
+  eq('registering issues a client_id and a client_secret, once', [regA.status, /^feedapp_[0-9a-f]{24}$/.test(appA.clientId), /^fds_[A-Za-z0-9_-]{43}$/.test(secretA), appA.status, appA.scopes, appA.redirectUris.length], [201, true, true, 'active', ['profile.read', 'posts.write'], 2]);
+  const [stored] = await sql('SELECT client_secret_hash FROM feed_api_apps WHERE id = $1', [appA.id]);
+  eq('…the secret is stored only as a SHA-256 hash (never in the clear)', [stored.client_secret_hash === sha('sha256').update(secretA).digest('hex'), stored.client_secret_hash.includes(secretA)], [true, false]);
+  const listA = (await dev.get('/api/developer/apps')).data.apps;
+  eq('…and it’s never shown again (the app list has no secret)', [listA.length, JSON.stringify(listA).includes(secretA), JSON.stringify(listA).includes('secret')], [1, false, false]);
+  eq('another developer doesn’t see it, and can’t change, rotate or delete it', [
+    (await dev2.get('/api/developer/apps')).data.apps.length,
+    (await dev2.put(`/api/developer/apps/${appA.id}`, appBody('Hijack'))).status,
+    (await dev2.post(`/api/developer/apps/${appA.id}/secret`, {})).status,
+    (await dev2.del(`/api/developer/apps/${appA.id}`)).status,
+  ], [0, 404, 404, 404]);
+  const rot = await dev.post(`/api/developer/apps/${appA.id}/secret`, {});
+  const [stored2] = await sql('SELECT client_secret_hash FROM feed_api_apps WHERE id = $1', [appA.id]);
+  eq('the owner can rotate the secret (shown once again; the old one no longer matches)', [rot.status, rot.data.clientSecret !== secretA, stored2.client_secret_hash === sha('sha256').update(rot.data.clientSecret).digest('hex')], [200, true, true]);
+  pubApi.appA = { ...appA, secret: rot.data.clientSecret };
+  const regB = await dev2.post('/api/developer/apps', appBody('Scheduler B', { redirectUris: ['https://b.example.test/cb'] }));
+  pubApi.appB = { ...regB.data.app, secret: regB.data.clientSecret };
+  const regRead = await dev2.post('/api/developer/apps', appBody('Profile Peek', { redirectUris: ['https://peek.example.test/cb'], scopes: ['profile.read'] }));
+  pubApi.appRead = { ...regRead.data.app, secret: regRead.data.clientSecret };
+
+  eq('only admins see every app and can suspend one', [(await dev.get('/api/admin/feed-api/apps')).status, (await dev.post(`/api/admin/feed-api/apps/${appA.id}/suspend`, {})).status], [403, 403]);
+  const all = (await apiAdmin.get('/api/admin/feed-api/apps')).data.apps;
+  eq('…the admin list shows every app with its owner', [all.length, all.find((a) => a.id === appA.id)?.owner?.email], [3, 'api-dev@example.test']);
+  const throwaway = (await dev.post('/api/developer/apps', appBody('Throwaway'))).data.app;
+  const sus = await apiAdmin.post(`/api/admin/feed-api/apps/${throwaway.id}/suspend`, { reason: 'Spam' });
+  const susRow = (await dev.get('/api/developer/apps')).data.apps.find((a) => a.id === throwaway.id);
+  eq('an admin suspends an app (the owner sees it, with the reason)', [sus.status, susRow.status, susRow.suspendedReason], [200, 'suspended', 'Spam']);
+  const re = await apiAdmin.post(`/api/admin/feed-api/apps/${throwaway.id}/reactivate`, {});
+  eq('…and can reactivate it', [re.status, (await dev.get('/api/developer/apps')).data.apps.find((a) => a.id === throwaway.id).status], [200, 'active']);
+  eq('the owner can delete an app', [(await dev.del(`/api/developer/apps/${throwaway.id}`)).status, (await dev.get('/api/developer/apps')).data.apps.length], [200, 1]);
+  pubApi.dev = dev;
+  pubApi.dev2 = dev2;
+  pubApi.admin = apiAdmin;
+}
+const pubApi = {};
+
+async function runAll() {
   await monday();
   await midweek();
   await sunday();
@@ -6149,7 +6224,21 @@ try {
   await privacyRules();
   await stripeBilling();
   await householdJoin();
+  await publishingApiSuite();
   if (process.env.E2E_UI !== '0') await uiGate();
+}
+const SUITES = { monday, midweek, sunday, mealsAndGrocery, pinRotation, bigBuild, billingAdmin, investments, circles, careTeam, socialSuite, businessSuite, feedAppSuite, exercisePictures, bodyScience, privacyRules, stripeBilling, householdJoin, publishingApiSuite, uiGate };
+// E2E_ONLY=suiteA,suiteB runs setup and just those suites (quick iteration); the gate runs everything.
+const ONLY = process.env.E2E_ONLY ? new Set(process.env.E2E_ONLY.split(',').map((x) => x.trim())) : null;
+try {
+  await setup();
+  if (ONLY) {
+    for (const name of ONLY) {
+      const suite = SUITES[name];
+      if (!suite) throw new Error(`E2E_ONLY: unknown suite ${name}`);
+      await suite();
+    }
+  } else await runAll();
 } catch (e) {
   failures.push(`CRASH: ${e instanceof Error ? e.stack : e}`);
   console.error(e);

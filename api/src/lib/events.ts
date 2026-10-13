@@ -66,7 +66,15 @@ export type EventName =
   | 'ad_paid'
   | 'consult_booked'
   | 'community_moderation'
-  | 'community_strike';
+  | 'community_strike'
+  | 'feed_api_app_registered'
+  | 'feed_api_secret_rotated'
+  | 'feed_api_app_deleted'
+  | 'feed_api_app_suspended'
+  | 'feed_api_app_reactivated'
+  | 'feed_api_authorized'
+  | 'feed_api_revoked'
+  | 'feed_api_refresh_reuse';
 
 export async function logEvent(
   name: EventName,

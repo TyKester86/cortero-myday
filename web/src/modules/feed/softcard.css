@@ -2163,3 +2163,9 @@ body.sc-body {
   gap: 8px;
   margin-top: 8px;
 }
+
+/* Developers / Connected apps: client ids and once-shown secrets are long unbroken strings. */
+.sc-details code,
+.sc-note code {
+  word-break: break-all;
+}

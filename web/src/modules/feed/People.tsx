@@ -749,6 +749,7 @@ function Settings({ me }: { me: CommunityMe }) {
           />
         </Row>
         <Row icon="info" label="About The Feed" onClick={() => setSheet('about')} testid="settings-about" />
+        <Row icon="gear" label="Developers" to="/feed/developers" testid="settings-developers" />
         <Row icon="door" label={FEED_APP && session.household ? 'Open MyDay' : 'Set up MyDay'} href={myday} testid="setup-household" />
       </div>
       <button type="button" className="sc-logout" onClick={() => void signOut()} data-testid="sign-out">
