@@ -6146,6 +6146,7 @@ async function publishingApiSuite() {
   await pubApiPublishing();
   await pubApiScreening();
   await pubApiLimits();
+  await pubApiIsolation();
 }
 
 async function pubApiRegistry() {
@@ -6542,6 +6543,53 @@ async function pubApiLimits() {
   void admin;
 }
 
+
+
+async function pubApiIsolation() {
+  const { dev, dev2, pat, admin, appA, appB } = pubApi;
+  section('Feed Publishing API 6: isolation and auth');
+  // Pat connects both apps; Brook connects App A too.
+  const tA = await connect(pat, appA);
+  const tB = await connect(pat, appB);
+  const tBrook = await connect(dev2, appA);
+  const bPost = (await v1(tB.access_token, 'POST', '/posts', { text: 'Posted by App B' })).data.post;
+  const bMedia = (await v1(tB.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' })).data.id;
+  eq('App A can’t read, delete or reuse App B’s post or photo (same person, different app)', [
+    (await v1(tA.access_token, 'GET', `/posts/${bPost.id}`)).status,
+    (await v1(tA.access_token, 'DELETE', `/posts/${bPost.id}`)).status,
+    (await v1(tA.access_token, 'POST', '/posts', { text: 'steal', mediaIds: [bMedia] })).data.code,
+    (await v1(tB.access_token, 'GET', `/posts/${bPost.id}`)).data.post.status,
+  ], [404, 404, 'unknown_media', 'published']);
+  const brookPost = (await v1(tBrook.access_token, 'POST', '/posts', { text: 'Brook here, via App A' })).data.post;
+  const brookSeen = (await pat.get(`/api/feed/posts/${brookPost.id}`)).data.post;
+  eq('a token acts only as the person who authorized it: Brook’s token posts as Brook…', [brookSeen.author.displayName, (await v1(tBrook.access_token, 'GET', '/me')).data.username], ['Brook', 'brook_builds']);
+  eq('…and Pat’s token (same app) can’t read or delete Brook’s post', [(await v1(tA.access_token, 'GET', `/posts/${brookPost.id}`)).status, (await v1(tA.access_token, 'DELETE', `/posts/${brookPost.id}`)).status], [404, 404]);
+  eq('…there is no way to name another author', (await v1(tA.access_token, 'POST', '/posts', { text: 'as Brook', authorId: brookSeen.author.userId })).data.code, 'unknown_field');
+  eq('…and a person’s session can’t be borrowed: no cookie works on /api/v1', (await fetch(`${BASE}/api/v1/posts/${brookPost.id}`, { headers: { Cookie: dev2.cookie } })).status, 401);
+
+  const tRev = await connect(pat, appA);
+  await oauthPost('/api/oauth/revoke', appA, { token: tRev.access_token });
+  eq('a revoked token fails', [(await v1(tRev.access_token, 'GET', '/me')).status, (await v1(tRev.access_token, 'POST', '/posts', { text: 'x' })).status], [401, 401]);
+  await pat.del(`/api/feed/connected-apps/${appB.id}`);
+  eq('…so does every token of an app the person disconnected', [(await v1(tB.access_token, 'POST', '/posts', { text: 'x' })).status, (await refreshWith(appB, tB.refresh_token)).data.error], [401, 'invalid_grant']);
+
+  const tS = await connect(pat, appA);
+  const susp = await admin.post(`/api/admin/feed-api/apps/${appA.id}/suspend`, { reason: 'Isolation test' });
+  eq('a suspended app’s tokens fail (suspension revokes them at once)', [susp.data.revokedTokens > 0, (await v1(tS.access_token, 'GET', '/me')).status, (await v1(tBrook.access_token, 'POST', '/posts', { text: 'x' })).status, (await refreshWith(appA, tS.refresh_token)).data.error], [true, 401, 401, 'invalid_client']);
+  const consentWhileSuspended = await pat.get(`/api/oauth/authorize/info${authorizeQs(appA)}`);
+  eq('…and nobody can connect it while it’s suspended', [consentWhileSuspended.status, consentWhileSuspended.data.code], [403, 'app_suspended']);
+  await admin.post(`/api/admin/feed-api/apps/${appA.id}/reactivate`, {});
+  eq('…reactivating doesn’t bring old tokens back (people connect again)', [(await v1(tS.access_token, 'GET', '/me')).status, (await v1((await connect(pat, appA)).access_token, 'GET', '/me')).status], [401, 200]);
+
+  const tE = await connect(pat, appA);
+  await sql("UPDATE feed_api_tokens SET expires_at = now() - interval '1 minute' WHERE token_hash = $1", [sha('sha256').update(tE.access_token).digest('hex')]);
+  const expired = await v1(tE.access_token, 'GET', '/me');
+  const refreshed = await refreshWith(appA, tE.refresh_token);
+  eq('an expired access token fails; its valid refresh token gets a working new one', [expired.status, refreshed.status, (await v1(refreshed.data.access_token, 'POST', '/posts', { text: 'Back after a refresh' })).status], [401, 200, 201]);
+  const again = await refreshWith(appA, tE.refresh_token);
+  eq('a rotated-out refresh token fails on reuse (and takes its grant with it)', [again.status, again.data.error, (await v1(refreshed.data.access_token, 'GET', '/me')).status], [400, 'invalid_grant', 401]);
+  void dev;
+}
 
 async function runAll() {
   await monday();
