@@ -159,6 +159,12 @@ export function PostCard({
           <span className="sc-post-who">
             <Name a={p.author} />
             <span className="sc-meta"> · {since(p.at)}</span>
+            {p.via && (
+              <span className="sc-meta" data-testid="post-via" title={`Posted through ${p.via}, an app ${p.author.displayName} connected`}>
+                {' '}
+                · via {p.via}
+              </span>
+            )}
             {p.author.verified && <ProviderBadge compact />}
             {p.audience === 'friends' && (
               <span className="sc-meta sc-aud" title="Friends only" aria-label="Friends only">

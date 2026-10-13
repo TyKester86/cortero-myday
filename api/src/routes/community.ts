@@ -560,21 +560,25 @@ communityUploadRouter.post(
   express.raw({ type: ['image/*', 'application/octet-stream'], limit: MAX_IMAGE }),
   async (req: Request, res) => {
     if (req.headers['x-myday-upload'] !== '1') throw new HttpError(400, 'Missing upload header');
-    const m = await poster(req);
-    const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const mime = imageType(data);
-    if (!mime) throw new HttpError(400, 'Photos must be JPEG, PNG or WebP');
-    const s = await screenImage(data, mime);
-    const d = await decide(s, 'photo');
-    const keyId = currentKeyId();
-    const { rows } = await pool.query<{ id: number }>(
-      'INSERT INTO community_images (user_id, data_enc, key_id, mime, status, flags) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-      [m.userId, sealBytes(data, keyId), keyId, mime, d.status === 'pending' ? 'pending' : 'visible', d.flags],
-    );
-    const id = rows[0]?.id ?? 0;
-    res.status(201).json({ id, url: imageUrl(id), review: d.note });
+    const p = await storeFeedImage(req, Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
+    res.status(201).json({ id: p.id, url: imageUrl(p.id), review: p.decision.note });
   },
 );
+
+/** Screen and store a Feed photo (the app's uploader and the Publishing API's /media both come here). */
+export async function storeFeedImage(req: Request, data: Buffer, via: Via | null = null): Promise<{ id: number; decision: Decision }> {
+  const m = await poster(req);
+  const mime = imageType(data);
+  if (!mime) throw new HttpError(400, 'Photos must be JPEG, PNG or WebP', 'unsupported_media');
+  const s = await screenImage(data, mime);
+  const d = await decide(s, 'photo');
+  const keyId = currentKeyId();
+  const { rows } = await pool.query<{ id: number }>(
+    'INSERT INTO community_images (user_id, data_enc, key_id, mime, status, flags, via_app_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+    [m.userId, sealBytes(data, keyId), keyId, mime, d.status === 'pending' ? 'pending' : 'visible', d.flags, via?.appId ?? null],
+  );
+  return { id: rows[0]?.id ?? 0, decision: d };
+}
 
 communityRouter.get('/api/community/images/:id', async (req, res) => {
   const m = await member(req);
@@ -935,6 +939,10 @@ communityRouter.delete('/api/village/posts/:id', async (req, res) => {
 
 /* ---------- The Feed ---------- */
 
+/** The app a post came through ("via Scheduler A"): its current name, else the name it had when it posted. */
+export const VIA_NAME = (alias: string): string =>
+  `CASE WHEN ${alias}.via_app_id IS NOT NULL OR ${alias}.via_name IS NOT NULL THEN COALESCE((SELECT a.name FROM feed_api_apps a WHERE a.id = ${alias}.via_app_id), ${alias}.via_name) END`;
+
 type FeedRow = AuthorCols & {
   id: number;
   body_enc: Buffer;
@@ -955,6 +963,7 @@ type FeedRow = AuthorCols & {
   feeling: FeedFeeling | null;
   place: string | null;
   friends: boolean;
+  via: string | null;
 };
 
 const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
@@ -980,6 +989,7 @@ const toFeed = (viewer: number, r: FeedRow): FeedPost => ({
   feeling: r.feeling,
   place: r.place,
   poll: null,
+  via: r.via,
 });
 
 /** Polls on these posts: options with vote counts, and the viewer's vote. */
@@ -1067,7 +1077,8 @@ export async function feedPage(viewer: number, o: { tab: 'following' | 'everyone
             EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id) AS following,
             (SELECT l.reaction FROM social_likes l WHERE l.post_id = s.id AND l.user_id = $1) AS my_reaction,
             (SELECT json_object_agg(x.reaction, x.n) FROM (SELECT reaction, COUNT(*)::int AS n FROM social_likes WHERE post_id = s.id GROUP BY reaction) x) AS reactions,
-            s.comment_count, s.audience, s.comments_from, s.feeling, s.place, feed_friends($1, s.author_user_id) AS friends
+            s.comment_count, s.audience, s.comments_from, s.feeling, s.place, feed_friends($1, s.author_user_id) AS friends,
+            ${VIA_NAME('s')} AS via
        FROM social_posts s ${AUTHOR_JOIN('s.author_user_id')} LEFT JOIN community_images i ON i.id = s.image_id
       WHERE ${SEEN('s')} AND ${NOT_BLOCKED('s.author_user_id')} AND p.banned_at IS NULL AND ${AUDIENCE_OK('s')}
         AND ($2::text <> 'following' OR s.author_user_id = $1 OR EXISTS (SELECT 1 FROM social_follows f WHERE f.follower_user_id = $1 AND f.followed_user_id = s.author_user_id))
@@ -1472,16 +1483,30 @@ async function onePost(viewer: number, id: number): Promise<FeedPost> {
   return p;
 }
 
-communityRouter.post('/api/feed/posts', async (req, res) => {
+/** Who is posting through the Publishing API (null = in The Feed itself). */
+export interface Via {
+  appId: number;
+  name: string;
+}
+
+/**
+ * Create a Feed post. The app's own composer and the Publishing API (routes/publishing.ts) both come
+ * through here, so an API post gets exactly the same checks (18+, profile, ban, mute, the hourly limit),
+ * the same screening (block / hold / crisis -> 988 and the moderators), and the same side effects.
+ * With `via`, an attached photo must have been uploaded by that same app for this same person.
+ */
+export async function createFeedPost(req: Request, b: Record<string, unknown>, via: Via | null = null): Promise<{ userId: number; id: number; decision: Decision }> {
   const m = await poster(req);
-  const b = req.body as Record<string, unknown>;
   const body = str(b.body, 'body', 2000);
   let imageId: number | null = null;
   let imagePending = false;
   if (b.imageId != null) {
     imageId = idParam(b.imageId);
-    const { rows } = await pool.query<{ status: string }>("SELECT status FROM community_images WHERE id = $1 AND user_id = $2 AND status <> 'removed'", [imageId, m.userId]);
-    if (!rows[0]) throw new HttpError(400, 'Upload the photo first');
+    const { rows } = await pool.query<{ status: string }>(
+      "SELECT status FROM community_images WHERE id = $1 AND user_id = $2 AND status <> 'removed' AND ($3::int IS NULL OR via_app_id = $3)",
+      [imageId, m.userId, via?.appId ?? null],
+    );
+    if (!rows[0]) throw new HttpError(400, 'Upload the photo first', 'unknown_media');
     imagePending = rows[0].status === 'pending';
   }
   // A poll: 2–4 short options (screened with the post's words).
@@ -1507,9 +1532,9 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
   const d = await guarded(await decide(s, 'feed'), m.userId, words, 'post');
   const keyId = currentKeyId();
   const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags, hashtags, audience, comments_from, feeling, place)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
-    [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags, hashtagsOf(body), audience, commentsFrom, feeling, place],
+    `INSERT INTO social_posts (author_user_id, body_enc, key_id, image_id, status, priority, flags, hashtags, audience, comments_from, feeling, place, via_app_id, via_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+    [m.userId, sealText(body, keyId), keyId, imageId, d.status, d.priority, d.flags, hashtagsOf(body), audience, commentsFrom, feeling, place, via?.appId ?? null, via?.name ?? null],
   );
   if (pollOptions) await pool.query('INSERT INTO social_polls (post_id, options) VALUES ($1, $2)', [rows[0]?.id, pollOptions]);
   if (d.status === 'visible' && body) ensureTrusted('feed', rows[0]?.id ?? 0, body);
@@ -1517,7 +1542,12 @@ communityRouter.post('/api/feed/posts', async (req, res) => {
     if (body) await notifyMentions(body, m.userId, `mention:post:${rows[0]?.id ?? 0}`, `/people/${m.userId}`);
     await firstPost(m.userId);
   }
-  res.status(201).json({ post: await onePost(m.userId, rows[0]?.id ?? 0), review: d.note });
+  return { userId: m.userId, id: rows[0]?.id ?? 0, decision: d };
+}
+
+communityRouter.post('/api/feed/posts', async (req, res) => {
+  const p = await createFeedPost(req, req.body as Record<string, unknown>);
+  res.status(201).json({ post: await onePost(p.userId, p.id), review: p.decision.note });
 });
 
 async function socialPost(viewer: number, id: number): Promise<{ author_user_id: number; status: CommunityStatus }> {
@@ -2007,6 +2037,8 @@ interface QueueRow {
   flags: string[];
   reports: string[] | null;
   created_at: Date;
+  /** Feed posts made through the Publishing API: the app. */
+  via?: string | null;
 }
 
 const WHO = `JOIN users u ON u.id = q.user_id LEFT JOIN social_profiles sp ON sp.user_id = q.user_id`;
@@ -2027,6 +2059,7 @@ async function queue(): Promise<CommunityQueue> {
       reasons: r.flags.map((f) => SCREEN_REASONS[f as ScreenReason] ?? PROVIDER_FLAGS[f] ?? f),
       reports: r.reports ?? [],
       at: r.created_at.toISOString(),
+      ...(r.via ? { via: r.via } : {}),
     });
   };
   const { rows: forum } = await pool.query<QueueRow>(
@@ -2039,7 +2072,7 @@ async function queue(): Promise<CommunityQueue> {
   for (const r of forum) push('village', r);
   const { rows: feed } = await pool.query<QueueRow>(
     `SELECT q.id, q.user_id, ${WHO_COLS}, NULL::bytea AS title_enc, NULL AS title_key, q.body_enc, q.key_id, q.image_id, q.status, q.priority, q.flags, q.created_at,
-            (SELECT array_agg(r.reason ORDER BY r.id) FROM social_reports r WHERE r.post_id = q.id AND r.status = 'open') AS reports
+            (SELECT array_agg(r.reason ORDER BY r.id) FROM social_reports r WHERE r.post_id = q.id AND r.status = 'open') AS reports, ${VIA_NAME('q')} AS via
        FROM (SELECT s.*, s.author_user_id AS user_id FROM social_posts s) q ${WHO}
       WHERE q.status IN ('pending', 'hidden') OR EXISTS (SELECT 1 FROM social_reports r WHERE r.post_id = q.id AND r.status = 'open')`,
   );

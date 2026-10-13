@@ -6143,6 +6143,7 @@ async function publishingApiSuite() {
   await startServer(noonOn('Sun'));
   await pubApiRegistry();
   await pubApiOAuth();
+  await pubApiPublishing();
 }
 
 async function pubApiRegistry() {
@@ -6381,6 +6382,69 @@ async function pubApiOAuth() {
   eq('Disconnect kills that app’s tokens for you immediately (access and refresh)', [dc.status, (await v1(t4.access_token, 'GET', '/me')).status, (await refreshWith(appA, t4.refresh_token)).data.error, (await pat.get('/api/feed/connected-apps')).data.apps.length], [200, 401, 'invalid_grant', 0]);
   eq('…the owner’s app list counts connected people', (await dev.get('/api/developer/apps')).data.apps[0].users, 0);
   pubApi.dev = dev;
+}
+
+
+/** A real 1×1 JPEG (it decodes), for /api/v1/media. */
+const API_JPEG = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==', 'base64');
+
+async function pubApiPublishing() {
+  const { dev, pat, appA } = pubApi;
+  const tA = await connect(pat, appA);
+  pubApi.tA = tA;
+
+  section('Feed Publishing API 3: publishing');
+  const created = await v1(tA.access_token, 'POST', '/posts', { text: 'Garden beds are in. Tomatoes next week #garden' });
+  const post = created.data.post;
+  eq('POST /api/v1/posts publishes a text post as the person, with the default audience', [created.status, post.status, post.text, post.audience, post.via.name, post.mediaIds, /\/feed\/post\/\d+$/.test(post.url)], [201, 'published', 'Garden beds are in. Tomatoes next week #garden', 'public', 'Scheduler A', [], true]);
+  const seen = (await dev.get(`/api/feed/posts/${post.id}`)).data.post;
+  eq('…on The Feed it’s Pat’s post, “via Scheduler A”', [seen.author.displayName, seen.via, seen.body], ['Pat', 'Scheduler A', 'Garden beds are in. Tomatoes next week #garden']);
+  const native = (await pat.post('/api/feed/posts', { body: 'Typed this one myself.' })).data.post;
+  eq('…a post made in The Feed itself has no “via”', native.via ?? null, null);
+  const friendsOnly = await v1(tA.access_token, 'POST', '/posts', { text: 'Friends-only update', audience: 'friends' });
+  eq('…audience can be narrowed to friends', [friendsOnly.status, friendsOnly.data.post.audience], [201, 'friends']);
+
+  const media = await v1(tA.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' });
+  eq('POST /api/v1/media takes a photo (screened like one added in the app) and returns its id', [media.status, typeof media.data.id, media.data.status], [201, 'number', 'ready']);
+  const [img] = await sql('SELECT via_app_id, user_id FROM community_images WHERE id = $1', [media.data.id]);
+  eq('…stored as the person’s photo, via the app', img.via_app_id, appA.id);
+  const withPhoto = await v1(tA.access_token, 'POST', '/posts', { text: 'Before and after', mediaIds: [media.data.id] });
+  const withPhotoSeen = (await dev.get(`/api/feed/posts/${withPhoto.data.post.id}`)).data.post;
+  eq('…attach it by media id; the post shows the photo', [withPhoto.status, withPhoto.data.post.mediaIds, /^\/api\/community\/images\/\d+$/.test(withPhotoSeen.imageUrl ?? '')], [201, [media.data.id], true]);
+  eq('…a photo-only post works too', (await v1(tA.access_token, 'POST', '/posts', { mediaIds: [(await v1(tA.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' })).data.id] })).status, 201);
+  const video = await v1(tA.access_token, 'POST', '/media', randomBytes(64), { 'Content-Type': 'video/mp4' });
+  const notImage = await v1(tA.access_token, 'POST', '/media', Buffer.from('not a photo'), { 'Content-Type': 'image/jpeg' });
+  eq('…video isn’t accepted (Feed posts carry photos), and non-photos are refused', [video.status, video.data.code, notImage.status, notImage.data.code], [415, 'unsupported_media', 400, 'unsupported_media']);
+  const m2 = (await v1(tA.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' })).data.id;
+  eq('…one photo per post', (await v1(tA.access_token, 'POST', '/posts', { text: 'two', mediaIds: [media.data.id, m2] })).data.code, 'too_many_media');
+  const nativePhoto = (await pat.req('POST', '/api/community/images', API_JPEG, { json: false, headers: { 'Content-Type': 'image/jpeg', 'X-MyDay-Upload': '1' } })).data.id;
+  eq('…only media this app uploaded for this person can be attached', (await v1(tA.access_token, 'POST', '/posts', { text: 'x', mediaIds: [nativePhoto] })).data.code, 'unknown_media');
+
+  eq('nothing empty, nothing over 2000 characters, no unknown fields', [
+    (await v1(tA.access_token, 'POST', '/posts', { text: '   ' })).data.code,
+    (await v1(tA.access_token, 'POST', '/posts', { text: 'x'.repeat(2001) })).data.code,
+    (await v1(tA.access_token, 'POST', '/posts', { text: 'hi', feeling: 'calm' })).data.code,
+  ], ['empty_post', 'text_too_long', 'unknown_field']);
+  const surfaces = [];
+  for (const f of ['villageId', 'circleId', 'kids', 'household', 'surface', 'story']) {
+    const r = await v1(tA.access_token, 'POST', '/posts', { text: 'Post this in the kids’ space', [f]: 1 });
+    surfaces.push(`${r.status} ${r.data.code}`);
+  }
+  eq('no API posting into any kids’ surface (or any surface but the main Feed), ever — the request is refused, nothing saved', surfaces, Array(6).fill('403 surface_not_allowed'));
+  eq('…and nothing was saved by those attempts', (await sql("SELECT COUNT(*)::int AS n FROM social_posts WHERE via_app_id = $1 AND status <> 'removed'", [appA.id]))[0].n, 4);
+  const kidView = new Client('api-kid3');
+  await kidView.get(`/dev-login?token=${DEV_TOKEN}&member=evan`);
+  eq('…and kids can’t see API posts anywhere (The Feed is 18+)', [(await kidView.get(`/api/feed/posts/${post.id}`)).status, (await kidView.get(`/api/feed/posts/${post.id}`)).data.code], [403, 'adults_only']);
+
+  const read = await v1(tA.access_token, 'GET', `/posts/${post.id}`);
+  eq('GET /api/v1/posts/:id: the owning app reads its post’s status', [read.status, read.data.post.status, read.data.post.id], [200, 'published', post.id]);
+  eq('…but not a post the person made in The Feed (404)', (await v1(tA.access_token, 'GET', `/posts/${native.id}`)).status, 404);
+  const del = await v1(tA.access_token, 'DELETE', `/posts/${post.id}`);
+  eq('DELETE by the owning app removes it (status “removed”; gone from The Feed)', [del.status, (await v1(tA.access_token, 'GET', `/posts/${post.id}`)).data.post.status, (await v1(tA.access_token, 'GET', `/posts/${post.id}`)).data.post.text, (await dev.get(`/api/feed/posts/${post.id}`)).status], [200, 'removed', '', 404]);
+  eq('…deleting twice is 404', (await v1(tA.access_token, 'DELETE', `/posts/${post.id}`)).status, 404);
+  const byAuthor = withPhoto.data.post.id;
+  eq('the author can delete an API post in The Feed; the app then reads “removed”', [(await pat.del(`/api/feed/posts/${byAuthor}`)).status, (await v1(tA.access_token, 'GET', `/posts/${byAuthor}`)).data.post.status], [200, 'removed']);
+  pubApi.native = native;
 }
 
 async function runAll() {

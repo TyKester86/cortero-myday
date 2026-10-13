@@ -2774,6 +2774,8 @@ export interface FeedPost {
   feeling?: FeedFeeling | null;
   place?: string | null;
   poll?: FeedPoll | null;
+  /** Published through the Feed Publishing API by this app ("via Scheduler A"); null = posted in The Feed. */
+  via?: string | null;
 }
 
 export const FEED_REACTIONS = [
@@ -2976,6 +2978,8 @@ export interface CommunityQueueItem {
   reasons: string[];
   reports: string[];
   at: string;
+  /** A Feed post made through the Publishing API: the app it came through. */
+  via?: string;
 }
 
 export interface CommunityQueue {

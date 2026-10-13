@@ -788,6 +788,7 @@ export function CommunityModeration() {
           {i.title && <b>{i.title}</b>}
           {i.body && <p style={{ whiteSpace: 'pre-wrap' }}>{i.body}</p>}
           {i.imageUrl && <img src={i.imageUrl} alt="" className="feed-photo" />}
+          {i.via && <p className="small">Posted via {i.via} (Publishing API)</p>}
           {i.reasons.length > 0 && <p className="small">Held for: {i.reasons.join('; ')}</p>}
           {i.reports.length > 0 && <p className="small">Reports: {i.reports.join(' · ')}</p>}
           <div className="row">
