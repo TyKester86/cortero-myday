@@ -6144,6 +6144,7 @@ async function publishingApiSuite() {
   await pubApiRegistry();
   await pubApiOAuth();
   await pubApiPublishing();
+  await pubApiScreening();
 }
 
 async function pubApiRegistry() {
@@ -6445,6 +6446,52 @@ async function pubApiPublishing() {
   const byAuthor = withPhoto.data.post.id;
   eq('the author can delete an API post in The Feed; the app then reads “removed”', [(await pat.del(`/api/feed/posts/${byAuthor}`)).status, (await v1(tA.access_token, 'GET', `/posts/${byAuthor}`)).data.post.status], [200, 'removed']);
   pubApi.native = native;
+}
+
+
+async function pubApiScreening() {
+  const { dev, pat, appA, tA } = pubApi;
+  const admin = pubApi.admin;
+  section('Feed Publishing API 4: the screening gate — same pipeline, truthful status');
+  const row = async (id) => (await sql('SELECT status, priority, flags FROM social_posts WHERE id = $1', [id]))[0];
+  const adminMail = async () => (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.filter((m) => m.to === 'admin@example.com').length;
+  const cases = [
+    ['spam', 'Use my code SAVE20 — buy now, limited time offer!'],
+    ['personal info', 'Text me at 555-867-5309 if you want the plans'],
+    ['diagnosing someone else’s kid', 'Honestly it sounds like your son has ADHD.'],
+  ];
+  for (const [what, text] of cases) {
+    const n = await pat.post('/api/feed/posts', { body: text });
+    const a = await v1(tA.access_token, 'POST', '/posts', { text });
+    const [nr, ar] = [await row(n.data.post.id), await row(a.data.post.id)];
+    eq(`${what}: held in The Feed → held through the API, with the same screening result`, [n.status, n.data.post.status, a.status, a.data.post.status, ar.status, ar.priority, ar.flags], [201, 'pending', 201, 'held', nr.status, nr.priority, nr.flags]);
+  }
+  const before = await adminMail();
+  const nCrisis = await pat.post('/api/feed/posts', { body: 'I want to die tonight.' });
+  const mid = await adminMail();
+  const aCrisis = await v1(tA.access_token, 'POST', '/posts', { text: 'I want to die tonight.' });
+  const after = await adminMail();
+  const [nc, ac] = [await row(nCrisis.data.post.id), await row(aCrisis.data.post.id)];
+  eq('crisis words: held at the top of the queue (priority 2) and the moderators emailed — both ways', [nc.priority, ac.priority, ac.status, aCrisis.data.post.status, mid - before, after - mid], [2, 2, 'pending', 'held', 1, 1]);
+  eq('…the person still sees 988 in The Feed; the app is told only “held” (no reasons shared with third parties)', [nCrisis.data.review.crisis, JSON.stringify(aCrisis.data).includes('crisis'), 'review' in aCrisis.data], [true, false, false]);
+  const countBefore = (await sql('SELECT COUNT(*)::int AS n FROM social_posts'))[0].n;
+  const nBlock = await pat.post('/api/feed/posts', { body: 'You should stop Adderall, it is poison for kids.' });
+  const aBlock = await v1(tA.access_token, 'POST', '/posts', { text: 'You should stop Adderall, it is poison for kids.' });
+  eq('telling others to stop a medication: blocked both ways (422, how to rephrase), and nothing is saved', [nBlock.status, nBlock.data.code, aBlock.status, aBlock.data.code, typeof aBlock.data.details?.rephrase, (await sql('SELECT COUNT(*)::int AS n FROM social_posts'))[0].n - countBefore], [422, 'blocked', 422, 'blocked', 'string', 0]);
+  const held = aCrisis.data.post.id;
+  eq('a held API post isn’t on The Feed for anyone else', (await dev.get(`/api/feed/posts/${held}`)).status, 404);
+  const queue = (await admin.get('/api/community/moderation/queue')).data.items;
+  const qi = queue.find((i) => i.kind === 'feed' && i.id === held);
+  eq('…moderators see it in the queue, marked “via” the app', [!!qi, qi?.via, qi?.priority], [true, 'Scheduler A', 2]);
+  const spamHeld = (await sql("SELECT id FROM social_posts WHERE via_app_id = $1 AND status = 'pending' AND priority = 1 ORDER BY id LIMIT 1", [appA.id]))[0].id;
+  eq('the app reads “held” until a moderator decides…', (await v1(tA.access_token, 'GET', `/posts/${spamHeld}`)).data.post.status, 'held');
+  await admin.post(`/api/community/moderation/feed/${spamHeld}/approve`);
+  eq('…then “published” once approved (and it’s on The Feed)', [(await v1(tA.access_token, 'GET', `/posts/${spamHeld}`)).data.post.status, (await dev.get(`/api/feed/posts/${spamHeld}`)).status], ['published', 200]);
+  await admin.post(`/api/community/moderation/feed/${held}/remove`);
+  eq('…or “removed” if a moderator removes it', (await v1(tA.access_token, 'GET', `/posts/${held}`)).data.post.status, 'removed');
+  const photoHeld = (await v1(tA.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' })).data.id;
+  await sql("UPDATE community_images SET status = 'pending' WHERE id = $1", [photoHeld]);
+  eq('a post with a photo still under review is held too (same rule as the app)', (await v1(tA.access_token, 'POST', '/posts', { text: 'Look at this', mediaIds: [photoHeld] })).data.post.status, 'held');
 }
 
 async function runAll() {
