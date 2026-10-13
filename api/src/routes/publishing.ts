@@ -7,12 +7,15 @@
  * (createFeedPost / storeFeedImage in routes/community.ts): same 18+/profile/ban/mute checks, same
  * screening, same "under review" holds, same crisis escalation. There is no other way in.
  *
+ * Quotas (per app and per person, for posts and photos) are set in lib/feedapi-limits.ts only.
+ *
  * Where an app can post: the main Feed (18+), as the person, and nowhere else. No Villages, no Circles,
  * nothing a kid or teen can see -- there is no parameter for it under any scope.
  */
 import express, { Router, type Request } from 'express';
 import { config } from '../config.js';
 import { pool } from '../db.js';
+import { checkQuota } from '../lib/feedapi-limits.js';
 import { HttpError, idParam } from '../lib/http.js';
 import { openText } from '../lib/seal.js';
 import { createFeedPost, member, storeFeedImage, type Via } from './community.js';
@@ -50,6 +53,7 @@ feedApiV1Router.post('/api/v1/media', express.raw({ type: () => true, limit: MAX
   if (type.startsWith('video/')) throw new HttpError(415, 'Feed posts carry photos only — video isn’t supported (v1)', 'unsupported_media');
   const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
   if (!data.length) throw new HttpError(400, 'Send the photo’s bytes as the request body', 'empty_media');
+  await checkQuota(res, 'media', req.apiAuth!.appId, req.apiAuth!.userId);
   const p = await storeFeedImage(req, data, via(req));
   res.status(201).json({ id: p.id, status: p.decision.status === 'visible' ? 'ready' : 'held' });
 });
@@ -120,6 +124,7 @@ feedApiV1Router.post('/api/v1/posts', express.json({ limit: '64kb' }), async (re
   }
   if (b.audience !== undefined && b.audience !== 'public' && b.audience !== 'friends') throw new HttpError(400, 'audience is "public" or "friends"', 'invalid_audience');
   if (!text.trim() && !imageId) throw new HttpError(400, 'A post needs text or a photo', 'empty_post');
+  await checkQuota(res, 'posts', req.apiAuth!.appId, req.apiAuth!.userId);
   const p = await createFeedPost(req, { body: text, imageId, audience: b.audience }, via(req));
   res.status(201).json({ post: await ownPost(req, p.id) });
 });

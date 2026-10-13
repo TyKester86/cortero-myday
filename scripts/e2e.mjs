@@ -345,12 +345,12 @@ class Client {
 
 let server = null;
 let serverLog = '';
-async function startServer(fakeNow) {
+async function startServer(fakeNow, extraEnv = {}) {
   await stopServer();
   const preload = pathToFileURL(path.join(root, 'scripts', 'fake-clock.mjs')).href;
   server = spawn(process.execPath, ['--import', preload, 'dist/server.js'], {
     cwd: apiDir,
-    env: serverEnv(fakeNow),
+    env: { ...serverEnv(fakeNow), ...extraEnv },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let err = '';
@@ -6145,6 +6145,7 @@ async function publishingApiSuite() {
   await pubApiOAuth();
   await pubApiPublishing();
   await pubApiScreening();
+  await pubApiLimits();
 }
 
 async function pubApiRegistry() {
@@ -6493,6 +6494,54 @@ async function pubApiScreening() {
   await sql("UPDATE community_images SET status = 'pending' WHERE id = $1", [photoHeld]);
   eq('a post with a photo still under review is held too (same rule as the app)', (await v1(tA.access_token, 'POST', '/posts', { text: 'Look at this', mediaIds: [photoHeld] })).data.post.status, 'held');
 }
+
+
+async function pubApiLimits() {
+  const { dev, admin } = pubApi;
+  section('Feed Publishing API 5: rate limits (one config: lib/feedapi-limits.ts), 429s, suspension on every call');
+  // Tiny quotas for this part only (FEED_API_LIMITS is the one knob; the defaults are 500/20 posts and 500/40 photos an hour).
+  await startServer(noonOn('Sun'), { FEED_API_LIMITS: 'posts.app=3,posts.user=2,media.app=3,media.user=2,window=3600' });
+  try {
+    const burst = { ...(await dev.post('/api/developer/apps', { name: 'Burst', redirectUris: ['https://burst.example.test/cb'], scopes: ['posts.write'] })).data };
+    const app = { ...burst.app, secret: burst.clientSecret };
+    const quinn = await feedMember(new Client('api-quinn'), 'api-quinn@example.test', 'Quinn', 'quinn_q');
+    const rae = await feedMember(new Client('api-rae'), 'api-rae@example.test', 'Rae', 'rae_r');
+    const tq = await connect(quinn, app);
+    const tr = await connect(rae, app);
+    const p1 = await v1(tq.access_token, 'POST', '/posts', { text: 'one' });
+    const p2 = await v1(tq.access_token, 'POST', '/posts', { text: 'two' });
+    const p3 = await v1(tq.access_token, 'POST', '/posts', { text: 'three' });
+    eq('each publish says where the quota stands (X-RateLimit-Limit / -Remaining / -Reset)', [p1.status, p1.headers.get('x-ratelimit-limit'), p1.headers.get('x-ratelimit-remaining'), p2.headers.get('x-ratelimit-remaining'), Number(p1.headers.get('x-ratelimit-reset')) > Date.now() / 1000], [201, '2', '1', '0', true]);
+    eq('over the per-person quota → 429 rate_limited, with Retry-After', [p3.status, p3.data.code, p3.data.details?.quota, p3.headers.get('x-ratelimit-remaining'), Number(p3.headers.get('retry-after')) > 0], [429, 'rate_limited', 'posts.user', '0', true]);
+    eq('…and nothing was published by the refused call', (await sql('SELECT COUNT(*)::int AS n FROM social_posts WHERE via_app_id = $1', [app.id]))[0].n, 2);
+    const r1 = await v1(tr.access_token, 'POST', '/posts', { text: 'rae one' });
+    const r2 = await v1(tr.access_token, 'POST', '/posts', { text: 'rae two' });
+    eq('the per-app quota counts everyone using the app (3 an hour here): the 4th post is refused for anyone', [r1.status, r2.status, r2.data.code, r2.data.details?.quota], [201, 429, 'rate_limited', 'posts.app']);
+    const m1 = await v1(tq.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' });
+    const m2 = await v1(tq.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' });
+    const m3 = await v1(tq.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' });
+    eq('photos have their own quota (2 per person here) with the same headers and 429', [m1.status, m1.headers.get('x-ratelimit-limit'), m2.status, m3.status, m3.data.details?.quota], [201, '2', 201, 429, 'media.user']);
+
+    // Suspension: checked on every call, not only through the tokens it revokes.
+    await sql("UPDATE feed_api_apps SET status = 'suspended' WHERE id = $1", [app.id]);
+    const calls = [
+      await v1(tr.access_token, 'GET', '/me'),
+      await v1(tr.access_token, 'POST', '/posts', { text: 'still here?' }),
+      await v1(tr.access_token, 'POST', '/media', API_JPEG, { 'Content-Type': 'image/jpeg' }),
+      await v1(tr.access_token, 'GET', `/posts/${r1.data.post.id}`),
+      await v1(tr.access_token, 'DELETE', `/posts/${r1.data.post.id}`),
+    ];
+    eq('a suspended app is refused on every endpoint, even with a still-unexpired token (401 app_suspended)', calls.map((c) => `${c.status} ${c.data.code}`), Array(5).fill('401 app_suspended'));
+    eq('…and can’t get new tokens', (await refreshWith(app, tr.refresh_token)).data.error, 'invalid_client');
+    await sql("UPDATE feed_api_apps SET status = 'active' WHERE id = $1", [app.id]);
+    pubApi.burst = app;
+  } finally {
+    await startServer(noonOn('Sun'));
+  }
+  eq('the quotas live in one config file (and the docs quote it)', readFileSync(path.join(apiDir, 'src', 'lib', 'feedapi-limits.ts'), 'utf8').includes('FEED_API_LIMITS'), true);
+  void admin;
+}
+
 
 async function runAll() {
   await monday();
