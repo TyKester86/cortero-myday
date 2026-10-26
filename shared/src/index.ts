@@ -500,6 +500,12 @@ export interface HealthToday {
   hasPlan: boolean;
   /** Today's session was moved to another day, or today shows a session moved here. */
   moved: { to?: DateStr; from?: DateStr } | null;
+  /**
+   * The next session to do and the gym day it falls on — shown on rest days and once
+   * today's session is done. Sessions advance only when completed; a missed gym day
+   * holds position. null with no plan or no gym days chosen.
+   */
+  nextSession: NextSession | null;
   /** Build program (phase, week, macros, shakes) when a build is set up. */
   program: ProgramStatus | null;
   /** Sessions this week: 2 is a "minimum week" and counts as a win. */
@@ -512,6 +518,21 @@ export interface HealthToday {
   runCap: RunCap | null;
   /** Habits offered to this member (teens: no shakes or creatine). */
   habitKeys: HabitKey[];
+}
+
+export interface NextSession {
+  week: number;
+  dayNum: number;
+  dayName: string;
+  phaseName: string;
+  /** The chosen gym day it falls on. */
+  on: DateStr;
+  weekday: Weekday;
+}
+
+/** PUT /api/workouts/gym-days: the days of the week this person trains (their sessions fall on these, in order). */
+export interface GymDaysRequest {
+  days: Weekday[];
 }
 
 export interface MoveWorkoutRequest {

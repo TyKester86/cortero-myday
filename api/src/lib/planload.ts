@@ -43,9 +43,13 @@ export async function loadBuildPlan(memberId: number, o: BuildPlanOptions): Prom
     await c.query(
       `INSERT INTO health_profiles (member_id, plan_start, train_weekdays, build, level, bodyweight_lb, food_protein, cardio,
          sex, height_in, activity, goal_weight_lb, life_stage, clinician_cleared, start_with_cut, shredded_ack,
-         cut_paused, diet_break_until, deload_week)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 'moderate'), $12, $13, $14, $15, $16, NULL, NULL, NULL)
-       ON CONFLICT (member_id) DO UPDATE SET plan_start = EXCLUDED.plan_start, train_weekdays = EXCLUDED.train_weekdays,
+         cut_paused, diet_break_until, deload_week, session_week, session_day)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 'moderate'), $12, $13, $14, $15, $16, NULL, NULL, NULL, 1, 1)
+       ON CONFLICT (member_id) DO UPDATE SET plan_start = EXCLUDED.plan_start,
+         -- Gym days the person picked themselves survive a re-plan; otherwise the build's default.
+         train_weekdays = CASE WHEN health_profiles.gym_days_set THEN health_profiles.train_weekdays ELSE EXCLUDED.train_weekdays END,
+         -- A new plan starts at its first session.
+         session_week = 1, session_day = 1,
          build = EXCLUDED.build, level = EXCLUDED.level,
          bodyweight_lb = COALESCE(EXCLUDED.bodyweight_lb, health_profiles.bodyweight_lb),
          food_protein = COALESCE(EXCLUDED.food_protein, health_profiles.food_protein), cardio = EXCLUDED.cardio,
@@ -147,7 +151,9 @@ export async function loadCsvPlan(memberId: number, rows: CsvWorkout[], start?: 
   await tx(async (c) => {
     await c.query(
       `INSERT INTO health_profiles (member_id, plan_start) VALUES ($1, $2)
-       ON CONFLICT (member_id) DO UPDATE SET plan_start = COALESCE($3, health_profiles.plan_start)`,
+       ON CONFLICT (member_id) DO UPDATE SET plan_start = COALESCE($3, health_profiles.plan_start),
+         -- New plan rows: the next session is pinned again from the plan start on first read.
+         session_week = NULL, session_day = NULL`,
       [memberId, weekStart(start ?? today()), start ? weekStart(start) : null],
     );
     await replacePhases(c, memberId, phases, () => '');

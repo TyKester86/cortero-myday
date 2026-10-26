@@ -41,14 +41,12 @@ import { HttpError, bool, int } from '../lib/http.js';
 import { targetMember } from '../lib/members.js';
 import { isTeen, loadBuildPlan } from '../lib/planload.js';
 import { CHAPTERS, bodyInputs, chapterOf, energyFor, weekOf } from '../lib/program.js';
+import { currentPos, firstPos, planDaysOf, setPos } from '../lib/sessions.js';
 
 export const programRouter = Router();
 
-/** Week 1..52 of the year plan. */
-export function weekNum(planStart: DateStr | undefined | null, t: DateStr): number {
-  if (!planStart) return 1;
-  return Math.max(1, Math.min(52, Math.floor(daysBetween(planStart, t) / 7) + 1));
-}
+/** Week 1..52 of the year plan by calendar — now only the starting point (see lib/sessions). */
+export { weekNum } from '../lib/sessions.js';
 
 interface PhaseRow {
   kind: PhaseKind;
@@ -95,13 +93,16 @@ interface ProgramRow {
   cut_paused: string | null;
   diet_break_until: DateStr | null;
   deload_week: DateStr | null;
+  session_week: number | null;
+  session_day: number | null;
+  train_weekdays: number[];
 }
 
 async function programRow(memberId: number): Promise<ProgramRow | null> {
   const { rows } = await pool.query<ProgramRow>(
     `SELECT build, level, bodyweight_lb, food_protein, plan_start::text AS plan_start, sex, height_in, activity, goal_weight_lb,
             life_stage, weigh_ins, calorie_adjust, calibrated_on::text AS calibrated_on, cut_paused,
-            diet_break_until::text AS diet_break_until, deload_week::text AS deload_week
+            diet_break_until::text AS diet_break_until, deload_week::text AS deload_week, session_week, session_day, train_weekdays
        FROM health_profiles WHERE member_id = $1`,
     [memberId],
   );
@@ -231,7 +232,8 @@ export async function programStatus(memberId: number): Promise<ProgramStatus | n
   const phases = await phasesFor(memberId);
   if (!phases.length) return null;
   const t = today();
-  const week = weekNum(p.plan_start, t);
+  // The week of the next session to do: it moves when sessions are completed, not by calendar.
+  const week = (await currentPos(memberId, p)).week;
   const phase = weekOf(phases, week);
   const info = BUILD_INFO[p.build];
   const { rows: mrow } = await pool.query<{ age: number | null }>('SELECT age FROM household_members WHERE id = $1', [memberId]);
@@ -428,21 +430,28 @@ programRouter.post('/api/program/deload', async (req, res) => {
   res.json({ program: await programStatus(member.id) });
 });
 
-/** Restart a week (default: the start of the current phase) — e.g. back after a long break, or a chapter start. */
+/**
+ * Restart a week (default: the start of the current phase) — e.g. back after a long
+ * break, or a chapter start. The next session becomes session 1 of that week; logged
+ * workouts are never touched.
+ */
 programRouter.post('/api/program/restart', async (req, res) => {
   const member = await targetMember(req);
   const p = await programRow(member.id);
-  if (!p?.build) throw new HttpError(409, 'No build plan to restart');
+  if (!p || !(await planDaysOf(member.id, 1)).length) throw new HttpError(409, 'No plan to restart');
   const phases = await phasesFor(member.id);
   const b = req.body as { week?: unknown; chapter?: unknown };
-  const now = weekNum(p.plan_start, today());
+  const now = (await currentPos(member.id, p)).week;
   const target =
     b.chapter !== undefined
       ? (CHAPTERS.find((c) => c.n === int(b.chapter, 'chapter', 1, 4))?.weekStart ?? 1)
       : b.week !== undefined
         ? int(b.week, 'week', 1, 52)
-        : weekOf(phases, now).weekStart;
+        : phases.length
+          ? weekOf(phases, now).weekStart
+          : 1;
   await pool.query('UPDATE health_profiles SET plan_start = $2 WHERE member_id = $1', [member.id, addDays(weekStart(today()), -(target - 1) * 7)]);
+  await setPos(member.id, await firstPos(member.id, target));
   res.json({ program: await programStatus(member.id) });
 });
 

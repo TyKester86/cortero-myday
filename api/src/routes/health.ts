@@ -8,6 +8,7 @@
 import { Router } from 'express';
 import {
   HABITS,
+  WEEKDAYS,
   type CompleteDayResponse,
   type DateStr,
   type ExerciseLog,
@@ -18,23 +19,26 @@ import {
   type HealthToday,
   type HouseholdMember,
   type LastLift,
+  type NextSession,
   type PlanPhase,
   type PlanWeek,
   type RunCap,
   type SessionLog,
   type ToggleHabitResponse,
+  type Weekday,
   type WorkoutExercise,
   type WorkoutSession,
   type XpTrack,
 } from '@myday/shared';
 import { pool, tx } from '../db.js';
-import { addDays, daysBetween, isoToWeekday, isoWeekday, today, weekStart } from '../lib/dates.js';
+import { addDays, daysBetween, isoToWeekday, isoWeekday, today, weekdayName, weekdayToIso, weekStart } from '../lib/dates.js';
 import { bool, HttpError, int, str } from '../lib/http.js';
 import { targetMember } from '../lib/members.js';
 import { isTeen } from '../lib/planload.js';
 import { CHAPTERS, deloadSets, nextStep } from '../lib/program.js';
 import { awardXpOnce, withEarn, XP_ACTIONS } from '../lib/xp.js';
-import { phasesFor, programStatus, weekNum } from './program.js';
+import { currentPos, isGymDay, nextGymDay, nextPos, type PlanPos } from '../lib/sessions.js';
+import { phasesFor, programStatus } from './program.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -71,6 +75,9 @@ interface ProfileRow {
   baseline_exercise: string;
   baseline_sleep: string;
   baseline_food: string;
+  session_week: number | null;
+  session_day: number | null;
+  gym_days_set: boolean;
 }
 
 export async function profileFor(memberId: number): Promise<ProfileRow | null> {
@@ -111,17 +118,19 @@ async function hasPlan(memberId: number): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** The planned session for a calendar day (ignoring moves), from the plan rows. */
 const LIGHT = '4+ RIR (light week)';
 
-export async function plannedSession(
-  memberId: number,
-  prof: ProfileRow | null,
-  date: DateStr,
-  scale = 1,
-): Promise<{ session: WorkoutSession | null; phaseName: string; focus: string; week: number }> {
+interface PlannedSession {
+  session: WorkoutSession | null;
+  phaseName: string;
+  focus: string;
+  week: number;
+}
+
+/** One session of the plan (plan week + day number), as it's done on `date` (a deload week is the calendar's). */
+export async function sessionAt(memberId: number, prof: ProfileRow | null, pos: PlanPos, date: DateStr, scale = 1): Promise<PlannedSession> {
   const deloadWeek = !!prof?.deload_week && prof.deload_week === weekStart(date);
-  const week = weekNum(prof?.plan_start, date);
+  const week = pos.week;
   const { rows } = await pool.query<WorkoutRow>(
     `SELECT phase_name, focus, day_num, day_name, exercise, sets, reps, rest, equipment, cues, subs
        FROM workouts WHERE member_id = $1 AND $2 BETWEEN week_start AND week_end
@@ -146,16 +155,33 @@ export async function plannedSession(
     d.ex.push({ exercise: r.exercise, sets, reps, rest: r.rest, equipment: r.equipment, cues: r.cues, subs: r.subs, image: exerciseImage(r.exercise) });
     days.set(r.day_num, d);
   }
-  // Training weekdays map in order to plan days 1..n (e.g. Mon,Tue,Thu,Fri -> 1..4).
-  const trainDays = prof?.train_weekdays ?? [1, 2, 4, 5];
-  const di = trainDays.indexOf(isoWeekday(date));
-  const day = di >= 0 ? days.get(di + 1) : undefined;
+  const day = days.get(pos.day);
   return {
-    session: day ? { dayNum: di + 1, dayName: day.name, exercises: day.ex } : null,
+    session: day ? { dayNum: pos.day, dayName: day.name, exercises: day.ex } : null,
     phaseName: deloadWeek ? 'Deload week (your call)' : phaseName,
     focus: deloadWeek ? 'A light week: about half the sets, 3–4 reps short of failure. Recover, then push again.' : focus,
     week,
   };
+}
+
+/**
+ * The session planned for a date (ignoring moves): on one of the person's chosen gym
+ * days it's the next session to do — sessions fall on the gym days in order and only
+ * advance when completed — and on any other day there is none.
+ */
+export async function plannedSession(memberId: number, prof: ProfileRow | null, date: DateStr, scale = 1): Promise<PlannedSession> {
+  const at = await sessionAt(memberId, prof, await currentPos(memberId, prof), date, scale);
+  return isGymDay(prof?.train_weekdays ?? [], date) ? at : { ...at, session: null };
+}
+
+/** The next session to do and the gym day (on or after `from`) it falls on — or exactly `from` (a moved session). */
+async function nextSessionFrom(memberId: number, prof: ProfileRow | null, from: DateStr, exact = false): Promise<NextSession | null> {
+  const on = exact ? from : nextGymDay(prof?.train_weekdays ?? [], from);
+  if (!on) return null;
+  const pos = await currentPos(memberId, prof);
+  const at = await sessionAt(memberId, prof, pos, on);
+  if (!at.session) return null;
+  return { week: pos.week, dayNum: at.session.dayNum, dayName: at.session.dayName, phaseName: at.phaseName, on, weekday: weekdayName(on) };
 }
 
 /** Days with any training logged (a program workout, a lift, or any session). */
@@ -220,22 +246,36 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
   const prof = await profileFor(member.id);
   const comeback = prof ? await comebackFor(member.id, t) : null;
   const scale = comeback?.mode === 'ramp' ? 0.6 : 1;
-  const planned = await plannedSession(member.id, prof, t, scale);
-  let session = planned.session;
-  let moved: HealthToday['moved'] = null;
+  const { rows: done } = await pool.query<{ plan_week: number | null; plan_day: number | null }>(
+    "SELECT plan_week, plan_day FROM workout_logs WHERE member_id = $1 AND kind = 'day_complete' AND logged_on = $2 LIMIT 1",
+    [member.id, t],
+  );
+  const doneToday = done[0];
   const { rows: moves } = await pool.query<{ from_day: DateStr; to_day: DateStr }>(
     'SELECT from_day::text AS from_day, to_day::text AS to_day FROM workout_moves WHERE member_id = $1 AND (from_day = $2 OR to_day = $2)',
     [member.id, t],
   );
   const away = moves.find((m) => m.from_day === t);
   const here = moves.find((m) => m.to_day === t && m.from_day !== t);
-  if (here) {
-    session = (await plannedSession(member.id, prof, here.from_day, scale)).session;
+  const pos = await currentPos(member.id, prof);
+  // Today's session: the one completed today, else the next one to do when today is a
+  // chosen gym day (or one was moved here). Nothing advances until it's marked complete.
+  let planned: PlannedSession;
+  let moved: HealthToday['moved'] = null;
+  if (doneToday?.plan_week && doneToday.plan_day) {
+    planned = await sessionAt(member.id, prof, { week: doneToday.plan_week, day: doneToday.plan_day }, t, scale);
+  } else if (here) {
+    planned = await sessionAt(member.id, prof, pos, t, scale);
     moved = { from: here.from_day };
-  } else if (away) {
-    session = null;
-    moved = { to: away.to_day };
+  } else if (away || doneToday) {
+    planned = { ...(await sessionAt(member.id, prof, pos, t, scale)), session: null };
+    if (away) moved = { to: away.to_day };
+  } else {
+    planned = await plannedSession(member.id, prof, t, scale);
   }
+  let session = planned.session;
+  // Rest days and finished days show what's next and the gym day it falls on.
+  const nextSession = session && !doneToday ? null : away && !doneToday ? await nextSessionFrom(member.id, prof, away.to_day, true) : await nextSessionFrom(member.id, prof, addDays(t, 1));
 
   const { rows: logs } = await pool.query<{ exercise: string; weight: string; reps: string; logged_on: DateStr }>(
     `SELECT DISTINCT ON (exercise) exercise, weight, reps, logged_on::text AS logged_on
@@ -253,11 +293,6 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
   const sinceStart = prof && planDays ? daysBetween(prof.plan_start, t) : -1;
   const onboarding = sinceStart >= 0 && sinceStart < 28 ? { day: sinceStart + 1, attended: (await activeDays(member.id, prof?.plan_start ?? t)).length } : null;
 
-  const { rows: done } = await pool.query(
-    "SELECT 1 FROM workout_logs WHERE member_id = $1 AND kind = 'day_complete' AND logged_on = $2",
-    [member.id, t],
-  );
-
   const out: HealthToday = {
     member,
     habits: await habitsFor(member.id, t),
@@ -269,9 +304,10 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
     isRest: session === null,
     profile: prof ? toProfile(prof) : null,
     last,
-    dayCompleted: done.length > 0,
+    dayCompleted: !!doneToday,
     hasPlan: planDays,
     moved,
+    nextSession: planDays ? nextSession : null,
     program: await programStatus(member.id),
     week: { planned: planDays ? (prof?.train_weekdays.length ?? 0) : 0, done: wk.length, minimumMet: wk.length >= 2 },
     onboarding,
@@ -286,7 +322,7 @@ healthRouter.get('/api/workouts/today', async (req, res) => {
 healthRouter.get('/api/workouts/plan', async (req, res) => {
   const member = await targetMember(req);
   const prof = await profileFor(member.id);
-  const current = weekNum(prof?.plan_start, today());
+  const current = (await currentPos(member.id, prof)).week;
   const phaseRows = await phasesFor(member.id);
   const { rows } = await pool.query<{ week_start: number; week_end: number; day_num: number; day_name: string; phase_name: string }>(
     `SELECT DISTINCT week_start, week_end, day_num, day_name, phase_name FROM workouts WHERE member_id = $1 ORDER BY day_num`,
@@ -345,6 +381,25 @@ healthRouter.post('/api/workouts/move', async (req, res) => {
     [member.id, from, to],
   );
   res.json({ ok: true, from, to, session: session.dayName });
+});
+
+/**
+ * The person's gym days (any of Mon–Sun, at least one). Their sessions fall on these
+ * days in order; a re-plan keeps them. Changing days never moves the plan forward.
+ */
+healthRouter.put('/api/workouts/gym-days', async (req, res) => {
+  const member = await targetMember(req);
+  const raw = (req.body as { days?: unknown }).days;
+  const names = Array.isArray(raw) ? raw : [];
+  if (!names.length || names.some((d) => typeof d !== 'string' || !WEEKDAYS.includes(d as Weekday)))
+    throw new HttpError(400, 'Pick at least one gym day (Mon–Sun)');
+  const days = [...new Set((names as Weekday[]).map(weekdayToIso))].sort((a, b) => a - b);
+  await pool.query(
+    `INSERT INTO health_profiles (member_id, plan_start, train_weekdays, gym_days_set) VALUES ($1, $2, $3, true)
+     ON CONFLICT (member_id) DO UPDATE SET train_weekdays = EXCLUDED.train_weekdays, gym_days_set = true`,
+    [member.id, weekStart(today()), days],
+  );
+  res.json({ trainWeekdays: days.map(isoToWeekday) });
 });
 
 /** A4: log any workout (activity + minutes), like the script's FamWorkout. */
@@ -453,13 +508,28 @@ healthRouter.post('/api/workouts/complete-day', async (req, res) => {
     member.id,
   ]);
   const track = tr[0]?.xp_track ?? 'leader';
+  // The session done today: the next one to do, when today is a chosen gym day or one was
+  // moved here. Completing it is the only thing that moves the plan forward.
+  const { rows: mv } = await pool.query<{ to_day: DateStr; from_day: DateStr }>(
+    'SELECT from_day::text AS from_day, to_day::text AS to_day FROM workout_moves WHERE member_id = $1 AND (from_day = $2 OR to_day = $2)',
+    [member.id, t],
+  );
+  const movedHere = mv.some((m) => m.to_day === t && m.from_day !== t);
+  const movedAway = mv.some((m) => m.from_day === t && m.to_day !== t);
+  const pos = await currentPos(member.id, prof);
+  const hasSession = !!prof && (movedHere || (!movedAway && isGymDay(prof.train_weekdays, t))) && !!(await sessionAt(member.id, prof, pos, t)).session;
+  const after = hasSession ? await nextPos(member.id, pos) : null;
   const choreMarked = await tx(async (c) => {
-    await c.query(
-      `INSERT INTO workout_logs (member_id, logged_on, kind)
-       SELECT $1, $2, 'day_complete'
+    const logged = await c.query(
+      `INSERT INTO workout_logs (member_id, logged_on, kind, plan_week, plan_day)
+       SELECT $1, $2, 'day_complete', $3, $4
         WHERE NOT EXISTS (SELECT 1 FROM workout_logs WHERE member_id = $1 AND logged_on = $2 AND kind = 'day_complete')`,
-      [member.id, t],
+      [member.id, t, hasSession ? pos.week : null, hasSession ? pos.day : null],
     );
+    // Once per day: a second tap never skips a session.
+    if (logged.rowCount && after && (after.week !== pos.week || after.day !== pos.day)) {
+      await c.query('UPDATE health_profiles SET session_week = $2, session_day = $3 WHERE member_id = $1', [member.id, after.week, after.day]);
+    }
     // The script's "Workout Completed" XP (15; 10 on the student track), once a day.
     await awardXpOnce(member.id, t, XP_ACTIONS.workoutCompleted(track), 'Workout completed', `workout:${t}`, c);
     const { rows } = await c.query<{ id: number; points: number; name: string }>(

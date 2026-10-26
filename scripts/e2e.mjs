@@ -5099,6 +5099,23 @@ async function uiGate() {
     const cards = await kpg.locator('.card.exercise').count();
     eq('one demo picture per exercise card', [shown > 0, shown === cards], [true, true]);
 
+    section('gym days + restart phase in the browser (in-page confirm, no native dialog)');
+    await kayla.patch('/api/me/prefs', { firstRunDone: true }); // her welcome card would cover the page
+    await kpg.reload();
+    await kpg.getByTestId('gym-days').waitFor({ timeout: 10000 });
+    const kDays = (await kayla.get('/api/workouts/today')).data.profile.trainWeekdays;
+    eq('gym-day chips show her days', await kpg.locator('[data-testid^="gym-day-"][aria-pressed="true"]').allTextContents(), kDays);
+    const offDay = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].find((x) => !kDays.includes(x));
+    await kpg.getByTestId(`gym-day-${offDay}`).click();
+    check('changing a day offers Save', await kpg.getByTestId('gym-days-save').waitFor({ timeout: 5000 }).then(() => true, () => false));
+    await kpg.getByTestId('gym-days').getByRole('button', { name: 'Cancel' }).click();
+    await kpg.getByTestId('restart-phase-open').click();
+    check('Restart phase asks first, in the page, and says history stays', await kpg.getByTestId('restart-phase').getByText(/logged workouts stay/).waitFor({ timeout: 5000 }).then(() => true, () => false));
+    let restarted = false;
+    kpg.on('request', (r) => { if (/\/api\/program\/restart/.test(r.url())) restarted = true; });
+    await kpg.getByTestId('restart-phase').getByRole('button', { name: 'Cancel' }).click();
+    eq('…Cancel restarts nothing', [restarted, await kpg.getByTestId('restart-phase-open').count()], [false, 1]);
+
     section('body builds in the browser: food math shown, deload on demand (in-page), weigh-ins opt-in, teen view');
     await kayla.patch('/api/me/prefs', { firstRunDone: true }); // her welcome card would cover the page
     await kpg.reload();
@@ -6700,6 +6717,88 @@ async function pubApiUi() {
   }
 }
 
+/**
+ * Gym-day scheduling: sessions fall on the person's chosen gym days in order and move
+ * forward only when completed; a missed gym day holds position; restart goes back to
+ * session 1 of the phase without touching history. (Program content is not under test here.)
+ */
+async function gymDaysSuite() {
+  try {
+    await gymDaysChecks();
+  } finally {
+    await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
+  }
+}
+
+async function gymDaysChecks() {
+  const at = async (date) => startServer(`${date}T17:00:00Z`); // noon in America/Chicago
+  const W = { Mon: '2026-10-12', Tue: '2026-10-13', Wed: '2026-10-14', Fri: '2026-10-16', Tue2: '2026-10-20', Fri2: '2026-10-23', Tue3: '2026-10-27', Fri3: '2026-10-30' };
+  await at(W.Mon);
+  const gil = new Client('gil.gym@example.com');
+  await gil.get(`/dev-login?token=${DEV_TOKEN}&email=gil.gym@example.com`);
+  await gil.post('/api/households', { householdName: 'Gil’s place', type: 'solo', yourName: 'Gil' });
+  await gil.put('/api/program', { build: 'hourglass', level: 'beginner', bodyweightLb: 170 });
+  const today = async () => (await gil.get('/api/workouts/today')).data;
+
+  section('Gym days A1. pick two non-adjacent gym days; sessions map onto them in order');
+  eq('no gym days → 400', (await gil.put('/api/workouts/gym-days', { days: [] })).status, 400);
+  eq('not a weekday → 400', (await gil.put('/api/workouts/gym-days', { days: ['Tue', 'Funday'] })).status, 400);
+  eq('Tue + Fri saved (in week order)', (await gil.put('/api/workouts/gym-days', { days: ['Fri', 'Tue'] })).data.trainWeekdays, ['Tue', 'Fri']);
+  let d = await today();
+  eq('Monday (off day): rest, next session named with its day', [d.isRest, d.session, d.nextSession?.dayNum, d.nextSession?.weekday, d.nextSession?.on], [true, null, 1, 'Tue', W.Tue]);
+  check('…the next session has its plan name', !!d.nextSession?.dayName, JSON.stringify(d.nextSession));
+  const day1 = d.nextSession.dayName;
+  await at(W.Tue);
+  d = await today();
+  eq('Tuesday (gym day 1): session 1', [d.isRest, d.session?.dayNum, d.session?.dayName, d.nextSession], [false, 1, day1, null]);
+
+  section('Gym days A2. complete → the next session, on the next gym day; a skipped gym day holds');
+  await gil.post('/api/workouts/complete-day');
+  await gil.post('/api/workouts/complete-day'); // a second tap never skips a session
+  d = await today();
+  eq('done today: the completed session stays, session 2 is next on Friday', [d.dayCompleted, d.session?.dayNum, d.nextSession?.dayNum, d.nextSession?.weekday], [true, 1, 2, 'Fri']);
+  await at(W.Wed);
+  d = await today();
+  eq('Wednesday (off day): rest, session 2 still next on Friday', [d.isRest, d.nextSession?.dayNum, d.nextSession?.on], [true, 2, W.Fri]);
+  await at(W.Fri);
+  eq('Friday (gym day 2): session 2', (await today()).session?.dayNum, 2);
+  // Friday skipped: nothing completed.
+  await at(W.Tue2);
+  d = await today();
+  eq('skipped Friday → next Tuesday still shows session 2 (no calendar advance)', [d.session?.dayNum, d.weekNum], [2, 1]);
+  await gil.post('/api/workouts/complete-day');
+  d = await today();
+  eq('…completed → session 3 next, on Friday', [d.nextSession?.dayNum, d.nextSession?.on], [3, W.Fri2]);
+  eq('Today (desk) row data: the program week follows completions, not the calendar', (await gil.get('/api/program')).data.program?.week, 1);
+
+  section('Gym days A3. restart the phase → session 1; logged workouts stay');
+  const histBefore = (await gil.get('/api/workouts/history')).data.completedDays;
+  eq('two completed days logged', histBefore, [W.Tue2, W.Tue]);
+  const rp = (await gil.post('/api/program/restart', {})).data.program;
+  d = await today();
+  eq('restart: back to week 1, session 1 next (today stays done)', [rp.week, d.dayCompleted, d.nextSession?.week, d.nextSession?.dayNum], [1, true, 1, 1]);
+  eq('…history untouched', (await gil.get('/api/workouts/history')).data.completedDays, histBefore);
+
+  section('Gym days: a re-plan keeps the chosen days; the last session of a phase starts the next phase');
+  const lr = (await gil.put('/api/program', { build: 'lean_runner', level: 'beginner', bodyweightLb: 170 })).data.program;
+  eq('re-plan (lean runner): gym days kept, back to week 1', [(await today()).profile.trainWeekdays, lr.week], [['Tue', 'Fri'], 1]);
+  const first = lr.phases[0];
+  const second = lr.phases.find((p) => p.weekStart === first.weekEnd + 1);
+  await gil.post('/api/program/restart', { week: first.weekEnd });
+  await at(W.Fri2);
+  d = await today();
+  eq(`last week of “${first.name}”: its session 1 on Friday`, [d.weekNum, d.session?.dayNum, d.phaseName], [first.weekEnd, 1, first.name]);
+  await gil.post('/api/workouts/complete-day');
+  await at(W.Tue3);
+  d = await today();
+  eq('…its last session on Tuesday', [d.weekNum, d.session?.dayNum, d.phaseName], [first.weekEnd, 2, first.name]);
+  await gil.post('/api/workouts/complete-day');
+  d = await today();
+  eq(`…completed → “${second?.name}” starts on the next gym day (Friday)`, [d.nextSession?.week, d.nextSession?.dayNum, d.nextSession?.phaseName, d.nextSession?.on], [first.weekEnd + 1, 1, second?.name, W.Fri3]);
+  await at(W.Fri3);
+  eq('…and Friday shows it', [(await today()).phaseName, (await gil.get('/api/program')).data.program.phase.name], [second?.name, second?.name]);
+}
+
 async function runAll() {
   await monday();
   await midweek();
@@ -6716,13 +6815,14 @@ async function runAll() {
   await feedAppSuite();
   await exercisePictures();
   await bodyScience();
+  await gymDaysSuite();
   await privacyRules();
   await stripeBilling();
   await householdJoin();
   await publishingApiSuite();
   if (process.env.E2E_UI !== '0') await uiGate();
 }
-const SUITES = { monday, midweek, sunday, mealsAndGrocery, pinRotation, bigBuild, billingAdmin, investments, circles, careTeam, socialSuite, businessSuite, feedAppSuite, exercisePictures, bodyScience, privacyRules, stripeBilling, householdJoin, publishingApiSuite, uiGate };
+const SUITES = { monday, midweek, sunday, mealsAndGrocery, pinRotation, bigBuild, billingAdmin, investments, circles, careTeam, socialSuite, businessSuite, feedAppSuite, exercisePictures, bodyScience, gymDaysSuite, privacyRules, stripeBilling, householdJoin, publishingApiSuite, uiGate };
 // E2E_ONLY=suiteA,suiteB runs setup and just those suites (quick iteration); the gate runs everything.
 const ONLY = process.env.E2E_ONLY ? new Set(process.env.E2E_ONLY.split(',').map((x) => x.trim())) : null;
 try {

@@ -261,7 +261,9 @@ export default function Today() {
                       ? 'No plan yet — pick a training plan'
                       : health.data.session
                         ? `${health.data.dayCompleted ? 'Done today: ' : 'Today: '}${health.data.session.dayName} · ${count(health.data.session.exercises.length, 'exercise')}`
-                        : `Rest day. ${health.data.program?.cardio ? 'Easy movement counts.' : 'Walk, stretch, hydrate.'}`}
+                        : health.data.nextSession
+                          ? `Rest day. Next: ${health.data.nextSession.dayName} on ${health.data.nextSession.weekday}`
+                          : `Rest day. ${health.data.program?.cardio ? 'Easy movement counts.' : 'Walk, stretch, hydrate.'}`}
                 </span>
               </span>
               <span className="row-chev">

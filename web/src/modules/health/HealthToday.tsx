@@ -2,13 +2,16 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import {
   HABITS,
+  WEEKDAYS,
   type CompleteDayResponse,
   type HabitKey,
   type HealthHistory,
   type HealthToday as HealthTodayData,
   type LogExerciseRequest,
   type ProgramStatus,
+  type NextSession,
   type ToggleHabitResponse,
+  type Weekday,
   type WorkoutExercise,
 } from '@myday/shared';
 import { api, useLoad, withMember } from '../../api';
@@ -141,6 +144,63 @@ function BaselineForm({ initial, onSave }: { initial: HealthHistory['baseline'];
   );
 }
 
+/** Gym days: sessions fall on these days in order and wait for you — a missed day never skips one. */
+function GymDays({ memberKey, current, onSaved }: { memberKey: string; current: Weekday[]; onSaved: () => void }) {
+  const [days, setDays] = useState<Weekday[] | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const picked = days ?? current;
+  const save = async (): Promise<void> => {
+    try {
+      await api(withMember('/api/workouts/gym-days', memberKey), 'PUT', { days: picked });
+      setDays(null);
+      setMsg('Gym days saved ✓');
+      onSaved();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Could not save');
+    }
+  };
+  return (
+    <div className="card" data-testid="gym-days">
+      <h2>Gym days</h2>
+      <p className="muted small">Your sessions fall on these days, in order. Miss one and it waits for your next gym day.</p>
+      <div className="days">
+        {WEEKDAYS.map((d) => (
+          <button
+            key={d}
+            type="button"
+            className={picked.includes(d) ? 'chip on' : 'chip'}
+            aria-pressed={picked.includes(d)}
+            data-testid={`gym-day-${d}`}
+            onClick={() => setDays(picked.includes(d) ? picked.filter((x) => x !== d) : WEEKDAYS.filter((x) => x === d || picked.includes(x)))}
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+      {days && (
+        <div className="row">
+          <button className="btn small" disabled={!picked.length} onClick={() => void save()} data-testid="gym-days-save">
+            Save gym days
+          </button>
+          <button type="button" className="link" onClick={() => setDays(null)}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {msg && <p className="small muted">{msg}</p>}
+    </div>
+  );
+}
+
+/** "Next: Day 2: Lower A on Thu" — the session waiting for the next gym day. */
+function NextUp({ next }: { next: NextSession }) {
+  return (
+    <p data-testid="next-session">
+      Next: <b>Day {next.dayNum}: {next.dayName}</b> on {next.weekday}, {day(next.on)}
+    </p>
+  );
+}
+
 /** About you: date of birth and height (your Feed profile shows your age, never the date). */
 function AboutYou({ memberKey }: { memberKey: string }) {
   const { data, setData } = useLoad<{ dob: string | null; heightIn: number | null }>(withMember('/api/health/about', memberKey));
@@ -213,6 +273,7 @@ export default function HealthToday() {
   const { data, error, reload, setData } = useLoad<HealthTodayData>(path);
   const [msg, setMsg] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const { toast, earned } = useToast();
 
   if (error) return <p className="error">{error}</p>;
@@ -253,7 +314,8 @@ export default function HealthToday() {
   const photos = !teen && me.member?.key === viewing.key ? <ProgressPhotos today={data.date} /> : null;
   const restartPhase = async (): Promise<void> => {
     await api(withMember('/api/program/restart', viewing.key), 'POST', {});
-    setMsg('Restarted this phase — welcome back.');
+    setConfirmRestart(false);
+    setMsg('Back to session 1 of this phase. Your workout history is kept.');
     reload();
   };
 
@@ -318,7 +380,7 @@ export default function HealthToday() {
         <div className="card" data-testid="comeback">
           {data.comeback.message}{' '}
           {data.comeback.mode === 'restart' && (
-            <button className="btn small" onClick={() => void restartPhase()}>
+            <button className="btn small" onClick={() => setConfirmRestart(true)}>
               Restart this phase
             </button>
           )}
@@ -344,8 +406,9 @@ export default function HealthToday() {
       )}
       {data.isRest || !data.session ? (
         <div className="card" data-testid="rest-day">
-          <h2>Rest / cardio day</h2>
-          <p>{data.program?.cardio || data.profile?.cardio || 'Recovery day. Walk, stretch, hydrate.'}</p>
+          <h2>{data.dayCompleted ? 'Done today ✓' : 'Rest / cardio day'}</h2>
+          {!data.dayCompleted && <p>{data.program?.cardio || data.profile?.cardio || 'Recovery day. Walk, stretch, hydrate.'}</p>}
+          {data.nextSession ? <NextUp next={data.nextSession} /> : !data.profile?.trainWeekdays.length && <p className="muted small">Pick your gym days below.</p>}
         </div>
       ) : (
         <>
@@ -392,9 +455,33 @@ export default function HealthToday() {
               </button>
             )}
           </div>
+          {data.dayCompleted && data.nextSession && <NextUp next={data.nextSession} />}
         </>
       )}
       {msg && <p className="muted">{msg}</p>}
+
+      <GymDays memberKey={viewing.key} current={data.profile?.trainWeekdays ?? []} onSaved={reload} />
+      <div className="card" data-testid="restart-phase">
+        {confirmRestart ? (
+          <>
+            <p>
+              Go back to session 1 of {data.phaseName ? <b>{data.phaseName}</b> : 'this phase'}? Your logged workouts stay in your history.
+            </p>
+            <div className="row">
+              <button className="btn small" onClick={() => void restartPhase()} data-testid="restart-confirm">
+                Restart phase
+              </button>
+              <button type="button" className="link" onClick={() => setConfirmRestart(false)}>
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <button className="btn small ghost" onClick={() => setConfirmRestart(true)} data-testid="restart-phase-open">
+            Restart phase
+          </button>
+        )}
+      </div>
 
       {data.profile && !data.program && (
         <div className="card">
