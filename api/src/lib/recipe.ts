@@ -4,7 +4,8 @@
  * Ingredients come as plain lines, "- " bullets and "For the sauce:" section
  * headers (sometimes with items inline: "For serving: 1 avocado; lime wedges").
  * Steps come numbered ("1. Mise en place: …") and usually end with a
- * "Common mistakes:" section, which becomes the meal's tips.
+ * "Common mistakes:" section, which becomes the meal's tips. A closing
+ * "PAN SAUCE (optional, worth it): …" paragraph after the tips is the last step.
  */
 const lines = (v: string): string[] =>
   v
@@ -52,7 +53,11 @@ export function splitSteps(raw: string): { steps: string[]; tips: string[] } {
   for (const l of lines(raw)) {
     const t = unbullet(l).replace(/^\d+[.)]\s+/, '');
     const head = t.match(/^common mistakes:?\s*(.*)$/i);
-    if (head) {
+    if (/^pan sauce\b/i.test(t)) {
+      // "PAN SAUCE (optional, worth it): …" follows the tips but is a recipe step: the last one.
+      inTips = false;
+      steps.push(t);
+    } else if (head) {
       inTips = true;
       tips.push(...tipsFrom(head[1] ?? ''));
     } else if (inTips) tips.push(t);

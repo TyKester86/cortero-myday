@@ -1210,13 +1210,14 @@ async function bigBuild() {
   }
   eq('every meal complete: macros, cuisine, 4+ ingredients, 3+ numbered steps', thin, 0);
   const bowls = (await ty.get('/api/meals/1')).data;
-  eq('recipe sections kept as headers (burrito bowls)', bowls.ingredients.filter((l) => /:$/.test(l)), ['For the chicken:', 'For the cilantro-lime rice:', 'For the bowls:']);
+  eq('recipe sections kept as headers (burrito bowls)', bowls.ingredients.filter((l) => /:$/.test(l)), ['For the chicken:', 'For the cilantro-lime rice:', 'For the bowls:', 'For the pan sauce (optional):']);
   check('ingredient bullets stripped', bowls.ingredients.every((l) => !/^- /.test(l)));
   check('steps lose their typed numbers (the page numbers them)', bowls.steps.length >= 5 && bowls.steps.every((l) => !/^\d+\.\s/.test(l)), bowls.steps[0]);
-  eq('“Common mistakes” become tips, not steps', [bowls.tips.length, bowls.steps.some((l) => /common mistakes/i.test(l))], [4, false]);
+  eq('“Common mistakes” become tips, not steps', [bowls.tips.length, bowls.steps.some((l) => /common mistakes/i.test(l))], [2, false]);
+  check('the pan sauce (after the tips in the CSV) is the last step, not a tip', /^PAN SAUCE \(optional, worth it\): Chipotle-Lime Crema/.test(bowls.steps.at(-1)) && !bowls.tips.some((l) => /pan sauce/i.test(l)), bowls.steps.at(-1));
   const pozole = (await ty.get('/api/meals/46')).data;
   check('“For serving: a; b” split into a header + items', pozole.ingredients.includes('For serving:') && pozole.ingredients.includes('lime wedges'), pozole.ingredients.slice(-6).join(' | '));
-  eq('inline “Common mistakes: (1)… (2)… (3)…” → three tips', (await ty.get('/api/meals/81')).data.tips.length, 3);
+  eq('meal 81: two tips', (await ty.get('/api/meals/81')).data.tips.length, 2);
   let noTips = 0;
   let allText = '';
   for (const m of lib.meals) {
@@ -1225,6 +1226,9 @@ async function bigBuild() {
     allText += ` ${[...d.ingredients, ...d.steps, ...d.tips].join(' ')}`;
   }
   eq('every meal carries its common mistakes', noTips, 0);
+  let panLast = 0;
+  for (const m of lib.meals) if (/^PAN SAUCE \(optional, worth it\):/.test((await ty.get(`/api/meals/${m.id}`)).data.steps.at(-1) ?? '')) panLast++;
+  eq('every meal ends with its optional pan sauce', panLast, 233);
   eq('recipes read right for every customer (no “this family’s table”, no stray potatoes in pesto, no garbled vinegar step)', ['family this app serves', 'family’s table', "family's table", 'your table skips', 'potatoes and dairy-free pesto', 'is already in it —'].filter((p) => allText.includes(p)), []);
   const cut = (await ty.get('/api/meals?phase=cutting')).data.meals;
   check('phase filter: cutting meals, all tagged cutting', cut.length > 40 && cut.every((m) => m.phaseTags.includes('cutting')), `${cut.length} meals`);
