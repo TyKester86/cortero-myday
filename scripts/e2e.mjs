@@ -4403,8 +4403,9 @@ async function uiGate() {
     eq('Plan section tabs on Meals: Week · Calendar · Meals · This week’s menu · Grocery list', await page.locator('nav.subtabs a').allInnerTexts(), ['Week', 'Calendar', 'Meals', 'This week’s menu', 'Grocery list']);
     await page.goto(`${BASE}/meals/1`);
     await page.getByTestId('meal-tips').waitFor({ timeout: 10000 });
-    eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allTextContents(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls'], 4]);
-    check('meal page: step lead-ins in bold (“Mise en place…:”)', (await page.locator('ol.steps li b').first().innerText()).startsWith('Mise en place'));
+    eq('meal page: ingredient sections + a Common mistakes card', [await page.locator('h3.ing-head').allTextContents(), await page.getByTestId('meal-tips').locator('li').count()], [['For the chicken', 'For the cilantro-lime rice', 'For the bowls', 'For the pan sauce (optional)'], 2]);
+    check('meal page: step lead-ins in bold (“Get the rice on first:”)', (await page.locator('ol.steps li b').first().innerText()).startsWith('Get the rice on first'));
+    check('meal page: the optional pan sauce is the last step, its lead-in in bold', /^PAN SAUCE \(optional, worth it\)/.test(await page.locator('ol.steps li').last().locator('b').first().innerText()), await page.locator('ol.steps li').last().innerText());
     await page.goto(`${BASE}/feed`);
     await page.getByTestId('composer-pill').waitFor({ timeout: 10000 });
     eq('Feed (Soft Card): the horn + “The Feed”, search and messages up top; stories; “What’s on your mind?” with photo · poll · feeling; the dock', [await page.getByTestId('feed-header').locator('img.feed-horn[src="/icons/feed-horn.svg"]').count(), (await page.locator('.sc-wordmark').innerText()).trim(), await page.getByTestId('feed-search').count(), await page.getByTestId('feed-messages').count(), await page.getByTestId('story-rail').count(), await page.getByTestId('composer-open').innerText(), await page.locator('[data-testid^="quick-"]').count(), await page.getByTestId('feed-dock').locator('a').count()], [1, 'The Feed', 1, 1, 1, 'What’s on your mind?', 3, 5]);
