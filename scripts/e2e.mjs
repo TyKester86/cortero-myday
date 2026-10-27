@@ -6875,6 +6875,7 @@ async function hanaBrainSuite() {
     await hanaBrainChecks();
     await hanaBriefChecks();
     await hanaCoachChecks();
+    await hanaWatchChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7120,6 +7121,81 @@ async function hanaCoachChecks() {
   const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
   eq('report: nudges set aside are counted (parents tune categories down from this)', [rep.nudges.dismissed, rep.nudges.byCategory.find((c) => c.category === 'homework')?.dismissed], [1, 1]);
   await startServer(hanaNow());
+}
+
+async function hanaWatchChecks() {
+  const tess = hanaIds.tess;
+  const watchItems = async (memberId) => sql("SELECT category, item_key, text, pushed_at FROM hana_items WHERE surface = 'watch' AND member_id = $1 ORDER BY id", [memberId]);
+
+  section('Hana H5 · settings: parent-set, both parents are admins, school-night quiet hours by default');
+  eq('defaults: quiet 9 PM–7 AM on school nights (Sun–Thu), $200 low-balance mark, bills 3 days ahead', (await ty.get('/api/hana/settings')).data, { quietStart: '21:00', quietEnd: '07:00', quietDays: [7, 1, 2, 3, 4], pausedUntil: null, muted: [], lowBalance: 200, billLeadDays: 3 });
+  eq('kids can’t see or change them (403 ×2), nor run the watch', [(await evan.get('/api/hana/settings')).status, (await avery.put('/api/hana/settings', { muted: ['pickup'] })).status, (await evan.post('/api/hana/run-watch')).status], [403, 403, 403]);
+  eq('a bad setting → 400', [(await ty.put('/api/hana/settings', { quietStart: '9pm' })).status, (await ty.put('/api/hana/settings', { muted: ['everything'] })).status], [400, 400]);
+
+  section('Hana H5 · the watch on a Monday morning: unowned pickups, conflicts, at-risk homework — pushed once');
+  const r1 = (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data;
+  eq('not quiet on a Monday morning', [r1.quiet, r1.paused], [false, false]);
+  const tyWatch = (await watchItems(hanaIds.Ty)).map((w) => w.text);
+  check('same-day: nobody on Evan’s piano pickup today', tyWatch.includes('Nobody is on the pickup for Evan piano lesson at 4:00 PM today.'), JSON.stringify(tyWatch));
+  check('tomorrow: nobody on Avery’s orthodontist pickup yet', tyWatch.includes('Nobody is on the pickup for Avery orthodontist tomorrow at 3:00 PM yet.'), JSON.stringify(tyWatch));
+  check('a conflict, in plain words', tyWatch.includes('Today has Avery soccer practice (3:30 PM) and Kayla dentist (4:30 PM) at the same time — Kayla can’t be at both. Someone has to pick.'), JSON.stringify(tyWatch));
+  check('each one went out by push', (await watchItems(hanaIds.Ty)).every((w) => w.pushed_at !== null));
+  eq('Evan’s at-risk homework note went out too (once)', (await sql("SELECT count(*)::int AS n FROM hana_items WHERE surface = 'escalation' AND member_id = $1 AND pushed_at IS NOT NULL", [hanaIds.Ty]))[0].n, 1);
+  eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
+  eq('a second pass pushes nothing new (no loops)', (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data.pushed, 0);
+  check('the watch alerts show on Family HQ', (await ty.get('/api/hana/alerts')).data.alerts.some((a) => a.kind === 'watch' && a.text.includes('Evan piano lesson')));
+  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework'].includes(r.category)));
+
+  section('Hana H5 · quiet hours: held on a school night, except a same-day logistics failure');
+  await ty.post('/api/calendar/events', { title: 'Evan swim', startsOn: '2026-11-03', startTime: '16:00', endTime: '17:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });
+  await ty.post('/api/calendar/events', { title: 'Avery drama club', startsOn: HANA_DAY, startTime: '18:30', endTime: '19:30', repeat: 'none', people: [hanaIds.Avery], pickup: true, pickupBy: null });
+  const monNight = (await ty.post('/api/hana/run-watch?at=2026-11-03T04:00:00Z')).data; // Monday 10 PM CST
+  eq('Monday 10 PM is quiet (a school night)', monNight.quiet, true);
+  const pushedOf = async (needle) => (await watchItems(hanaIds.Ty)).find((w) => w.text.includes(needle))?.pushed_at ?? null;
+  check('tomorrow’s swim pickup waits for the morning (held)', (await pushedOf('Evan swim')) === null && monNight.held >= 1);
+  check('today’s drama-club pickup with nobody on it breaks quiet hours', (await pushedOf('Avery drama club')) !== null);
+  const friNight = (await ty.post('/api/hana/run-watch?at=2026-11-07T04:00:00Z')).data; // Friday 10 PM CST
+  check('Friday night isn’t a school night: the held alert goes out', friNight.quiet === false && (await pushedOf('Evan swim')) !== null);
+
+  section('Hana H5 · either parent can quiet her or tune a category down');
+  const paused = (await kayla.put('/api/hana/settings', { pauseHours: 24 })).data;
+  check('Kayla quiets Hana for a day — and Ty sees the same household setting', !!paused.pausedUntil && (await ty.get('/api/hana/settings')).data.pausedUntil === paused.pausedUntil);
+  await ty.post('/api/calendar/events', { title: 'Evan tutoring', startsOn: '2026-11-03', startTime: '16:30', endTime: '17:30', repeat: 'none', people: [hanaIds.Evan] });
+  const quietRun = (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data;
+  eq('paused, even on a Monday morning', [quietRun.quiet, quietRun.paused], [true, true]);
+  check('…the new swim/tutoring conflict is recorded but held', (await pushedOf('Evan swim (4:00 PM) and Evan tutoring')) === null && (await watchItems(hanaIds.Ty)).some((w) => w.text.includes('Evan tutoring')));
+  eq('Ty lets her speak up again', (await ty.put('/api/hana/settings', { pauseHours: 0 })).data.pausedUntil, null);
+  await ty.put('/api/hana/settings', { muted: ['conflict'] });
+  await ty.post('/api/calendar/events', { title: 'Evan dentist', startsOn: '2026-11-03', startTime: '16:15', endTime: '16:45', repeat: 'none', people: [hanaIds.Evan] });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow()}`);
+  check('conflicts muted: the new dentist conflict isn’t raised', !(await watchItems(hanaIds.Ty)).some((w) => w.text.includes('Evan dentist')));
+  await ty.put('/api/hana/settings', { muted: [] });
+
+  section('Hana H5 · a bill coming due while the balance is low (parent-set threshold)');
+  const [bal] = await sql("SELECT round(sum(coalesce(a.available, a.current)), 2)::numeric AS total FROM money_accounts a JOIN money_items i ON i.id = a.item_id WHERE a.household_id = 1 AND i.member_id IS NULL AND a.type = 'depository'");
+  await ty.put('/api/hana/settings', { lowBalance: Number(bal.total) });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow()}`);
+  const billAlert = (await watchItems(hanaIds.Ty)).find((w) => w.category === 'bills');
+  check(`Ty: Water ($64.20, Nov 5) is coming up while the linked balance is $${Number(bal.total).toFixed(2)} — with its as-of`, !!billAlert && billAlert.text.includes('Water ($64.20, 2026-11-05)') && billAlert.text.includes(`while the linked balance is $${Number(bal.total).toFixed(2)} (as of `), billAlert?.text);
+  eq('…only to the parent whose bill it is (Kayla has no bills)', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'bills').length, 0);
+  await ty.put('/api/hana/settings', { lowBalance: 200 });
+
+  section('Hana H5 · a crisis signal in content she processes goes to both parents (once)');
+  await avery.post('/api/homework', { assignment: 'journal: some days i want to die', subject: 'English', due: '2026-11-09' });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow()}`);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow()}`);
+  const hwCrisis = await sql("SELECT member_id, text FROM hana_items WHERE surface = 'crisis' AND item_key LIKE 'crisis:homework:%' AND household_id = 1");
+  const adults = (await sql("SELECT id FROM household_members WHERE household_id = 1 AND kind = 'adult' AND archived_at IS NULL ORDER BY id")).map((r) => r.id);
+  eq('every parent alerted once (two passes, no repeat), about Avery, without quoting her', [hwCrisis.length, hwCrisis.every((c) => c.text.includes('Avery') && !c.text.includes('want to die'))], [adults.length, true]);
+
+  section('Hana H5 · household isolation in the watch');
+  await tess.post(`/api/hana/run-watch?at=${hanaNow()}`);
+  const tessMember = (await tess.get('/api/me')).data.member.id;
+  const tessWatch = (await watchItems(tessMember)).map((w) => w.text);
+  check('Test house: its own unowned karate pickup, nothing of the Kesters', tessWatch.some((t) => t.includes('Tim karate')) && !tessWatch.some((t) => /Avery|Evan|Kayla|Water/.test(t)), JSON.stringify(tessWatch));
+  check('Kester: nothing of Test house', !(await watchItems(hanaIds.Ty)).some((w) => w.text.includes('Tim karate')));
+  eq('Test house’s settings are its own', (await tess.get('/api/hana/settings')).data.lowBalance, 200);
+  eq('the watch changed none of the family’s data: the pickups are still unowned', (await sql("SELECT count(*)::int AS n FROM calendar_events WHERE household_id = 1 AND pickup AND pickup_by IS NULL AND title IN ('Evan piano lesson', 'Avery orthodontist', 'Evan swim', 'Avery drama club')"))[0].n, 4);
 }
 
 async function runAll() {

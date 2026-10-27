@@ -10,20 +10,24 @@
  * H4: GET /api/hana/coach — one kid's homework plan (a kid: their own; a parent: ?member=).
  *     POST /api/hana/coach/:homeworkId/step — the progress signal (Hana's record only).
  *     POST /api/hana/nudges/:homeworkId/dismiss — a dismissed nudge stays dismissed.
+ * H5: GET/PUT /api/hana/settings — parents: quiet hours, thresholds, mutes, quiet her.
+ *     The watch runs every 15 minutes per household (job hana-watch).
  * H9: GET /api/hana/report?month=YYYY-MM — parents only, wins and where Hana was wrong.
  */
 import { Router } from 'express';
 import type { DateStr } from '@myday/shared';
 import { config } from '../config.js';
-import { pool } from '../db.js';
+import { asSystem, inHousehold, pool } from '../db.js';
 import { addDays, today } from '../lib/dates.js';
 import { HttpError, idParam } from '../lib/http.js';
 import { self } from '../lib/members.js';
+import { registerJob } from '../lib/schedulers.js';
 import { requireParent, viewerOf } from '../lib/chief/scope.js';
 import { balances, billsDue, choresFor, familyFor, feedInbox, healthFor, homeworkFor, scheduleFor } from '../lib/chief/tools.js';
 import { briefFor, markItem, type BriefKind, type ItemOutcome } from '../lib/chief/brief.js';
 import { familyReport } from '../lib/chief/needle.js';
 import { coachFor, coachTarget, dismissNudge, refreshEscalations, setStep } from '../lib/chief/coach.js';
+import { runWatch, saveSettings, settingsOf } from '../lib/chief/watch.js';
 
 export const hqRouter = Router();
 
@@ -129,3 +133,38 @@ hqRouter.post('/api/hana/nudges/:homeworkId/dismiss', async (req, res) => {
   await dismissNudge(v, idParam(req.params.homeworkId));
   res.json({ ok: true });
 });
+
+hqRouter.get('/api/hana/settings', async (req, res) => {
+  const v = viewerOf(self(req));
+  requireParent(v, 'Hana’s settings');
+  res.json(await settingsOf());
+});
+
+hqRouter.put('/api/hana/settings', async (req, res) => {
+  const v = viewerOf(self(req));
+  res.json(await saveSettings(v, req.body as Record<string, unknown>));
+});
+
+/** The watch over every household, each inside its own scope. */
+export async function runAllWatches(at: Date = new Date()): Promise<number> {
+  const { rows } = await asSystem(() => pool.query<{ id: number }>("SELECT DISTINCT household_id AS id FROM household_members WHERE kind = 'adult' AND archived_at IS NULL"));
+  for (const r of rows) {
+    try {
+      await inHousehold(r.id, () => runWatch(at));
+    } catch (e) {
+      console.error('hana-watch', r.id, e);
+    }
+  }
+  return rows.length;
+}
+
+/** Dev/test only: run the watch for your household now ("as if" at a given time for quiet hours). */
+hqRouter.post('/api/hana/run-watch', async (req, res) => {
+  const v = viewerOf(self(req));
+  requireParent(v, 'The watch');
+  if (process.env.PUSH_STUB !== '1') throw new HttpError(404, 'Not found');
+  const at = typeof req.query.at === 'string' && !Number.isNaN(Date.parse(req.query.at)) ? new Date(req.query.at) : new Date();
+  res.json(await runWatch(at));
+});
+
+registerJob({ name: 'hana-watch', everyMs: 15 * 60 * 1000, run: async () => void (await runAllWatches()) });

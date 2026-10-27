@@ -3237,3 +3237,22 @@ export interface HanaCoach {
   nudge: { homeworkId: number; text: string; itemId: number } | null;
   chores: { done: number; total: number; pending: string[]; points: number; reward: { name: string; cost: number; short: number } | null } | null;
 }
+
+/** What the logistics watch looks for (each can be muted by a parent). */
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework';
+
+/** Hana's household settings: either parent can change them or quiet her. */
+export interface HanaSettings {
+  /** Quiet hours, household time (HH:MM); a window may wrap past midnight. */
+  quietStart: string;
+  quietEnd: string;
+  /** The nights quiet hours apply (ISO weekday of the evening: 1 Mon … 7 Sun). Default: school nights, Sun–Thu. */
+  quietDays: number[];
+  /** "Quiet Hana" until this time (only a same-day logistics failure gets through). */
+  pausedUntil: string | null;
+  muted: HanaWatchCategory[];
+  /** Alert when bills coming up would leave the linked balance under this. */
+  lowBalance: number;
+  /** How many days ahead a bill counts as coming up. */
+  billLeadDays: number;
+}

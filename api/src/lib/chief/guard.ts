@@ -26,18 +26,26 @@ import { SOURCE } from './facts.js';
 /** The Feed's crisis rule, verbatim. */
 export const crisisIn = (text: string): boolean => ruleScreen(text).includes('crisis');
 
-export type CrisisWhere = 'chat' | 'tutor' | 'feed';
+export type CrisisWhere = 'chat' | 'tutor' | 'feed' | 'calendar' | 'homework';
 
-const WHERE_WORDS: Record<CrisisWhere, string> = { chat: 'a chat with Hana', tutor: 'a homework chat with Hana', feed: 'something Hana read on the Feed' };
+const WHERE_WORDS: Record<CrisisWhere, string> = {
+  chat: 'a chat with Hana',
+  tutor: 'a homework chat with Hana',
+  feed: 'something Hana read on the Feed',
+  calendar: 'something on the family calendar',
+  homework: 'something on the homework list',
+};
 
 /**
  * Escalate to both parents. The alert never quotes the content (it may be private);
  * it says who and where, and to check in now.
  */
-export async function escalateCrisis(about: HouseholdMember, where: CrisisWhere): Promise<{ parents: string[] }> {
+export async function escalateCrisis(about: HouseholdMember, where: CrisisWhere, contentKey?: string): Promise<{ parents: string[] }> {
   const parents = (await listMembers()).filter((m) => m.kind === 'adult');
   const day = today();
-  const key = `crisis:${where}:${about.id}:${Date.now()}`;
+  const key = contentKey ? `crisis:${contentKey}` : `crisis:${where}:${about.id}:${Date.now()}`;
+  // The same piece of content (re-read by the watch) escalates once, not every pass.
+  if (contentKey && (await pool.query("SELECT 1 FROM hana_items WHERE surface = 'crisis' AND item_key = $1 LIMIT 1", [key])).rowCount) return { parents: parents.map((p) => p.name) };
   const text = `Something in ${WHERE_WORDS[where]} with ${about.name} may mean they need support right now. Please check in with ${about.name} now. If anyone is in immediate danger, call 911.`;
   for (const p of parents) {
     await pool.query(
