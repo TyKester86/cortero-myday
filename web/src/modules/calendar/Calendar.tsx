@@ -49,6 +49,8 @@ const blank = (startsOn: string): CalendarEventFields => ({
   adultsOnly: false,
   remindMinutes: null,
   people: [],
+  pickup: false,
+  pickupBy: null,
 });
 
 /** The household calendar: what's coming up, for everyone or one person; grown-ups add and edit. */
@@ -147,6 +149,7 @@ export default function Calendar() {
                     {o.location && ` · ${o.location}`}
                     {o.repeat !== 'none' && ` · ${REPEAT_LABEL[o.repeat].toLowerCase()}`}
                     {o.adultsOnly && ' · grown-ups only'}
+                    {o.pickup && (o.pickupBy ? ` · pickup: ${o.pickupBy.name}` : ' · pickup: nobody yet')}
                   </small>
                 </span>
               </button>
@@ -272,6 +275,23 @@ function EventForm({
       <label className="inline-label">
         <input type="checkbox" checked={f.adultsOnly} onChange={(e) => setF({ ...f, adultsOnly: e.target.checked })} /> Grown-ups only (kids don’t see it)
       </label>
+      <label className="inline-label">
+        <input type="checkbox" checked={f.pickup} onChange={(e) => setF({ ...f, pickup: e.target.checked, pickupBy: e.target.checked ? f.pickupBy : null })} data-testid="event-pickup" /> Someone has to drive,
+        pick up or hand off
+      </label>
+      {f.pickup && (
+        <label>
+          Who’s on it
+          <select value={f.pickupBy === null ? '' : String(f.pickupBy)} onChange={(e) => setF({ ...f, pickupBy: e.target.value === '' ? null : Number(e.target.value) })} data-testid="event-pickup-by">
+            <option value="">Nobody yet</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {err && (
         <p className="error" role="alert">
           {err}

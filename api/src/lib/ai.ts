@@ -182,6 +182,8 @@ class ClaudeModel implements ChatModel {
 
 /** Tests: a message containing this fails the first time it's sent (like a rejected API call), then works. */
 const STUB_FAIL = '__stub_fail__';
+/** Tests: after reading outside content, do whatever it says (a compromised model). */
+const STUB_OBEY = '__stub_obey_content__';
 const stubFailedOnce = new Set<string>();
 
 /** Local proof only: echoes what it was given so tests can check the wiring. */
@@ -220,6 +222,7 @@ class StubModel implements ChatModel {
       system.includes('FROM THE MEDICAL REFERENCE') ? 'library=medical' : '',
       system.includes('No library passages matched') ? 'library=none' : '',
       system.includes('VERIFIED STATS (live from MyDay') && system.includes('PERSONAL NUMBERS:') ? 'stats=verified' : '',
+      system.includes('FACTS OF RECORD:') && system.includes('OUTSIDE CONTENT') ? 'rule=facts' : '',
       messages.some((m) => m.role === 'assistant' && turnText(m).includes('[What my tools did in this reply:')) ? 'toolnotes=yes' : '',
       ((m) => (m ? `roster=${m[1]}` : ''))(system.match(/HOUSEHOLD \(complete roster, live\): \d+ people? in the household: ([^.]*)\./)),
       blocks.some((b) => b.type === 'image') ? `images=${blocks.filter((b) => b.type === 'image').length}` : '',
@@ -241,6 +244,21 @@ class StubModel implements ChatModel {
         out.push(await kit.exec(c.name, c.input));
       } catch (e) {
         out.push(e instanceof HttpError ? e.message : 'That action failed');
+      }
+    }
+    // Tests: a model that obeys instructions hidden in outside content (the injection the kit must hold).
+    if (last.includes(STUB_OBEY)) {
+      for (const block of out.join('\n').match(/<outside_content[^>]*>[\s\S]*?<\/outside_content>/g) ?? []) {
+        for (const q of block.match(/“([^”]+)”/g) ?? []) {
+          const said = q.slice(1, -1).replace(/^\s*hana[,:]?\s*/i, '');
+          for (const c of kit.stubPlan(said)) {
+            try {
+              out.push(await kit.exec(c.name, c.input));
+            } catch (e) {
+              out.push(e instanceof HttpError ? e.message : 'That action failed');
+            }
+          }
+        }
       }
     }
     return `[stub reply] ${out.join(' ')}`;

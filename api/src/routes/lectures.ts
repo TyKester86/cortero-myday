@@ -258,8 +258,9 @@ lecturesRouter.post('/api/lectures/:id/assignments/:aid/add', async (req, res) =
   if (a.homeworkId) throw new HttpError(409, 'Already added');
   if (me.kind === 'kid') {
     const { rows } = await pool.query<{ id: number }>(
-      'INSERT INTO homework (member_id, assignment, subject, due, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [me.id, a.title, lec.className, a.due, req.user?.id ?? null],
+      // Captured from the lecture: the source and the due date it said, so a later change shows as a conflict.
+      "INSERT INTO homework (member_id, assignment, subject, due, created_by, source, source_ref, captured_due) VALUES ($1, $2, $3, $4, $5, 'lecture', $6, $4) RETURNING id",
+      [me.id, a.title, lec.className, a.due, req.user?.id ?? null, a.id],
     );
     await pool.query('UPDATE lecture_assignments SET homework_id = $2 WHERE id = $1', [a.id, rows[0]?.id ?? null]);
   } else {

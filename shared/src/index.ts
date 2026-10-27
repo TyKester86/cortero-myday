@@ -3028,6 +3028,10 @@ export interface CalendarEventFields {
   remindMinutes: number | null;
   /** Who it's for (member ids); empty = the whole household. */
   people: number[];
+  /** Someone has to drive, pick up or hand off for this one. */
+  pickup: boolean;
+  /** Who's on the pickup/handoff (a member id); null on a pickup = nobody yet. */
+  pickupBy: number | null;
 }
 
 export interface CalendarEvent extends CalendarEventFields {
@@ -3047,6 +3051,8 @@ export interface CalendarOccurrence {
   adultsOnly: boolean;
   /** Empty = everyone. */
   people: Array<{ id: number; name: string }>;
+  pickup: boolean;
+  pickupBy: { id: number; name: string } | null;
 }
 
 export interface CalendarResponse {

@@ -74,6 +74,13 @@ export type EventName =
   | 'feed_api_app_reactivated'
   | 'feed_api_authorized'
   | 'feed_api_revoked'
+  | 'hana_crisis'
+  | 'hana_health_boundary'
+  | 'hana_outside_hold'
+  | 'hana_brief'
+  | 'hana_item_outcome'
+  | 'hana_watch_sent'
+  | 'hana_report'
   | 'feed_api_refresh_reuse';
 
 export async function logEvent(

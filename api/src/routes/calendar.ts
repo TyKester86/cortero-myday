@@ -52,6 +52,8 @@ interface EventRow {
   adults_only: boolean;
   remind_minutes: number | null;
   people: number[] | null;
+  pickup: boolean;
+  pickup_by: number | null;
   updated_at: Date;
 }
 
@@ -60,7 +62,7 @@ const hhmm = (t: string | null): string | null => (t ? t.slice(0, 5) : null);
 async function eventRows(id: number | null = null): Promise<EventRow[]> {
   const { rows } = await pool.query<EventRow>(
     `SELECT e.id, e.title, e.notes, e.location, e.starts_on::text AS starts_on, e.start_time::text AS start_time, e.end_time::text AS end_time,
-            e.repeat, e.repeat_until::text AS repeat_until, e.adults_only, e.remind_minutes, e.updated_at,
+            e.repeat, e.repeat_until::text AS repeat_until, e.adults_only, e.remind_minutes, e.pickup, e.pickup_by, e.updated_at,
             (SELECT array_agg(p.member_id ORDER BY p.member_id) FROM calendar_event_people p WHERE p.event_id = e.id) AS people
        FROM calendar_events e WHERE ($1::int IS NULL OR e.id = $1) ORDER BY e.starts_on, e.start_time NULLS FIRST, e.id`,
     [id],
@@ -81,16 +83,19 @@ const toEvent = (r: EventRow): CalendarEvent => ({
   adultsOnly: r.adults_only,
   remindMinutes: r.remind_minutes,
   people: r.people ?? [],
+  pickup: r.pickup,
+  pickupBy: r.pickup_by,
 });
 
 /* ---------- repeats: lib/recur.ts ---------- */
 
-async function occurrences(from: DateStr, to: DateStr, kidView: boolean, members: HouseholdMember[]): Promise<CalendarOccurrence[]> {
+export async function occurrences(from: DateStr, to: DateStr, kidView: boolean, members: HouseholdMember[]): Promise<CalendarOccurrence[]> {
   const byId = new Map(members.map((m) => [m.id, m]));
   const out: CalendarOccurrence[] = [];
   for (const r of await eventRows()) {
     if (kidView && r.adults_only) continue;
     const people = (r.people ?? []).map((id) => byId.get(id)).filter((m): m is HouseholdMember => !!m).map((m) => ({ id: m.id, name: m.name }));
+    const by = r.pickup_by === null ? undefined : byId.get(r.pickup_by);
     for (const date of datesOf(r, from, to)) {
       out.push({
         eventId: r.id,
@@ -103,6 +108,8 @@ async function occurrences(from: DateStr, to: DateStr, kidView: boolean, members
         repeat: r.repeat,
         adultsOnly: r.adults_only,
         people,
+        pickup: r.pickup,
+        pickupBy: r.pickup && by ? { id: by.id, name: by.name } : null,
       });
     }
   }
@@ -165,6 +172,9 @@ async function fields(req: Request): Promise<CalendarEventFields> {
   const members = await listMembers();
   const known = new Set(members.map((m) => m.id));
   if (ids.some((id) => !known.has(id))) throw new HttpError(400, 'Someone in “who” isn’t in this household');
+  const pickup = b.pickup === true;
+  const pickupBy = pickup && b.pickupBy !== null && b.pickupBy !== undefined && b.pickupBy !== '' ? idParam(b.pickupBy) : null;
+  if (pickupBy !== null && !known.has(pickupBy)) throw new HttpError(400, 'Whoever’s on the pickup has to be in this household');
   return {
     title,
     notes: str(b.notes, 'notes', 2000),
@@ -177,23 +187,25 @@ async function fields(req: Request): Promise<CalendarEventFields> {
     adultsOnly: b.adultsOnly === true,
     remindMinutes: startTime ? remind : null,
     people: [...new Set(ids)],
+    pickup,
+    pickupBy,
   };
 }
 
 async function save(f: CalendarEventFields, by: number, id: number | null): Promise<number> {
-  const cols = [f.title, f.notes, f.location, f.startsOn, f.startTime, f.endTime, f.repeat, f.repeatUntil, f.adultsOnly, f.remindMinutes];
+  const cols = [f.title, f.notes, f.location, f.startsOn, f.startTime, f.endTime, f.repeat, f.repeatUntil, f.adultsOnly, f.remindMinutes, f.pickup, f.pickupBy];
   let eventId = id;
   if (eventId === null) {
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO calendar_events (title, notes, location, starts_on, start_time, end_time, repeat, repeat_until, adults_only, remind_minutes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      `INSERT INTO calendar_events (title, notes, location, starts_on, start_time, end_time, repeat, repeat_until, adults_only, remind_minutes, pickup, pickup_by, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
       [...cols, by],
     );
     eventId = rows[0]?.id ?? 0;
   } else {
     const { rowCount } = await pool.query(
       `UPDATE calendar_events SET title=$1, notes=$2, location=$3, starts_on=$4, start_time=$5, end_time=$6, repeat=$7, repeat_until=$8,
-              adults_only=$9, remind_minutes=$10, updated_at=now() WHERE id=$11`,
+              adults_only=$9, remind_minutes=$10, pickup=$11, pickup_by=$12, updated_at=now() WHERE id=$13`,
       [...cols, eventId],
     );
     if (!rowCount) throw new HttpError(404, 'No such event');
