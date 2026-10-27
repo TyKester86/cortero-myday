@@ -8,6 +8,7 @@ import { useSession } from '../../session';
 import { TodayOnCalendar } from '../calendar/Calendar';
 import { count } from '../../format';
 import { NavIcon } from '../../components/NavIcon';
+import { HanaBriefCard } from '../hq/HanaBrief';
 
 const greeting = (h: number): string => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
 
@@ -222,6 +223,12 @@ export default function Today() {
       {evening && closeOut}
 
       <h2 className="eyebrow">Also today</h2>
+      <HanaBriefCard kinds={['morning', 'evening']} compact />
+      <p className="small">
+        <Link to="/hq" data-testid="today-hq-link">
+          Family HQ: the whole board, what Hana is watching, the family report →
+        </Link>
+      </p>
       <TodayOnCalendar />
       <ul className="row-list today-more">
         {family.data && family.data.kids.length > 0 && (

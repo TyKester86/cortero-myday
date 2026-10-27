@@ -5116,6 +5116,19 @@ async function uiGate() {
     await kpg.getByTestId('restart-phase').getByRole('button', { name: 'Cancel' }).click();
     eq('…Cancel restarts nothing', [restarted, await kpg.getByTestId('restart-phase-open').count()], [false, 1]);
 
+    section('Hana: Family HQ in the browser (parents) — the brief, its sources, marking an item');
+    await kpg.goto(`${BASE}/hq`);
+    await kpg.getByTestId('family-hq').waitFor({ timeout: 10000 });
+    eq('Family HQ shows the parent brief', await kpg.getByTestId('hana-brief').getAttribute('data-view'), 'parent');
+    const firstItem = kpg.locator('.hana-item').first();
+    if (await firstItem.count()) {
+      check('items show where they came from', /as of/.test(await firstItem.locator('.hana-source').innerText()));
+      await firstItem.getByTestId('hana-dismissed').click();
+      check('“Not now” sticks on the item, in the page', await firstItem.getByText('Not now').waitFor({ timeout: 5000 }).then(() => true, () => false));
+    } else check('an empty brief says so', await kpg.getByText('Nothing needs you right now').isVisible());
+    eq('the family report is on the page, with its “Where Hana was wrong” part', await kpg.getByTestId('hq-report').getByRole('heading', { name: 'Where Hana was wrong' }).count(), 1);
+    await kpg.goto(`${BASE}/health`); // the next checks pick up on the Health page
+
     section('body builds in the browser: food math shown, deload on demand (in-page), weigh-ins opt-in, teen view');
     await kayla.patch('/api/me/prefs', { firstRunDone: true }); // her welcome card would cover the page
     await kpg.reload();
@@ -6860,6 +6873,7 @@ async function hanaBrainSuite() {
     await startServer(hanaNow());
     await hanaSeed();
     await hanaBrainChecks();
+    await hanaBriefChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -6964,6 +6978,91 @@ async function hanaBrainChecks() {
   const kaylaMem = (await hanaSay(kayla, 'hello')).reply?.text ?? '';
   const kaylaOwn = (await sql('SELECT count(*)::int AS n FROM hana_memories WHERE member_id = $1', [hanaIds.Kayla]))[0].n;
   check(`Kayla’s Hana sees only her own ${kaylaOwn} memories`, kaylaOwn ? kaylaMem.includes(`remembers=${kaylaOwn}`) : !kaylaMem.includes('remembers='), kaylaMem);
+}
+
+const briefTexts = (b) => b.sections.flatMap((s) => s.items.map((i) => i.text));
+const briefSection = (b, title) => b.sections.find((s) => s.title === title)?.items.map((i) => i.text) ?? [];
+
+async function hanaBriefChecks() {
+  const tess = hanaIds.tess;
+  // Kayla is at the dentist while she's on Avery's pickup; tomorrow, an orthodontist pickup nobody has taken.
+  await ty.post('/api/calendar/events', { title: 'Kayla dentist', startsOn: HANA_DAY, startTime: '16:30', endTime: '17:30', repeat: 'none', people: [hanaIds.Kayla] });
+  await ty.post('/api/calendar/events', { title: 'Avery orthodontist', startsOn: '2026-11-03', startTime: '15:00', endTime: '16:00', repeat: 'none', people: [hanaIds.Avery], pickup: true, pickupBy: null });
+
+  section('Hana H3 · the morning brief, parent view (Ty): the whole board, every fact from the tools');
+  const mb = (await ty.get('/api/hana/brief?kind=morning')).data;
+  eq('parent view, morning', [mb.view, mb.kind, mb.date], ['parent', 'morning', HANA_DAY]);
+  const today = briefSection(mb, 'Today, person by person');
+  check('per person: Avery’s soccer 3:30–5:00 PM', today.includes('Avery: Avery soccer practice 3:30 PM–5:00 PM'), JSON.stringify(today));
+  check('per person: Evan’s piano 4:00–4:45 PM', today.includes('Evan: Evan piano lesson 4:00 PM–4:45 PM'), JSON.stringify(today));
+  check('everyone: movie night, and the grown-ups-only dinner marked', today.some((t) => t.startsWith('Everyone: ') && t.includes('Family game night 6:00 PM–8:00 PM') && t.includes('Anniversary dinner 7:00 PM–9:00 PM (grown-ups only)')), JSON.stringify(today));
+  eq('pickups with owners — and the one nobody has', briefSection(mb, 'Pickups & handoffs'), [
+    'Avery soccer practice (3:30 PM–5:00 PM): Kayla is on the pickup.',
+    'Evan piano lesson (4:00 PM–4:45 PM): nobody is on the pickup yet — someone needs to take it today.',
+  ]);
+  const decide = briefSection(mb, 'Needs a decision');
+  check('conflict in plain words: Kayla can’t drive soccer and be at the dentist', decide.includes('Monday has Avery soccer practice (3:30 PM–5:00 PM) and Kayla dentist (4:30 PM–5:30 PM) at the same time — Kayla can’t be at both. Someone has to pick.'), JSON.stringify(decide));
+  check('conflict in plain words: two family things at once', decide.includes('Monday has Family game night (6:00 PM–8:00 PM) and Anniversary dinner (7:00 PM–9:00 PM) at the same time. Someone has to pick.'), JSON.stringify(decide));
+  eq('homework due today & tomorrow (exact)', briefSection(mb, 'Homework due today & tomorrow'), ['Evan: Fractions worksheet (Math) — due tomorrow']);
+  const billLines = briefSection(mb, 'Bills due this week');
+  check('bills due this week: Water $64.20 due Thu, Nov 5 (exact)', billLines.includes('Water $64.20 — due Thu, Nov 5'), JSON.stringify(billLines));
+  eq('…and exactly as many as Ty’s list has due in the next 7 days', billLines.length, (await ty.get('/api/hana/tools/bills?days=7')).data.data.length);
+  const items = mb.sections.flatMap((s) => s.items);
+  check('every item carries its source and as-of', items.length > 0 && items.every((i) => i.source && !Number.isNaN(Date.parse(i.asOf)) && i.id > 0), JSON.stringify(items.find((i) => !i.source)));
+  check('the unowned pickup and the conflicts are heads-ups', items.filter((i) => i.headsUp).map((i) => i.category).includes('pickup') && items.some((i) => i.category === 'conflict' && i.headsUp));
+
+  section('Hana H3 · child view: their own day only, no siblings, no grown-ups-only, no money');
+  const eb = (await evan.get('/api/hana/brief?kind=morning')).data;
+  eq('Evan (11): child view, a plain greeting', [eb.view, eb.greeting], ['child', 'Good morning, Evan! Here’s your day.']);
+  eq('his day: piano and the family movie night only', briefSection(eb, 'Your day'), ['Evan piano lesson — 4:00 PM–4:45 PM', 'Family game night — 6:00 PM–8:00 PM']);
+  eq('his ride, said kindly', briefSection(eb, 'Rides'), ['Your ride for Evan piano lesson isn’t set yet — a grown-up is sorting it out.']);
+  eq('his homework', briefSection(eb, 'Homework'), ['Fractions worksheet (Math) — due tomorrow']);
+  const evanAll = JSON.stringify(eb);
+  check('nothing of Avery’s, nothing grown-ups-only, no money, no bills', !/Avery|Anniversary|Kayla dentist|Water|\$|Bills/.test(evanAll), evanAll.slice(0, 400));
+  const ab = (await avery.get('/api/hana/brief?kind=morning')).data;
+  eq('Avery (15): her soccer and who’s driving', briefSection(ab, 'Rides'), ['Kayla is picking you up from Avery soccer practice (3:30 PM–5:00 PM).']);
+  check('…and nothing of Evan’s', !/Evan|Anniversary|Water/.test(JSON.stringify(ab)), JSON.stringify(briefTexts(ab)));
+  check('a child’s private chat (Avery’s crisis message) never surfaces in a sibling’s brief', !/want to die|check in with Avery/.test(evanAll));
+
+  section('Hana H3 · evening look-ahead and the weekly “what changed”');
+  const ev = (await ty.get('/api/hana/brief?kind=evening')).data;
+  eq('tomorrow: the orthodontist pickup nobody owns, first', briefSection(ev, 'Nobody’s on these yet'), ['Avery orthodontist (3:00 PM–4:00 PM): nobody is on the pickup yet.']);
+  eq('…and what’s due tomorrow', briefSection(ev, 'Due tomorrow'), ['Evan: Fractions worksheet (Math) — due tomorrow']);
+  const wk = (await ty.get('/api/hana/brief?kind=weekly')).data;
+  check('weekly: what changed (calendar additions counted from the records)', briefSection(wk, 'What changed in the family this week').some((t) => /^\d+ new things? went on the calendar\.$/.test(t)), JSON.stringify(briefTexts(wk)));
+  const ahead = briefSection(wk, 'The week ahead');
+  check('weekly: the week ahead counts unowned pickups', ahead.some((t) => /including 1 pickup\(s\) nobody is on yet/.test(t)), JSON.stringify(ahead));
+  const labItem = wk.sections.flatMap((s) => s.items).find((i) => i.text.startsWith('Avery: Lab report'));
+  eq('the stale lab-report date travels into the brief with its CHECK', labItem?.check, 'the lecture notes now say due Mon, Nov 9, but this list says due Fri, Nov 6 — check which is right');
+
+  section('Hana H3 · household isolation in the brief');
+  const tb = (await tess.get('/api/hana/brief?kind=morning')).data;
+  check('Test house brief: Tim’s karate (unowned pickup), nothing of the Kesters', JSON.stringify(tb).includes('Tim karate') && !/Avery|Evan|Kayla|Water/.test(JSON.stringify(tb)));
+  check('Kester brief: nothing of Test house', !JSON.stringify(mb).includes('Tim karate'));
+
+  section('Hana H9 · every item is logged with its outcome; the report is parents-only and says where she was wrong');
+  const unowned = items.find((i) => i.category === 'pickup' && i.headsUp);
+  const water = items.find((i) => i.category === 'bills');
+  eq('Ty marks the unowned pickup handled, the bill item wrong', [(await ty.post(`/api/hana/items/${unowned.id}/outcome`, { outcome: 'acted' })).status, (await ty.post(`/api/hana/items/${water.id}/outcome`, { outcome: 'wrong' })).status], [200, 200]);
+  eq('…a bad outcome → 400', (await ty.post(`/api/hana/items/${water.id}/outcome`, { outcome: 'meh' })).status, 400);
+  eq('someone else’s item can’t be marked: Kayla, Evan, another household (404 ×3)', [
+    (await kayla.post(`/api/hana/items/${water.id}/outcome`, { outcome: 'dismissed' })).status,
+    (await evan.post(`/api/hana/items/${water.id}/outcome`, { outcome: 'dismissed' })).status,
+    (await tess.post(`/api/hana/items/${water.id}/outcome`, { outcome: 'dismissed' })).status,
+  ], [404, 404, 404]);
+  eq('the outcome stays with the item on the next look', (await ty.get('/api/hana/brief?kind=morning')).data.sections.flatMap((s) => s.items).find((i) => i.id === unowned.id)?.outcome, 'acted');
+  const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
+  eq('report: where Hana was wrong, in the same document as her wins', rep.wrong.map((w) => w.text), ['Water $64.20 — due Thu, Nov 5']);
+  check('report: brief items acted on are counted', rep.briefs.shown > 0 && rep.briefs.acted >= 1, JSON.stringify(rep.briefs));
+  eq('report: parents only (Evan, Avery → 403)', [(await evan.get('/api/hana/report')).status, (await avery.get('/api/hana/report')).status], [403, 403]);
+  eq('Test house report: none of the Kesters’ items', (await tess.get('/api/hana/report?month=2026-11')).data.wrong, []);
+  const alerts = (await ty.get('/api/hana/alerts')).data.alerts;
+  check('Family HQ alerts: the crisis about Avery is at the top for a parent', alerts[0]?.kind === 'crisis' && alerts[0].text.includes('Avery'), JSON.stringify(alerts[0]));
+  eq('…and kids can’t open Family HQ alerts', (await evan.get('/api/hana/alerts')).status, 403);
+  eq('no brief or tool call changed the family’s data: still one Water bill, two homework due ahead for Evan/Avery', [
+    (await sql("SELECT count(*)::int AS n FROM bills WHERE household_id = 1 AND name = 'Water'"))[0].n,
+    (await sql("SELECT count(*)::int AS n FROM homework WHERE household_id = 1 AND assignment IN ('Fractions worksheet', 'History essay') AND NOT done"))[0].n,
+  ], [1, 2]);
 }
 
 async function runAll() {

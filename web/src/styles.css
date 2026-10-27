@@ -715,3 +715,19 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .lib-pager { display: flex; justify-content: space-between; gap: 12px; margin: 28px 0 12px; font-size: 15px; }
 .lib-entry h2 { font-size: 18px; margin: 0 0 6px; }
 .admin-hh-name { display: block; }
+
+/* Hana in MyDay: the brief, its items, Family HQ */
+.hana-brief-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.hana-section h3 { font-size: 0.95rem; margin: 12px 0 4px; }
+.hana-items { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.hana-item { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.hana-item.heads-up { border-left: 4px solid var(--warn); }
+.hana-item.is-acted, .hana-item.is-dismissed { opacity: 0.65; }
+.hana-item-actions { display: flex; gap: 14px; flex-wrap: wrap; }
+.hana-check { color: var(--warn); }
+.hq-title { display: flex; gap: 10px; align-items: center; }
+.hq-alerts { display: grid; gap: 10px; margin-bottom: 12px; }
+.hq-alert.crisis { border: 2px solid var(--danger); }
+.hq-needle { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; }
+.hq-needle dt { color: var(--muted); }
+.hq-needle dd { margin: 0; }

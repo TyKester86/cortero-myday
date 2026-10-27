@@ -3157,3 +3157,55 @@ export interface FeedConnectedApp {
   connectedAt: string;
   status: 'active' | 'suspended';
 }
+
+/* ---------- Hana in MyDay: the household's chief of staff (read-only in this build) ---------- */
+
+export type HanaBriefKind = 'morning' | 'evening' | 'weekly';
+export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
+
+/** One thing Hana surfaced, with where it came from. Marked acted on / not now / wrong (her needle). */
+export interface HanaBriefItem {
+  id: number;
+  key: string;
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change';
+  text: string;
+  subjectId: number | null;
+  source: string;
+  /** ISO time the data was true as of. */
+  asOf: string;
+  /** Said when the source may not be current (changed at the source, an old sync). */
+  check: string | null;
+  headsUp: boolean;
+  outcome: HanaItemOutcome | null;
+}
+
+export interface HanaBrief {
+  kind: HanaBriefKind;
+  date: DateStr;
+  /** Parents see the family board; a child sees only their own day. */
+  view: 'parent' | 'child';
+  greeting: string;
+  sections: Array<{ title: string; items: HanaBriefItem[] }>;
+}
+
+/** Family HQ: crisis alerts and watch items still open (parents). */
+export interface HanaAlert {
+  id: number;
+  kind: 'crisis' | 'watch' | 'escalation';
+  category: string;
+  text: string;
+  source: string;
+  asOf: string | null;
+  date: DateStr;
+}
+
+/** The monthly family report: parents only, wins and where Hana was wrong in one place. */
+export interface HanaFamilyReport {
+  month: string;
+  homework: { due: number; onTime: number; rate: number | null };
+  logistics: { unownedPickups: number; watchUnhandled: number; missed: number };
+  briefs: { shown: number; acted: number; rate: number | null };
+  nudges: { shown: number; dismissed: number; byCategory: Array<{ category: string; shown: number; dismissed: number }> };
+  wins: string[];
+  wrong: Array<{ date: DateStr; surface: string; text: string; source: string }>;
+}
