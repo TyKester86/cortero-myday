@@ -3209,3 +3209,31 @@ export interface HanaFamilyReport {
   wins: string[];
   wrong: Array<{ date: DateStr; surface: string; text: string; source: string }>;
 }
+
+/** One homework plan: start-by, ONE next action, progress (0 not started … 3 ready to hand in). */
+export interface HanaCoachPlan {
+  homeworkId: number;
+  assignment: string;
+  due: DateStr;
+  startBy: DateStr;
+  step: 0 | 1 | 2 | 3;
+  nextAction: string;
+  /** "Start Sunday", "Due tomorrow", "Still open" — never "overdue". */
+  when: string;
+  stillOpen: boolean;
+  /** The source now says a different due date. */
+  check: string | null;
+  source: string;
+}
+
+/** The homework & routine coach for one kid: one focus, a short horizon, wins, chores. */
+export interface HanaCoach {
+  member: { id: number; name: string };
+  focus: HanaCoachPlan | null;
+  /** At most three more, due in the next week. */
+  upcoming: HanaCoachPlan[];
+  moreLater: number;
+  celebrate: string[];
+  nudge: { homeworkId: number; text: string; itemId: number } | null;
+  chores: { done: number; total: number; pending: string[]; points: number; reward: { name: string; cost: number; short: number } | null } | null;
+}

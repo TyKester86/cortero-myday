@@ -6874,6 +6874,7 @@ async function hanaBrainSuite() {
     await hanaSeed();
     await hanaBrainChecks();
     await hanaBriefChecks();
+    await hanaCoachChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7063,6 +7064,62 @@ async function hanaBriefChecks() {
     (await sql("SELECT count(*)::int AS n FROM bills WHERE household_id = 1 AND name = 'Water'"))[0].n,
     (await sql("SELECT count(*)::int AS n FROM homework WHERE household_id = 1 AND assignment IN ('Fractions worksheet', 'History essay') AND NOT done"))[0].n,
   ], [1, 2]);
+}
+
+async function hanaCoachChecks() {
+  const tess = hanaIds.tess;
+  section('Hana H4 · the coach, child view (Evan): one next action, a start-by date, a nudge before it’s due');
+  let ec = (await evan.get('/api/hana/coach')).data;
+  eq('his focus: the fractions worksheet, start-by Sunday, due tomorrow, not started', [ec.focus?.assignment, ec.focus?.startBy, ec.focus?.due, ec.focus?.when, ec.focus?.step], ['Fractions worksheet', '2026-11-01', '2026-11-03', 'Due tomorrow', 0]);
+  eq('ONE visible next action', ec.focus?.nextAction, 'Start: open Fractions worksheet and do the first 10 minutes.');
+  eq('a nudge BEFORE the due date', ec.nudge?.text, 'Fractions worksheet is due tomorrow. One more chunk and you’re there.');
+  const [eb] = await sql("SELECT (COALESCE((SELECT SUM(points) FROM scores WHERE member_id = $1), 0) - COALESCE((SELECT SUM(cost) FROM redemptions WHERE member_id = $1 AND status IN ('pending', 'approved')), 0))::int AS bank", [hanaIds.Evan]);
+  eq('chores and points ride the same card (the ledger’s number)', ec.chores?.points, eb.bank);
+  eq('another kid’s plan is not his to see (404), nor to move (404)', [(await evan.get('/api/hana/coach?member=avery')).status, (await evan.post(`/api/hana/coach/${(await sql("SELECT id FROM homework WHERE assignment = 'History essay' AND household_id = 1"))[0].id}/step`, { step: 1 })).status], [404, 404]);
+
+  section('Hana H4 · Avery (15): short horizon, and the stale source still flagged');
+  const ac = (await avery.get('/api/hana/coach')).data;
+  eq('focus: the essay, start tomorrow — no nudge yet', [ac.focus?.assignment, ac.focus?.when, ac.nudge], ['History essay', 'Start tomorrow', null]);
+  eq('coming up: the lab report, with its CHECK', ac.upcoming.filter((p) => p.assignment === 'Lab report').map((p) => [p.assignment, p.check]), [['Lab report', 'the lecture notes now say due Mon, Nov 9, but this list says due Fri, Nov 6 — check which is right']]);
+  check('a short horizon: at most three coming up, nothing past its date', ac.upcoming.length <= 3 && ac.upcoming.every((p) => !p.stillOpen));
+
+  section('Hana H4 · escalation: a parent hears only at real risk (start-by passed, no progress), once per assignment');
+  await ty.post('/api/homework?member=avery', { assignment: 'Science poster', subject: 'Science', due: '2026-11-03' });
+  const posterId = (await sql("SELECT id FROM homework WHERE assignment = 'Science poster' AND household_id = 1"))[0].id;
+  eq('Avery shows progress on the poster first (a progress signal)', (await avery.post(`/api/hana/coach/${posterId}/step`, { step: 1 })).status, 200);
+  const esc = (await ty.get('/api/hana/alerts')).data.alerts.filter((a) => a.kind === 'escalation');
+  eq('Ty: one gentle note — Evan’s worksheet (the started poster isn’t at risk)', esc.map((a) => a.text), ['Evan hasn’t started Fractions worksheet yet — the plan was to start Sunday, and it’s due Tuesday. A quick, kind check-in might help.']);
+  eq('Kayla gets her own copy (both parents are admins)', (await kayla.get('/api/hana/alerts')).data.alerts.filter((a) => a.kind === 'escalation').length, 1);
+  await ty.get('/api/hana/alerts');
+  eq('asking again: still one (no loop)', (await sql("SELECT count(*)::int AS n FROM hana_items WHERE surface = 'escalation' AND member_id = $1", [hanaIds.Ty]))[0].n, 1);
+  check('…and the escalation copy passes the gentle-copy policy (no “overdue”, “late”, “behind”, “missed”)', !/overdue|late|behind|missed|forgot/i.test(esc[0]?.text ?? ''));
+  const tessEsc = (await tess.get('/api/hana/alerts')).data.alerts.filter((a) => a.kind === 'escalation').map((a) => a.text);
+  check('Test house parent: only her own kid’s at-risk note (Tim’s spelling), never a Kester kid’s', tessEsc.length === 1 && tessEsc[0].startsWith('Tim hasn’t started Spelling list yet') && !tessEsc.some((t) => /Evan|Avery/.test(t)), JSON.stringify(tessEsc));
+
+  section('Hana H4 · a dismissed nudge stays dismissed for that assignment');
+  eq('Evan taps “Not now”', (await evan.post(`/api/hana/nudges/${ec.focus.homeworkId}/dismiss`, {})).status, 200);
+  eq('the nudge is gone, the plan isn’t', [(await evan.get('/api/hana/coach')).data.nudge, (await evan.get('/api/hana/coach')).data.focus?.assignment], [null, 'Fractions worksheet']);
+  eq('…can’t dismiss a sibling’s nudge (404)', (await evan.post(`/api/hana/nudges/${posterId}/dismiss`, {})).status, 404);
+  await startServer(hanaNow('2026-11-03'));
+  ec = (await evan.get('/api/hana/coach')).data;
+  eq('the next day (due today): still no nudge for it', [ec.focus?.when, ec.nudge], ['Due today', null]);
+  await ty.get('/api/hana/alerts');
+  eq('…and no second escalation for it', (await sql("SELECT count(*)::int AS n FROM hana_items WHERE surface = 'escalation' AND member_id = $1 AND item_key LIKE 'atrisk:%'", [hanaIds.Ty]))[0].n, 1);
+
+  section('Hana H4 · progress is visible, finished work is celebrated, nothing is ever “overdue red”');
+  eq('Evan: started → the next action moves on', [(await evan.post(`/api/hana/coach/${ec.focus.homeworkId}/step`, { step: 1 })).status, (await evan.get('/api/hana/coach')).data.focus?.nextAction], [200, 'Keep going: one 20-minute chunk on Fractions worksheet.']);
+  eq('a step outside 0–3 → 400', (await evan.post(`/api/hana/coach/${ec.focus.homeworkId}/step`, { step: 7 })).status, 400);
+  await startServer(hanaNow('2026-11-04'));
+  ec = (await evan.get('/api/hana/coach')).data;
+  eq('the day after it was due: “Still open”, gently', [ec.focus?.assignment, ec.focus?.when, ec.focus?.stillOpen], ['Fractions worksheet', 'Still open', true]);
+  check('no “overdue”, “late” or “behind” anywhere on the card', !/overdue|late\b|behind/i.test(JSON.stringify(ec)), JSON.stringify(ec).slice(0, 300));
+  await evan.post(`/api/homework/${ec.focus.homeworkId}/toggle`, { done: true });
+  ec = (await evan.get('/api/hana/coach')).data;
+  eq('done in Homework → celebrated on the card', ec.celebrate, ['You finished Fractions worksheet. Nice work.']);
+  eq('the coach never changed the homework itself (only the kid’s own toggle did)', (await sql("SELECT done FROM homework WHERE assignment = 'History essay' AND household_id = 1"))[0].done, false);
+  const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
+  eq('report: nudges set aside are counted (parents tune categories down from this)', [rep.nudges.dismissed, rep.nudges.byCategory.find((c) => c.category === 'homework')?.dismissed], [1, 1]);
+  await startServer(hanaNow());
 }
 
 async function runAll() {

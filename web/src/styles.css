@@ -731,3 +731,10 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .hq-needle { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; }
 .hq-needle dt { color: var(--muted); }
 .hq-needle dd { margin: 0; }
+.coach-next { font-size: 1.15rem; font-weight: 600; margin: 4px 0 8px; }
+.coach-dots { display: inline-flex; gap: 6px; margin-bottom: 10px; }
+.coach-dots .dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); }
+.coach-dots .dot.on { background: var(--sun); border-color: var(--sun); }
+.coach-win { margin: 0 0 6px; }
+.coach-nudge { margin: 0 0 8px; }
+.coach-later { margin: 10px 0 4px; padding-left: 18px; }

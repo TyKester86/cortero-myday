@@ -7,6 +7,9 @@
  * H3: GET /api/hana/brief — the morning / evening / weekly brief for whoever asks.
  *     POST /api/hana/items/:id/outcome — acted on / not now / wrong (H9).
  *     GET /api/hana/alerts — parents: open crisis + watch items (Family HQ).
+ * H4: GET /api/hana/coach — one kid's homework plan (a kid: their own; a parent: ?member=).
+ *     POST /api/hana/coach/:homeworkId/step — the progress signal (Hana's record only).
+ *     POST /api/hana/nudges/:homeworkId/dismiss — a dismissed nudge stays dismissed.
  * H9: GET /api/hana/report?month=YYYY-MM — parents only, wins and where Hana was wrong.
  */
 import { Router } from 'express';
@@ -20,6 +23,7 @@ import { requireParent, viewerOf } from '../lib/chief/scope.js';
 import { balances, billsDue, choresFor, familyFor, feedInbox, healthFor, homeworkFor, scheduleFor } from '../lib/chief/tools.js';
 import { briefFor, markItem, type BriefKind, type ItemOutcome } from '../lib/chief/brief.js';
 import { familyReport } from '../lib/chief/needle.js';
+import { coachFor, coachTarget, dismissNudge, refreshEscalations, setStep } from '../lib/chief/coach.js';
 
 export const hqRouter = Router();
 
@@ -91,6 +95,7 @@ hqRouter.post('/api/hana/items/:id/outcome', async (req, res) => {
 hqRouter.get('/api/hana/alerts', async (req, res) => {
   const v = viewerOf(self(req));
   requireParent(v, 'Family HQ');
+  await refreshEscalations();
   const { rows } = await pool.query<{ id: number; surface: string; category: string; text: string; source: string; as_of: Date | null; shown_on: string }>(
     `SELECT id, surface, category, text, source, as_of, shown_on::text AS shown_on FROM hana_items
       WHERE member_id = $1 AND surface IN ('crisis', 'watch', 'escalation') AND outcome IS NULL AND shown_on >= $2
@@ -106,4 +111,21 @@ hqRouter.get('/api/hana/report', async (req, res) => {
   const v = viewerOf(self(req));
   const month = typeof req.query.month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month) ? req.query.month : today().slice(0, 7);
   res.json(await familyReport(v, month));
+});
+
+hqRouter.get('/api/hana/coach', async (req, res) => {
+  const v = viewerOf(self(req));
+  res.json(await coachFor(v, await coachTarget(v, typeof req.query.member === 'string' ? req.query.member : null)));
+});
+
+hqRouter.post('/api/hana/coach/:homeworkId/step', async (req, res) => {
+  const v = viewerOf(self(req));
+  await setStep(v, idParam(req.params.homeworkId), Number((req.body as { step?: unknown }).step));
+  res.json({ ok: true });
+});
+
+hqRouter.post('/api/hana/nudges/:homeworkId/dismiss', async (req, res) => {
+  const v = viewerOf(self(req));
+  await dismissNudge(v, idParam(req.params.homeworkId));
+  res.json({ ok: true });
 });

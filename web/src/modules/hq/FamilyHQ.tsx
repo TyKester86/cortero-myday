@@ -3,6 +3,8 @@ import { CRISIS_RESOURCES, type HanaAlert, type HanaFamilyReport } from '@myday/
 import { api, useLoad } from '../../api';
 import { HanaFace } from '../../components/NavIcon';
 import { HanaBriefCard } from './HanaBrief';
+import { CoachCard } from './Coach';
+import { useSession } from '../../session';
 
 const thisMonth = (): string => {
   const n = new Date();
@@ -101,6 +103,8 @@ function Report() {
 
 /** Family HQ (parents): Hana's view of the whole household. Read-only — she never sends, spends or commits anything. */
 export default function FamilyHQ() {
+  const { members } = useSession();
+  const kids = members.filter((m) => m.kind === 'kid');
   return (
     <section data-testid="family-hq">
       <h1 className="hq-title">
@@ -109,6 +113,14 @@ export default function FamilyHQ() {
       <p className="muted">Hana’s look at the whole family: today, what’s coming, and anything that needs someone.</p>
       <Alerts />
       <HanaBriefCard />
+      {kids.length > 0 && (
+        <div data-testid="hq-plans">
+          <h2>Homework plans</h2>
+          {kids.map((k) => (
+            <CoachCard key={k.key} memberKey={k.key} />
+          ))}
+        </div>
+      )}
       <Report />
     </section>
   );
