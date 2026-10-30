@@ -32,7 +32,17 @@ import { balances, billsDue, scheduleFor, type ScheduleItem } from './tools.js';
 
 export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework'];
 
-const DEFAULTS: HanaSettings = { quietStart: '21:00', quietEnd: '07:00', quietDays: [7, 1, 2, 3, 4], pausedUntil: null, muted: [], lowBalance: 200, billLeadDays: 3 };
+const DEFAULTS: HanaSettings = {
+  quietStart: '21:00',
+  quietEnd: '07:00',
+  quietDays: [7, 1, 2, 3, 4],
+  pausedUntil: null,
+  muted: [],
+  lowBalance: 200,
+  billLeadDays: 3,
+  kidNoteKinds: ['encouragement', 'reminder'],
+};
+const KID_KINDS = ['encouragement', 'reminder'] as const;
 
 interface SettingsRow {
   quiet_start: string;
@@ -42,10 +52,11 @@ interface SettingsRow {
   muted: string[];
   low_balance: string;
   bill_lead_days: number;
+  kid_note_kinds: string[];
 }
 
 export async function settingsOf(): Promise<HanaSettings> {
-  const { rows } = await pool.query<SettingsRow>('SELECT quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days FROM hana_settings LIMIT 1');
+  const { rows } = await pool.query<SettingsRow>('SELECT quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, kid_note_kinds FROM hana_settings LIMIT 1');
   const r = rows[0];
   if (!r) return { ...DEFAULTS };
   return {
@@ -56,6 +67,7 @@ export async function settingsOf(): Promise<HanaSettings> {
     muted: r.muted.filter((m): m is HanaWatchCategory => (WATCH_CATEGORIES as string[]).includes(m)),
     lowBalance: Number(r.low_balance),
     billLeadDays: r.bill_lead_days,
+    kidNoteKinds: KID_KINDS.filter((k) => r.kid_note_kinds.includes(k)),
   };
 }
 
@@ -92,18 +104,22 @@ export async function saveSettings(v: Viewer, b: Record<string, unknown>): Promi
     if (!Number.isInteger(n) || n < 0 || n > 7) throw new HttpError(400, 'Bill heads-up is 0–7 days');
     next.billLeadDays = n;
   }
+  if (b.kidNoteKinds !== undefined) {
+    if (!Array.isArray(b.kidNoteKinds) || b.kidNoteKinds.some((k) => !(KID_KINDS as readonly unknown[]).includes(k))) throw new HttpError(400, 'Notes to kids can be encouragement or reminders');
+    next.kidNoteKinds = KID_KINDS.filter((k) => (b.kidNoteKinds as unknown[]).includes(k));
+  }
   if (b.pauseHours !== undefined) {
     const h = Number(b.pauseHours);
     if (!Number.isFinite(h) || h < 0 || h > 24 * 14) throw new HttpError(400, 'Quiet her for up to 14 days');
     next.pausedUntil = h === 0 ? null : new Date(Date.now() + h * 3_600_000).toISOString();
   }
   await pool.query(
-    `INSERT INTO hana_settings (quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, updated_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+    `INSERT INTO hana_settings (quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, kid_note_kinds, updated_by, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
      ON CONFLICT (household_id) DO UPDATE SET quiet_start = EXCLUDED.quiet_start, quiet_end = EXCLUDED.quiet_end, quiet_days = EXCLUDED.quiet_days,
        paused_until = EXCLUDED.paused_until, muted = EXCLUDED.muted, low_balance = EXCLUDED.low_balance,
-       bill_lead_days = EXCLUDED.bill_lead_days, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-    [next.quietStart, next.quietEnd, next.quietDays, next.pausedUntil, next.muted, next.lowBalance, next.billLeadDays, v.me.id],
+       bill_lead_days = EXCLUDED.bill_lead_days, kid_note_kinds = EXCLUDED.kid_note_kinds, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [next.quietStart, next.quietEnd, next.quietDays, next.pausedUntil, next.muted, next.lowBalance, next.billLeadDays, next.kidNoteKinds, v.me.id],
   );
   return next;
 }

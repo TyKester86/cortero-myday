@@ -738,3 +738,15 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .coach-win { margin: 0 0 6px; }
 .coach-nudge { margin: 0 0 8px; }
 .coach-later { margin: 10px 0 4px; padding-left: 18px; }
+
+/* H6/H7: drafted notes, delivered notes, the log, push-to-talk, the thinking trail */
+.hana-draft .draft-quote { margin: 0.4rem 0; font-style: italic; }
+.hana-draft .draft-text { width: 100%; margin: 0.4rem 0; font: inherit; }
+.hana-notes { display: grid; gap: 0.6rem; }
+.hana-note p { margin: 0.2rem 0 0.4rem; }
+.hq-log { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.45rem; }
+.hq-log small { display: block; }
+.attach-btn.mic.on { color: var(--accent, #c2410c); }
+.voice-state { align-self: center; white-space: nowrap; }
+.hana-trail { margin: 0.35rem 0 0; padding-left: 1.1rem; font-size: 0.82rem; color: var(--muted, #6b7280); }
+.hana-trail li + li { margin-top: 0.15rem; }

@@ -26,11 +26,27 @@ import { libraryBrief } from '../lib/library.js';
 import { attachmentInfo, loadAttachments, type LoadedAttachment } from './chatFiles.js';
 import { lectureMaterial } from './lectures.js';
 import { clinicianReply, crisisIn, crisisReply, escalateCrisis, symptomQuestion } from '../lib/chief/guard.js';
+import { screenText } from '../lib/screen.js';
 import { asOfLabel } from '../lib/chief/facts.js';
 
 export const chatRouter = Router();
 
 const chatLimit = rateLimiter(Number(process.env.CHAT_PER_HOUR) || 30, 60 * 60_000); // per member per hour
+
+/**
+ * The thinking trail: the real steps Hana's tools are taking on a message, as they happen (by the
+ * message's clientId, for its sender only). In memory and short-lived — it's a progress line, not a record.
+ */
+const trail = new Map<string, { member: number; steps: string[]; at: number }>();
+function trailStep(member: number, clientId: string | null, step: string): void {
+  if (!clientId) return;
+  const now = Date.now();
+  for (const [k, v] of trail) if (now - v.at > 5 * 60_000) trail.delete(k);
+  const t = trail.get(clientId) ?? { member, steps: [], at: now };
+  t.steps.push(step.slice(0, 140));
+  t.at = now;
+  trail.set(clientId, t);
+}
 
 async function modeFor(req: Request): Promise<{ me: HouseholdMember; mode: ChatMode }> {
   const me = self(req);
@@ -177,13 +193,18 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     'You are their personal assistant and can act in MyDay with your tools: tasks, groceries, notes, homework, workouts, bills, ' +
     'the shared household calendar (add and read events), push reminders at a time ("remind me at 5 to…"), planning meals from ' +
     'the recipe library, kids’ chores, how the kids are doing, a read-only money picture, sending the grocery list to Instacart or their Kroger cart, searching flights with booking links, and errands on websites in a real browser with their saved logins (run_errand: reorder, check an order, book a table) — anything that spends money waits for their OK, so never say something was bought or booked until the errand says it was. When they ask you to do something, ' +
-    'do it rather than telling them how. WORKING MEMORY: whenever they tell you something worth knowing next time — names and ages of ' +
+    'prepare it with your tools rather than telling them how — every change you make in MyDay (adding, moving, saving, remembering, sending a note) ' +
+    'is a proposal that waits for them to tap Confirm, so say what you prepared, never that it is done. ' +
+    'DRAFTS: to send someone in the household a note, draft it with draft_note; it is delivered in MyDay only after they confirm (they can edit or discard it). ' +
+    'WHEN YOU CAN’T: if no tool, connection or data can do what they ask, call report_gap, then tell them what you tried, what was missing and ' +
+    'what you prepared instead — never a bare "I can’t". ' +
+    'WORKING MEMORY: whenever they tell you something worth knowing next time — names and ages of ' +
     'people in their life, preferences, routines, what they’re working on or worried about, ongoing topics, context about their kids or work ' +
-    '("I’m vegetarian", "soccer is every Tuesday", "my boss is Dana", "we’re potty training Evan") — save it right away with remember, ' +
-    'one short fact per call, without asking, and don’t save something you already remember. Use what you remember naturally in later answers. ' +
+    '("I’m vegetarian", "soccer is every Tuesday", "my boss is Dana", "we’re potty training Evan") — offer to keep it with remember, ' +
+    'one short fact per call (it waits for their Confirm like everything else), and don’t offer something you already remember. Use what you remember naturally in later answers. ' +
     'Never save passwords, card or account numbers, or other secrets. They can see and edit everything you remember on the Ask Hana page. ' +
-    'Times are the household’s local time. Deleting, ' +
-    'clearing or forgetting anything only happens after they tap Confirm, so never say it is done until it is.'
+    'Times are the household’s local time. Nothing — deleting, clearing, adding or forgetting — ' +
+    'happens until they tap Confirm, so never say it is done until it is.'
   );
 }
 
@@ -231,7 +252,9 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   // Under 13: a parent turns the homework helper on first (it sends the child's words to an AI provider).
   if (mode === 'tutor') await requireAiConsent(me);
   await checkHanaDaily(req.householdId ?? 0, me.kind === 'adult' ? 'adult' : 'kid');
-  const model = chatModel();
+  // Speed: a quick question (short, no files, the companion) can go to the fast model when one is configured.
+  const quick = mode === 'companion' && wanted.length === 0 && msg.length <= 160;
+  const model = chatModel(quick);
   if (!model) throw new HttpError(503, 'Ask Hana needs a grown-up to finish setting it up');
   if (!chatLimit(String(me.id))) throw new HttpError(429, "That's a lot of questions — take a breather and try again soon");
 
@@ -325,11 +348,13 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
       ? await clinicianReply(me)
       : null;
   if (guarded && !crisisIn(msg)) await logEvent('hana_health_boundary', { mode }, me.id);
+  // The AI crisis check runs alongside the reply (rules already ran above); with no key, rules are the check.
+  const aiScreen = guarded ? null : screenText(msg).catch(() => null);
   try {
     text =
       guarded ??
       (mode === 'companion'
-        ? await model.act(system, turns, hanaKit(me, actions), 4000)
+        ? await model.act(system, turns, hanaKit(me, actions, (s) => trailStep(me.id, clientId, s)), 4000)
         : await model.reply(system, turns, 1000, { effort: 'medium' }));
   } catch (e) {
     // Kept, marked: the screen shows it with Retry (and a retry reuses this row).
@@ -338,8 +363,17 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
     throw e;
   }
   console.log(`chat: send ${mode} member=${me.id} model=${model.kind === 'claude' ? process.env.CHAT_MODEL || 'claude-opus-5-5' : 'stub'} ms=${Date.now() - started} ok actions=${actions.length}`);
+  // The words the rules missed but the AI check caught: the crisis reply replaces Hana's, and both parents hear.
+  const screened = aiScreen ? await aiScreen : null;
+  let aiCrisis = false;
+  if (screened?.crisis && !guarded) {
+    aiCrisis = true;
+    for (const a of actions) if (a.status === 'pending') await pool.query("UPDATE hana_actions SET status = 'cancelled', result = 'Set aside: this message needed care first.' WHERE id = $1 AND status = 'pending'", [a.id]);
+    actions.length = 0;
+    text = crisisReply(me, (await escalateCrisis(me, mode === 'tutor' ? 'tutor' : 'chat')).parents);
+  }
   // Personal numbers in the reply must be the real ones (before or after this turn's actions): else fix them before anyone sees it.
-  if (stats && !guarded) {
+  if (stats && !guarded && !aiCrisis) {
     const snaps = actions.length ? [stats, await hanaStats(me)] : [stats];
     const bad = wrongStats(text, snaps);
     if (bad.length) {
@@ -349,7 +383,8 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
       text = fixed && !wrongStats(fixed, snaps).length ? fixed : stripWrongStats(text, now, snaps);
     }
   }
-  await logEvent('hana_asked', { mode, actions: actions.length }, me.id);
+  await logEvent('hana_asked', { mode, actions: actions.length, route: quick && process.env.CHAT_FAST_MODEL ? 'fast' : 'main' }, me.id);
+  if (clientId) trail.delete(clientId);
   // What the tools did, kept with the reply for later turns (not shown in the chat).
   const toolNotes = actions.length ? actions.map((a) => `${a.summary} → ${a.status}${a.result ? `: ${a.result.replace(/\s+/g, ' ').slice(0, 600)}` : ''}`).join(' | ').slice(0, 4000) : null;
   const { rows } = await pool.query<MsgRow>(
@@ -360,6 +395,13 @@ chatRouter.post('/api/chat/:mode', async (req, res) => {
   if (!reply) throw new Error('reply insert returned nothing');
   const out: ChatSendResponse = { reply: toMsg(reply), history: await history(me.id, mode), actions };
   res.json(out);
+});
+
+/** The thinking trail for a message still being answered (its sender only). */
+chatRouter.get('/api/chat/:mode/progress/:clientId', async (req, res) => {
+  const { me } = await modeFor(req);
+  const t = trail.get(String(req.params.clientId));
+  res.json({ steps: t && t.member === me.id ? t.steps : [] });
 });
 
 /** Delete one message from your own conversation with Hana. */
@@ -384,7 +426,9 @@ for (const verb of ['confirm', 'cancel'] as const) {
     if (me.kind !== 'adult') throw new HttpError(403, 'Hana actions are for grown-ups');
     const action = await decideAction(me, idParam(req.params.id), verb === 'confirm');
     const note = action.status === 'done' ? `Done: ${action.result}` : action.status === 'failed' ? `That didn't work: ${action.result}` : 'Okay — I left it alone.';
-    await pool.query("INSERT INTO chat_messages (member_id, mode, who, text) VALUES ($1, 'companion', 'hana', $2)", [me.id, note]);
+    // What the tool did, kept with the note (like a reply's tool notes) so later turns know it happened.
+    const toolNotes = `${action.summary} → ${action.status}${action.result ? `: ${action.result.replace(/\s+/g, ' ').slice(0, 600)}` : ''}`;
+    await pool.query("INSERT INTO chat_messages (member_id, mode, who, text, tool_notes) VALUES ($1, 'companion', 'hana', $2, $3)", [me.id, note, toolNotes]);
     res.json({ action, history: await history(me.id, 'companion'), pending: await pendingActions(me.id) });
   });
 }

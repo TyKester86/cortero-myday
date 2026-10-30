@@ -8,6 +8,7 @@ import { HanaFace } from '../../components/NavIcon';
 import { keyboardSync } from '../../components/useKeyboard';
 import { useSession } from '../../session';
 import { shrink } from '../health/ProgressPhotos';
+import { DraftCard } from '../hq/Notes';
 
 const newClientId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
@@ -63,6 +64,62 @@ async function upload(file: File): Promise<ChatAttachment> {
   return out;
 }
 
+/** H7 Stage 1: push-to-talk. Records only while the button is held (up to a minute), then Hana hears it. */
+function useVoice(onText: (text: string) => void): {
+  state: 'idle' | 'listening' | 'hearing';
+  err: string | null;
+  supported: boolean;
+  start: () => void;
+  stop: () => void;
+} {
+  const [state, setState] = useState<'idle' | 'listening' | 'hearing'>('idle');
+  const [err, setErr] = useState<string | null>(null);
+  const rec = useRef<MediaRecorder | null>(null);
+  const timer = useRef<number | null>(null);
+  const supported = typeof window !== 'undefined' && typeof window.MediaRecorder !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+  const stop = (): void => {
+    if (timer.current) window.clearTimeout(timer.current);
+    if (rec.current && rec.current.state === 'recording') rec.current.stop();
+  };
+  const start = (): void => {
+    if (!supported || state !== 'idle') return;
+    setErr(null);
+    void navigator.mediaDevices.getUserMedia({ audio: true }).then(
+      (stream) => {
+        const r = new MediaRecorder(stream);
+        const chunks: Blob[] = [];
+        r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+        r.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          rec.current = null;
+          const blob = new Blob(chunks, { type: r.mimeType || 'audio/webm' });
+          if (blob.size < 200) {
+            setState('idle');
+            setErr('Hold the button while you talk.');
+            return;
+          }
+          setState('hearing');
+          void fetch('/api/hana/voice', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type, 'X-MyDay-Upload': '1' }, body: blob })
+            .then(async (res) => {
+              const out = (await res.json().catch(() => null)) as { text?: string; error?: string } | null;
+              if (!res.ok || typeof out?.text !== 'string') throw new Error(out?.error ?? 'Hana couldn’t hear that — try again');
+              if (out.text) onText(out.text);
+              else setErr('Hana didn’t catch any words — try again.');
+            })
+            .catch((e: unknown) => setErr(e instanceof Error ? e.message : 'Hana couldn’t hear that'))
+            .finally(() => setState('idle'));
+        };
+        rec.current = r;
+        r.start();
+        setState('listening');
+        timer.current = window.setTimeout(stop, 60_000);
+      },
+      () => setErr('Allow the microphone to talk to Hana.'),
+    );
+  };
+  return { state, err, supported, start, stop };
+}
+
 /** Ask Hana (grown-ups) and the homework tutor (kids + students) share this screen. */
 export default function Chat({ mode }: { mode: ChatMode }) {
   const { me } = useSession();
@@ -78,6 +135,8 @@ export default function Chat({ mode }: { mode: ChatMode }) {
   const [failNote, setFailNote] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<number | null>(null);
   const [actions, setActions] = useState<HanaAction[]>([]);
+  const [trail, setTrail] = useState<string[]>([]);
+  const voice = useVoice((text) => setMsg((m) => (m.trim() ? `${m.trim()} ${text}` : text)));
   const confirm = useConfirm();
   // B3: /tutor?lecture=ID quizzes from one of the student's own lectures.
   const lectureId = mode === 'tutor' ? new URLSearchParams(window.location.search).get('lecture') : null;
@@ -163,6 +222,23 @@ export default function Chat({ mode }: { mode: ChatMode }) {
     );
   }
   if (error) return <p className="error">{error}</p>;
+  // The thinking trail: while Hana works on a message, show the real steps her tools are taking.
+  useEffect(() => {
+    setTrail([]);
+    if (!pending || mode !== 'companion') return;
+    let live = true;
+    const tick = (): void => {
+      void api<{ steps: string[] }>(`/api/chat/${mode}/progress/${pending.clientId}`)
+        .then((r) => live && setTrail(r.steps))
+        .catch(() => undefined);
+    };
+    const t = window.setInterval(tick, 700);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [pending, mode]);
+
   if (!data) return <p className="muted">Loading…</p>;
   const copy = COPY[mode];
   const ready = drafts.filter((d) => d.att);
@@ -379,6 +455,13 @@ export default function Chat({ mode }: { mode: ChatMode }) {
                   <i />
                   <i />
                 </div>
+                {trail.length > 0 && (
+                  <ol className="hana-trail" data-testid="hana-trail">
+                    {trail.slice(-4).map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ol>
+                )}
               </div>
             </div>
           </>
@@ -388,21 +471,31 @@ export default function Chat({ mode }: { mode: ChatMode }) {
             {a.status === 'done' ? '✓' : '⚠'} {a.summary}
           </div>
         ))}
-        {data.pending.map((a) => (
-          <div key={a.id} className="card" data-testid="hana-pending" role="alertdialog" aria-label={`Confirm: ${a.summary}`}>
-            <b>Hana wants to: {a.summary}</b>
-            <p className="muted small">Nothing changes until you confirm.</p>
-            <div className="confirm-actions">
-              <button className="btn small ghost" onClick={() => void decide(a, 'cancel')}>
-                Cancel
-              </button>
-              <button className="btn small danger" onClick={() => void decide(a, 'confirm')}>
-                Confirm
-              </button>
+        {data.pending.map((a) =>
+          a.tool === 'draft_note' && a.draft ? (
+            <DraftCard
+              key={a.id}
+              a={a}
+              onDecide={(verb) => void decide(a, verb)}
+              onSaved={(n) => setData({ ...data, pending: data.pending.map((x) => (x.id === n.id ? n : x)) })}
+            />
+          ) : (
+            <div key={a.id} className="card" data-testid="hana-pending" role="alertdialog" aria-label={`Confirm: ${a.summary}`}>
+              <b>{a.destructive ? 'Hana wants to' : 'Hana prepared'}: {a.summary}</b>
+              <p className="muted small">Nothing changes until you confirm.</p>
+              <div className="confirm-actions">
+                <button className="btn small ghost" onClick={() => void decide(a, 'cancel')}>
+                  Cancel
+                </button>
+                <button className={`btn small${a.destructive ? ' danger' : ''}`} onClick={() => void decide(a, 'confirm')}>
+                  Confirm
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          ),
+        )}
         {err && <p className="error">{err}</p>}
+        {voice.err && <p className="error small" data-testid="voice-err">{voice.err}</p>}
         {capped && me.member?.kind === 'adult' && (
           <div className="card" data-testid="hana-upgrade">
             <b>Want more Hana?</b>
@@ -452,6 +545,30 @@ export default function Chat({ mode }: { mode: ChatMode }) {
                 <input ref={picker} type="file" accept={ACCEPT} multiple hidden onChange={(e) => attach(e.target.files)} data-testid="chat-file" />
               </>
             )}
+            {voice.supported && (
+              <button
+                type="button"
+                className={`attach-btn mic${voice.state !== 'idle' ? ' on' : ''}`}
+                aria-label={voice.state === 'listening' ? 'Listening — let go to stop' : voice.state === 'hearing' ? 'Hearing you…' : 'Hold to talk to Hana'}
+                aria-pressed={voice.state === 'listening'}
+                disabled={!data.available || voice.state === 'hearing'}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  voice.start();
+                }}
+                onPointerUp={voice.stop}
+                onPointerLeave={voice.stop}
+                onKeyDown={(e) => (e.key === ' ' || e.key === 'Enter') && !e.repeat && voice.start()}
+                onKeyUp={(e) => (e.key === ' ' || e.key === 'Enter') && voice.stop()}
+                data-testid="chat-mic"
+              >
+                <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5 11a7 7 0 0014 0M12 18v3" />
+                </svg>
+              </button>
+            )}
+            {voice.state !== 'idle' && <span className="voice-state small muted" aria-live="polite">{voice.state === 'listening' ? 'Listening…' : 'Hearing you…'}</span>}
             <textarea
               ref={field}
               className="chat-box"

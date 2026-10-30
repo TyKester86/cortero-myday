@@ -81,6 +81,9 @@ export type EventName =
   | 'hana_item_outcome'
   | 'hana_watch_sent'
   | 'hana_report'
+  | 'hana_couldnt'
+  | 'hana_voice'
+  | 'hana_note_read'
   | 'feed_api_refresh_reuse';
 
 export async function logEvent(

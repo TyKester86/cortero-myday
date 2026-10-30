@@ -1986,6 +1986,34 @@ export interface HanaAction {
   destructive: boolean;
   status: 'pending' | 'done' | 'cancelled' | 'failed';
   result: string;
+  /** A drafted note (H6): who it's to and what it says, editable until it's confirmed. */
+  draft?: { to: string; kind: HanaNoteKind; text: string } | null;
+}
+
+export type HanaNoteKind = 'note' | 'encouragement' | 'reminder';
+
+/** A note a grown-up approved, delivered inside MyDay (never by email or text). */
+export interface HanaNote {
+  id: number;
+  from: string | null;
+  kind: HanaNoteKind;
+  body: string;
+  sentAt: string;
+  read: boolean;
+}
+
+/** One line of the parents' audit log: what Hana prepared, who decided, when. */
+export interface HanaLogEntry {
+  id: number;
+  at: string;
+  proposedBy: string | null;
+  tool: string;
+  summary: string;
+  status: HanaAction['status'];
+  decidedBy: string | null;
+  decidedAt: string | null;
+  edited: boolean;
+  origin: 'chat' | 'watch' | 'coach' | 'voice';
 }
 
 export interface ChatTurnResult {
@@ -3208,6 +3236,10 @@ export interface HanaFamilyReport {
   nudges: { shown: number; dismissed: number; byCategory: Array<{ category: string; shown: number; dismissed: number }> };
   wins: string[];
   wrong: Array<{ date: DateStr; surface: string; text: string; source: string }>;
+  /** The month's gaps: what Hana was asked and couldn't do (what she tried, what she prepared instead). */
+  gaps: Array<{ date: DateStr; category: string; text: string }>;
+  /** Suggestions that missed the family's taste (set aside or marked wrong). */
+  tasteMisses: Array<{ date: DateStr; text: string }>;
 }
 
 /** One homework plan: start-by, ONE next action, progress (0 not started … 3 ready to hand in). */
@@ -3255,4 +3287,6 @@ export interface HanaSettings {
   lowBalance: number;
   /** How many days ahead a bill counts as coming up. */
   billLeadDays: number;
+  /** What a grown-up's note to a child may be (never a plain note). */
+  kidNoteKinds: Array<'encouragement' | 'reminder'>;
 }

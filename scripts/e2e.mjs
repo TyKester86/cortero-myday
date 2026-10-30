@@ -341,6 +341,29 @@ class Client {
   del(p) { return this.req('DELETE', p); }
 }
 
+/*
+ * H6 rail: every Hana write is a proposal until a grown-up confirms it. Tests written before the
+ * rail (when these tools ran at once) ask through hanaAsk, which taps Confirm on exactly those
+ * tools — never on a destructive one, a draft, or anything proposed after reading outside content.
+ */
+const ONCE_IMMEDIATE = new Set(['add_task', 'complete_task', 'add_grocery_items', 'capture_note', 'add_homework', 'move_workout', 'add_bill', 'add_calendar_event', 'set_reminder', 'remember', 'plan_meal', 'add_chore', 'add_chores', 'set_homework_help']);
+async function hanaAsk(c, body, mode = 'companion') {
+  const r = await c.post(`/api/chat/${mode}`, body);
+  if (r.status !== 200 || !Array.isArray(r.data?.actions) || r.data.actions.some((a) => a.tool === 'feed_inbox')) return r;
+  const results = [];
+  for (const [i, a] of r.data.actions.entries()) {
+    if (a.status !== 'pending' || !ONCE_IMMEDIATE.has(a.tool)) continue;
+    const d = await c.post(`/api/hana/actions/${a.id}/confirm`);
+    if (d.status !== 200) continue;
+    r.data.actions[i] = d.data.action;
+    r.data.history = d.data.history;
+    r.data.pending = d.data.pending;
+    results.push(d.data.action.result);
+  }
+  if (results.length && r.data.reply) r.data.reply = { ...r.data.reply, text: `${r.data.reply.text} ${results.join(' ')}` };
+  return r;
+}
+
 /* ---------- server lifecycle ---------- */
 
 let server = null;
@@ -948,11 +971,11 @@ async function build3Monday() {
   await ty.post('/api/household/members/evan/ai-consent', { consent: evanHadConsent });
   eq('a parent switches Avery to direct answers', (await ty.post('/api/household/members/avery/tutor-style', { direct: true })).status, 200);
   check('…and Hana gives direct answers (with the worked steps) instead of hints first', (await avery.post('/api/chat/tutor', { message: 'what is 3x+5=20' })).data.reply.text.includes('rule=direct'));
-  const hint = await ty.post('/api/chat/companion', { message: 'hints for Avery' });
+  const hint = await hanaAsk(ty, { message: 'hints for Avery' });
   check('…or just tells Hana in a word (“hints for Avery”) to switch back', /hints first/.test(hint.data.reply?.text ?? '') && (await avery.post('/api/chat/tutor', { message: 'and now?' })).data.reply.text.includes('rule=hints-first'), hint.data.reply?.text);
   eq('kids can’t change their own homework-help style', (await avery.post('/api/household/members/avery/tutor-style', { direct: true })).status, 403);
   eq('…and it’s only for kids', (await ty.post('/api/household/members/kayla/tutor-style', { direct: true })).status, 404);
-  check('Ask Hana knows the subjects too (for a parent helping with homework)', (await ty.post('/api/chat/companion', { message: 'how do I explain fractions to Evan' })).data.reply.text.includes('teach=expert'));
+  check('Ask Hana knows the subjects too (for a parent helping with homework)', (await hanaAsk(ty, { message: 'how do I explain fractions to Evan' })).data.reply.text.includes('teach=expert'));
   await avery.del('/api/chat/tutor');
   const a1b = await avery.post('/api/chat/tutor', { message: 'Can you just tell me the answer to 3x+5=20?' });
   check('(fresh conversation for the next checks)', a1b.status === 200);
@@ -961,7 +984,7 @@ async function build3Monday() {
   eq('conversation stored server-side', a2.data.history.map((h) => h.who), ['user', 'hana', 'user', 'hana']);
   eq("chats are per person (Evan's tutor history is empty)", (await evan.get('/api/chat/tutor')).data.history.length, 0);
   eq('empty message → 400', (await avery.post('/api/chat/tutor', { message: '  ' })).status, 400);
-  const hana = await ty.post('/api/chat/companion', { message: 'What should I do next?' });
+  const hana = await hanaAsk(ty, { message: 'What should I do next?' });
   check('Ask Hana: companion persona + sees the day', hana.data.reply.text.includes('persona=hana') && hana.data.reply.text.includes('ctx=day'), hana.data.reply.text);
   await kayla.get(`/dev-login?token=${DEV_TOKEN}&member=kayla`);
   eq('tutor is for kids + the student track (Heart of Home → 403)', (await kayla.get('/api/chat/tutor')).status, 403);
@@ -1443,16 +1466,23 @@ async function bigBuild() {
   eq('service worker served, never cached stale', [swr.status, swr.headers.get('cache-control')], [200, 'no-cache']);
 
   section('G. Hana does things (STUBBED model: deterministic intents; real Claude uses the same tools)');
-  const h1 = (await ty.post('/api/chat/companion', { message: 'add task Call the dentist' })).data;
-  eq('“add task …” → done right away', h1.actions.map((a) => [a.tool, a.status, a.destructive]), [['add_task', 'done', false]]);
+  const h0 = (await ty.post('/api/chat/companion', { message: 'add task Call the dentist' })).data;
+  eq('H6 rail: “add task …” is prepared, not done (waits for Confirm)', h0.actions.map((a) => [a.tool, a.status, a.destructive]), [['add_task', 'pending', false]]);
+  check('…the reply says it is prepared, not done', /Prepared, not done yet/.test(h0.reply.text), h0.reply.text);
+  check('…and nothing changed yet', !(await ty.get('/api/day')).data.tasks.some((t) => t.task === 'Call the dentist'));
+  eq('…a kid can’t approve it; another parent can’t either (it’s Ty’s)', [(await avery.post(`/api/hana/actions/${h0.actions[0].id}/confirm`)).status, (await kayla.post(`/api/hana/actions/${h0.actions[0].id}/confirm`)).status], [403, 404]);
+  const h1c = (await ty.post(`/api/hana/actions/${h0.actions[0].id}/confirm`)).data;
+  const h1 = { actions: [h1c.action] };
+  eq('…Ty confirms → done, and who decided is recorded', [h1c.action.status, (await sql('SELECT decided_by, decided_at IS NOT NULL AS at FROM hana_actions WHERE id = $1', [h0.actions[0].id]))[0]], ['done', { decided_by: 1, at: true }]);
+  eq('“add task …” → done after the OK', h1.actions.map((a) => [a.tool, a.status, a.destructive]), [['add_task', 'done', false]]);
   const dentist = (await ty.get('/api/day')).data.tasks.find((t) => t.task === 'Call the dentist');
   check('…the task is really there', !!dentist);
-  await ty.post('/api/chat/companion', { message: 'add oat milk and bananas to the grocery list' });
+  await hanaAsk(ty, { message: 'add oat milk and bananas to the grocery list' });
   const groc = (await ty.get('/api/grocery')).data.items.map((i) => i.item);
   check('groceries added by Hana', groc.includes('oat milk') && groc.includes('bananas'), groc.join(', '));
-  const h2 = (await ty.post('/api/chat/companion', { message: `delete task #${dentist.id}` })).data;
+  const h2 = (await hanaAsk(ty, { message: `delete task #${dentist.id}` })).data;
   eq('“delete task” is only proposed (needs OK)', h2.actions.map((a) => [a.tool, a.status, a.destructive]), [['delete_task', 'pending', true]]);
-  check('…reply says it is NOT done yet', /Not done yet/.test(h2.reply.text), h2.reply.text);
+  check('…reply says it is NOT done yet', /not done yet/i.test(h2.reply.text), h2.reply.text);
   check('…task still there', (await ty.get('/api/day')).data.tasks.some((t) => t.id === dentist.id));
   eq('pending shows on reload', (await ty.get('/api/chat/companion')).data.pending.map((a) => a.summary), [`Delete task #${dentist.id}`]);
   eq("kids can't confirm Hana actions", (await avery.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).status, 403);
@@ -1460,12 +1490,12 @@ async function bigBuild() {
   const conf = (await ty.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).data;
   eq('confirm → done, task gone, Hana says so in chat', [conf.action.status, (await ty.get('/api/day')).data.tasks.some((t) => t.id === dentist.id), conf.history.at(-1).text.startsWith('Done:')], ['done', false, true]);
   eq('confirming twice → 409', (await ty.post(`/api/hana/actions/${h2.actions[0].id}/confirm`)).status, 409);
-  const h3 = (await ty.post('/api/chat/companion', { message: 'clear checked groceries' })).data;
+  const h3 = (await hanaAsk(ty, { message: 'clear checked groceries' })).data;
   const can = (await ty.post(`/api/hana/actions/${h3.actions[0].id}/cancel`)).data;
   eq('cancel → nothing changes', [can.action.status, can.pending.length], ['cancelled', 0]);
-  eq('add homework for a kid by name', (await ty.post('/api/chat/companion', { message: 'add homework for Evan: Spelling list due 2026-10-07' })).data.actions[0].status, 'done');
+  eq('add homework for a kid by name', (await hanaAsk(ty, { message: 'add homework for Evan: Spelling list due 2026-10-07' })).data.actions[0].status, 'done');
   check('…it’s on Evan’s homework', (await ty.get('/api/homework?member=evan')).data.open.some((h) => h.assignment === 'Spelling list' && h.due === '2026-10-07'));
-  eq('unknown kid → action failed (not crashed)', (await ty.post('/api/chat/companion', { message: 'add homework for Zed: x' })).data.actions[0].status, 'failed');
+  eq('unknown kid → action failed (not crashed)', (await hanaAsk(ty, { message: 'add homework for Zed: x' })).data.actions[0].status, 'failed');
   await ty.post('/api/day/tasks', { task: 'Deep: write the plan', priority: 'Important', energy: 'High Brain' });
   await ty.post('/api/day/tasks', { task: 'Easy: reply to texts', priority: 'Important', energy: 'Low Brain' });
   await ty.put('/api/day/checkin', { nervous: 'Fried', sleep: 'OK', fuel: 'eggs', grateful: 'coffee' });
@@ -1765,31 +1795,31 @@ async function careTeam() {
   section('Ask Hana: one message per send — retries never duplicate; a failed answer is kept with Retry; delete and clear');
   const chatCount = async (who) => (await who.get('/api/chat/companion')).data.history.length;
   let n0 = await chatCount(ty);
-  let cr = await ty.post('/api/chat/companion', { message: 'hello there', clientId: 'e2e-msg-0001' });
+  let cr = await hanaAsk(ty, { message: 'hello there', clientId: 'e2e-msg-0001' });
   eq('a send → exactly one message and one reply', [cr.status, (await chatCount(ty)) - n0], [200, 2]);
-  cr = await ty.post('/api/chat/companion', { message: 'hello there', clientId: 'e2e-msg-0001' });
+  cr = await hanaAsk(ty, { message: 'hello there', clientId: 'e2e-msg-0001' });
   eq('the same send again (a retry or a double tap) → nothing new', [cr.status, cr.data.reply, (await chatCount(ty)) - n0], [200, null, 2]);
   n0 = await chatCount(ty);
-  cr = await ty.post('/api/chat/companion', { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
+  cr = await hanaAsk(ty, { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
   check('Hana can’t answer → a clear error', cr.status >= 500 && /could not answer/i.test(cr.data.error), JSON.stringify(cr.data));
   let ch = (await ty.get('/api/chat/companion')).data.history;
   eq('…the message is kept, marked not answered', [ch.length - n0, ch.at(-1).text, ch.at(-1).failed], [1, 'please __stub_fail__ once', true]);
-  cr = await ty.post('/api/chat/companion', { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
+  cr = await hanaAsk(ty, { message: 'please __stub_fail__ once', clientId: 'e2e-msg-0002' });
   ch = cr.data.history;
   eq('Retry → the same message (not a copy) gets its answer', [cr.status, ch.filter((m) => m.text === 'please __stub_fail__ once').length, ch.find((m) => m.clientId === 'e2e-msg-0002').failed, ch.at(-1).who], [200, 1, false, 'hana']);
   // A message that failed before messages had ids (like the old ones on staging): Retry answers it in place.
   const tyMe = (await ty.get('/api/me')).data;
   const [legacy] = await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text, failed) VALUES ($1, $2, 'companion', 'user', 'an old unanswered question', true) RETURNING id", [tyMe.household.id, tyMe.member.id]);
-  cr = await ty.post('/api/chat/companion', { message: 'an old unanswered question', clientId: 'e2e-legacy-0001', retryId: legacy.id });
+  cr = await hanaAsk(ty, { message: 'an old unanswered question', clientId: 'e2e-legacy-0001', retryId: legacy.id });
   ch = cr.data.history;
   eq('an old failed message (no id) → Retry answers that same message: no copy, no leftover failure', [cr.status, ch.filter((m) => m.text === 'an old unanswered question').length, ch.find((m) => m.id === legacy.id)?.failed, ch.at(-1).who], [200, 1, false, 'hana']);
-  eq('…someone else can’t claim it', (await kayla.post('/api/chat/companion', { message: 'x', clientId: 'e2e-legacy-0002', retryId: legacy.id })).status === 200 && (await sql('SELECT client_id FROM chat_messages WHERE id = $1', [legacy.id]))[0].client_id, 'e2e-legacy-0001');
+  eq('…someone else can’t claim it', (await hanaAsk(kayla, { message: 'x', clientId: 'e2e-legacy-0002', retryId: legacy.id })).status === 200 && (await sql('SELECT client_id FROM chat_messages WHERE id = $1', [legacy.id]))[0].client_id, 'e2e-legacy-0001');
   const mineMsg = ch.find((m) => m.clientId === 'e2e-msg-0001');
   eq('nobody else can delete your messages', (await kayla.del(`/api/chat/companion/messages/${mineMsg.id}`)).status, 404);
   ch = (await ty.del(`/api/chat/companion/messages/${mineMsg.id}`)).data.history;
   eq('delete one of your messages', ch.some((m) => m.id === mineMsg.id), false);
   eq('Kayla’s chat is untouched by Ty clearing his', await (async () => {
-    await kayla.post('/api/chat/companion', { message: 'kayla says hi', clientId: 'e2e-msg-k001' });
+    await hanaAsk(kayla, { message: 'kayla says hi', clientId: 'e2e-msg-k001' });
     const before = await chatCount(kayla);
     await ty.del('/api/chat/companion');
     return [await chatCount(ty), (await chatCount(kayla)) === before];
@@ -1816,33 +1846,33 @@ async function careTeam() {
   const own = await ty.req('GET', `/api/chat/attachments/${photoId}`, undefined, { json: false });
   eq('the owner opens their photo (never cached)', [own.status, own.headers.get('content-type'), own.headers.get('cache-control')], [200, 'image/jpeg', 'private, no-store']);
   eq('another grown-up in the house can’t open it', (await kayla.get(`/api/chat/attachments/${photoId}`)).status, 404);
-  eq('…or send it as theirs', (await kayla.post('/api/chat/companion', { message: 'look', attachmentIds: [photoId] })).status, 400);
-  cr = await ty.post('/api/chat/companion', { message: 'what can I make with this?', clientId: 'e2e-att-0001', attachmentIds: [photoId, pdfId, txtId] });
+  eq('…or send it as theirs', (await hanaAsk(kayla, { message: 'look', attachmentIds: [photoId] })).status, 400);
+  cr = await hanaAsk(ty, { message: 'what can I make with this?', clientId: 'e2e-att-0001', attachmentIds: [photoId, pdfId, txtId] });
   check('Hana gets the photo, the PDF and the text file with the message', cr.status === 200 && /images=1/.test(cr.data.reply.text) && /pdfs=1/.test(cr.data.reply.text) && /textfile/.test(cr.data.reply.text), cr.data.reply?.text ?? JSON.stringify(cr.data));
   const sentMsg = cr.data.history.find((m) => m.clientId === 'e2e-att-0001');
   eq('the message shows its attachments', sentMsg.attachments.map((a) => a.name), ['fridge.jpg', 'lease.pdf', 'list.txt']);
-  eq('an attachment goes with one message only', (await ty.post('/api/chat/companion', { message: 'again', attachmentIds: [photoId] })).status, 400);
+  eq('an attachment goes with one message only', (await hanaAsk(ty, { message: 'again', attachmentIds: [photoId] })).status, 400);
   const onlyPhoto = (await attach(ty, photo, 'image/jpeg', 'shelf.jpg')).data.id;
-  cr = await ty.post('/api/chat/companion', { clientId: 'e2e-att-0002', attachmentIds: [onlyPhoto] });
+  cr = await hanaAsk(ty, { clientId: 'e2e-att-0002', attachmentIds: [onlyPhoto] });
   check('a photo with no words is fine — Hana is asked to look at it', cr.status === 200 && /images=1/.test(cr.data.reply.text), JSON.stringify(cr.data).slice(0, 200));
-  eq('more than 4 at once → 400', (await ty.post('/api/chat/companion', { message: 'many', attachmentIds: [1, 2, 3, 4, 5] })).status, 400);
+  eq('more than 4 at once → 400', (await hanaAsk(ty, { message: 'many', attachmentIds: [1, 2, 3, 4, 5] })).status, 400);
   const burst = await Promise.race([
     Promise.all(Array.from({ length: 40 }, (_, i) => (i % 2 ? ty.get(`/api/chat/attachments/${photoId}`) : ty.get('/api/me')).then((r) => r.status))),
     new Promise((ok) => setTimeout(() => ok('hung'), 20000)),
   ]);
   eq('40 requests at once (a chat full of photos loading) → all answered: the server never runs out of database connections', Array.isArray(burst) && burst.every((s) => s === 200) ? 'all 200' : burst, 'all 200');
-  cr = await ty.post('/api/chat/companion', { message: 'and what about dessert?' });
+  cr = await hanaAsk(ty, { message: 'and what about dessert?' });
   check('a later message: Hana is told what was attached earlier (no re-sending the bytes)', cr.status === 200 && !/images=/.test(cr.data.reply.text), cr.data.reply.text);
 
   section('Hana remembers: facts kept across conversations, visible and correctable');
   const tyMem = async () => (await ty.get('/api/hana/memory')).data.memories;
   const m0 = (await tyMem()).length;
-  cr = await ty.post('/api/chat/companion', { message: 'always remember: my son’s teacher is Ms Park' });
+  cr = await hanaAsk(ty, { message: 'always remember: my son’s teacher is Ms Park' });
   eq('“always remember …” → kept', (await tyMem()).some((m) => m.fact === 'my son’s teacher is Ms Park'), true);
-  cr = await ty.post('/api/chat/companion', { message: 'who is the teacher again?' });
+  cr = await hanaAsk(ty, { message: 'who is the teacher again?' });
   check('a later message: Hana has it in mind', new RegExp(`remembers=${m0 + 1}\\b`).test(cr.data.reply.text), cr.data.reply.text);
   await ty.del('/api/chat/companion');
-  cr = await ty.post('/api/chat/companion', { message: 'new conversation — who is the teacher?' });
+  cr = await hanaAsk(ty, { message: 'new conversation — who is the teacher?' });
   check('…even after the conversation is cleared (a new session)', new RegExp(`remembers=${m0 + 1}\\b`).test(cr.data.reply.text), cr.data.reply.text);
   eq('add a memory yourself', (await ty.post('/api/hana/memory', { fact: 'allergic to peanuts' })).status, 201);
   const pea = (await tyMem()).find((m) => m.fact === 'allergic to peanuts');
@@ -1884,7 +1914,7 @@ async function careTeam() {
   eq('every medical entry: a summary, a dated source, and a link to CDC / NIMH / NICE / a DOI', medIssues, []);
   const bookDir = path.join(root, 'api', 'content', 'book');
   eq('no copyright boilerplate in the chapter files', readdirSync(bookDir).filter((f) => /All rights reserved|ISBN|Copyright ©/i.test(readFileSync(path.join(bookDir, f), 'utf8'))), []);
-  const askAs = async (who, message) => (await who.post('/api/chat/companion', { message, clientId: `lib-${randomBytes(4).toString('hex')}` })).data.reply.text;
+  const askAs = async (who, message) => (await hanaAsk(who, { message, clientId: `lib-${randomBytes(4).toString('hex')}` })).data.reply.text;
   check('a question the book answers → Hana gets the book passages', /library=book/.test(await askAs(kayla, 'What is the Men’s Executive Command System?')));
   check('a follow-up still has the passages her last answers used (so she never “un-cites” them)', /library=book/.test(await askAs(kayla, 'Thanks! Can you say that more simply?')));
   await ty.del('/api/chat/companion');
@@ -1922,7 +1952,7 @@ async function careTeam() {
   eq('confirm-first tools are strict', toolDefs.filter((t) => ['forget', 'run_errand', 'send_groceries', 'delete_task', 'remove_bill', 'clear_checked_groceries'].includes(t.name) && !t.strict).map((t) => t.name), []);
 
   section('Hana as a personal assistant: calendar, reminders by push, memory, meals, chores, kids, money');
-  const say = async (message) => (await kayla.post('/api/chat/companion', { message })).data;
+  const say = async (message) => (await hanaAsk(kayla, { message })).data;
   const tomorrowCal = plus(calToday, 1);
   let hr = await say(`put Book club on the calendar ${plus(calToday, 2)} at 19:30`);
   check('“put … on the calendar” → a real calendar event', (await kayla.get(`/api/calendar?from=${calToday}&to=${plus(calToday, 5)}`)).data.occurrences.some((o) => o.title === 'Book club' && o.startTime === '19:30'), hr.reply?.text);
@@ -2096,7 +2126,7 @@ async function careTeam() {
   sent = (await ty.post('/api/grocery/send/kroger')).data;
   eq('Kroger cart filled; what it can’t find is listed', [sent.url, sent.added.includes('Milk'), sent.notFound], ['https://www.kroger.com/cart', true, ['Unobtainium zzz']]);
   eq('Kroger tokens are encrypted at rest', (await sql("SELECT COUNT(*)::int AS n FROM grocer_links WHERE position(convert_to('stub-', 'UTF8') in access_enc) > 0 OR position(convert_to('stub-', 'UTF8') in refresh_enc) > 0"))[0].n, 0);
-  let gh = (await ty.post('/api/chat/companion', { message: 'order the groceries from Kroger' })).data;
+  let gh = (await hanaAsk(ty, { message: 'order the groceries from Kroger' })).data;
   const gAct = gh.actions.find((a) => a.tool === 'send_groceries');
   eq('“order the groceries” → Hana asks first (nothing sent yet)', gAct?.status, 'pending');
   eq('kids can’t confirm it', (await avery.post(`/api/hana/actions/${gAct.id}/confirm`)).status, 403);
@@ -2108,14 +2138,14 @@ async function careTeam() {
 
   section('Flights: Hana searches and hands over booking links; she never books or pays');
   const fday = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
-  let fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to lax on ${fday(30)} returning ${fday(34)} for 2 adults` })).data;
+  let fl = (await hanaAsk(ty, { message: `find flights from atl to lax on ${fday(30)} returning ${fday(34)} for 2 adults` })).data;
   check('cheapest first, priced for both travelers, stops and times', /1\) Spirit \$378 total — ATL 6:00 AM → LAX 1:40 PM, 1 stop; LAX 3:30 PM → ATL 10:45 PM, nonstop/.test(fl.reply.text), fl.reply.text.slice(0, 300));
   check('a Google Flights search, filled in', fl.reply.text.includes('https://www.google.com/travel/flights?q=Flights%20to%20LAX%20from%20ATL%20on%20' + fday(30) + '%20through%20' + fday(34) + '%20for%202%20adults'), fl.reply.text);
   check('…and Kayak', fl.reply.text.includes(`https://www.kayak.com/flights/ATL-LAX/${fday(30)}/${fday(34)}/2adults?sort=price_a`), fl.reply.text);
   check('nothing to confirm — searching books nothing', fl.actions.every((a) => a.status === 'done'));
-  fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to lax on 2020-01-01` })).data;
+  fl = (await hanaAsk(ty, { message: `find flights from atl to lax on 2020-01-01` })).data;
   check('a date in the past is refused', /already passed/.test(fl.reply.text), fl.reply.text);
-  fl = (await ty.post('/api/chat/companion', { message: `find flights from atl to atl on ${fday(30)}` })).data;
+  fl = (await hanaAsk(ty, { message: `find flights from atl to atl on ${fday(30)}` })).data;
   check('same airport both ways is refused', /are the same/.test(fl.reply.text), fl.reply.text);
 
   section('Hana’s errands: saved logins (encrypted, never shown) + a real browser; nothing is bought without an OK');
@@ -2136,7 +2166,7 @@ async function careTeam() {
     }
   };
   if (!robotChromium) check('Playwright’s Chromium is installed (for the errand browser)', false);
-  let eh = (await ty.post('/api/chat/companion', { message: 'errand on Corner Store: buy milk' })).data;
+  let eh = (await hanaAsk(ty, { message: 'errand on Corner Store: buy milk' })).data;
   const errAct = eh.actions.find((a) => a.tool === 'run_errand');
   eq('“go to the store and buy milk” → Hana asks first', errAct?.status, 'pending');
   eh = (await ty.post(`/api/hana/actions/${errAct.id}/confirm`)).data;
@@ -2915,19 +2945,19 @@ async function privacyRules() {
   eq('a new household is on Family: Hana 50 messages a day, shown on the Billing page', (await capC.get('/api/billing')).data.hanaDailyCap, 50);
   await fill(49);
   await sql("INSERT INTO chat_messages (household_id, member_id, mode, who, text, failed) VALUES ($1, $2, 'companion', 'user', 'not answered', true)", [capHh, capMe.member.id]);
-  eq('Family: the 50th Hana message of the day goes through (ones Hana couldn’t answer don’t count)', (await capC.post('/api/chat/companion', { message: 'number fifty' })).status, 200);
-  const capped = await capC.post('/api/chat/companion', { message: 'one more' });
+  eq('Family: the 50th Hana message of the day goes through (ones Hana couldn’t answer don’t count)', (await hanaAsk(capC, { message: 'number fifty' })).status, 200);
+  const capped = await hanaAsk(capC, { message: 'one more' });
   eq('…the 51st is refused on the server: 50 a day per household, with a friendly reason and an upgrade to Family+', [capped.status, capped.data.code, capped.data.details?.cap, capped.data.details?.upgrade, /switch to Family\+ for unlimited Hana/.test(capped.data.error)], [429, 'hana_daily_limit', 50, 'familyplus', true]);
-  eq('…other households aren’t affected', (await ty.post('/api/chat/companion', { message: 'hi' })).status, 200);
+  eq('…other households aren’t affected', (await hanaAsk(ty, { message: 'hi' })).status, 200);
   await sql("UPDATE chat_messages SET created_at = now() - interval '1 day' WHERE household_id = $1", [capHh]);
-  eq('…it resets at midnight (yesterday’s messages don’t count)', (await capC.post('/api/chat/companion', { message: 'a new day' })).status, 200);
+  eq('…it resets at midnight (yesterday’s messages don’t count)', (await hanaAsk(capC, { message: 'a new day' })).status, 200);
   await fill(60);
   await sql("UPDATE households SET plan_id = (SELECT id FROM billing_plans WHERE code = 'familyplus-monthly') WHERE id = $1", [capHh]);
-  eq('Family+: unlimited Hana (60 already today, still answered), and the Billing page says so', [(await capC.post('/api/chat/companion', { message: 'plus plan' })).status, (await capC.get('/api/billing')).data.hanaDailyCap], [200, null]);
+  eq('Family+: unlimited Hana (60 already today, still answered), and the Billing page says so', [(await hanaAsk(capC, { message: 'plus plan' })).status, (await capC.get('/api/billing')).data.hanaDailyCap], [200, null]);
   await sql("UPDATE households SET plan_id = (SELECT id FROM billing_plans WHERE code = 'solo-monthly') WHERE id = $1", [capHh]);
-  eq('Solo: 50 a day, like Family', [(await capC.post('/api/chat/companion', { message: 'solo plan' })).data.code, (await capC.get('/api/billing')).data.hanaDailyCap], ['hana_daily_limit', 50]);
+  eq('Solo: 50 a day, like Family', [(await hanaAsk(capC, { message: 'solo plan' })).data.code, (await capC.get('/api/billing')).data.hanaDailyCap], ['hana_daily_limit', 50]);
   await sql("UPDATE households SET billing_status = 'comped' WHERE id = $1", [capHh]);
-  eq('a complimentary household isn’t metered', (await capC.post('/api/chat/companion', { message: 'comped' })).status, 200);
+  eq('a complimentary household isn’t metered', (await hanaAsk(capC, { message: 'comped' })).status, 200);
 
   section('one household can never act on another household’s people (chores, curfews, one-on-ones, rewards, homework, kid devices)');
   const tyHhId = (await ty.get('/api/me')).data.household.id;
@@ -6866,7 +6896,7 @@ async function hanaSeed() {
   await hanaIds.tess.post('/api/homework?member=tim', { assignment: 'Spelling list', subject: 'English', due: '2026-11-03' });
 }
 
-const hanaSay = async (c, message, mode = 'companion') => (await c.post(`/api/chat/${mode}`, { message, clientId: `hana-${Math.random().toString(36).slice(2, 12)}` })).data;
+const hanaSay = async (c, message, mode = 'companion') => (await hanaAsk(c, { message, clientId: `hana-${Math.random().toString(36).slice(2, 12)}` }, mode)).data;
 
 async function hanaBrainSuite() {
   try {
@@ -6876,6 +6906,7 @@ async function hanaBrainSuite() {
     await hanaBriefChecks();
     await hanaCoachChecks();
     await hanaWatchChecks();
+    await hanaRailChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -6914,7 +6945,7 @@ async function hanaBrainChecks() {
   eq('…asking for a sibling’s homework → nothing (404)', (await evan.get('/api/hana/tools/homework?person=Avery')).status, 404);
   eq('chores: only his', (await evan.get('/api/hana/tools/chores')).data.data.map((d) => d.member), ['Evan']);
   eq('money and the Feed: refused for a child (403 ×3)', [(await evan.get('/api/hana/tools/bills')).status, (await evan.get('/api/hana/tools/balance')).status, (await evan.get('/api/hana/tools/feed')).status], [403, 403, 403]);
-  eq('…and so is the companion chat (her tools never run for a kid)', (await evan.post('/api/chat/companion', { message: 'what bills are due in 7 days' })).status, 403);
+  eq('…and so is the companion chat (her tools never run for a kid)', (await hanaAsk(evan, { message: 'what bills are due in 7 days' })).status, 403);
 
   section('Hana H8 · household isolation (Kester ⇄ Test house), both directions');
   eq('Test house schedule: only its own event', (await tess.get(`/api/hana/tools/schedule?from=${HANA_DAY}`)).data.data.map((e) => e.title), ['Tim karate']);
@@ -7123,12 +7154,114 @@ async function hanaCoachChecks() {
   await startServer(hanaNow());
 }
 
+async function hanaRailChecks() {
+  const tess = hanaIds.tess;
+  const raw = (c, message) => c.post('/api/chat/companion', { message, clientId: `rail-${Math.random().toString(36).slice(2, 12)}` });
+
+  section('Hana H6 · rails: every write is prepared, then a grown-up confirms it');
+  let r = (await raw(ty, 'add task Rail check task')).data;
+  eq('a write is pending (not done), with nothing changed yet', [r.actions.map((a) => [a.tool, a.status]), (await ty.get('/api/day')).data.tasks.some((t) => t.task === 'Rail check task')], [[['add_task', 'pending']], false]);
+  eq('…the other parent can’t confirm it, nor can a kid, nor another household', [(await kayla.post(`/api/hana/actions/${r.actions[0].id}/confirm`)).status, (await avery.post(`/api/hana/actions/${r.actions[0].id}/confirm`)).status, (await tess.post(`/api/hana/actions/${r.actions[0].id}/confirm`)).status], [404, 403, 404]);
+  eq('…cancel → nothing happens, and it’s logged as discarded by Ty', [(await ty.post(`/api/hana/actions/${r.actions[0].id}/cancel`)).data.action.status, (await ty.get('/api/day')).data.tasks.some((t) => t.task === 'Rail check task')], ['cancelled', false]);
+  r = (await raw(ty, 'always remember: we take the bus on Fridays')).data;
+  eq('remembering is a proposal too (nothing saved until Confirm)', [r.actions.map((a) => [a.tool, a.status]), (await ty.get('/api/hana/memory')).data.memories.some((m) => m.fact === 'we take the bus on Fridays')], [[['remember', 'pending']], false]);
+  await ty.post(`/api/hana/actions/${r.actions[0].id}/cancel`);
+  r = (await raw(ty, "what's on the calendar")).data;
+  eq('reading needs no OK (the calendar runs right away)', r.actions.map((a) => [a.tool, a.status]), [['get_calendar', 'done']]);
+
+  section('Hana H6 · drafts: a note drafted for a parent’s OK, delivered only in the app');
+  r = (await raw(ty, 'send Avery encouragement: Proud of you for starting the lab report!')).data;
+  const d = r.actions[0];
+  eq('a draft note waits, with what it says and who it’s for', [d.tool, d.status, d.draft], ['draft_note', 'pending', { to: 'Avery', kind: 'encouragement', text: 'Proud of you for starting the lab report!' }]);
+  eq('…it shows on reload, with its words', (await ty.get('/api/chat/companion')).data.pending.find((a) => a.id === d.id)?.draft?.text, 'Proud of you for starting the lab report!');
+  eq('…nothing reached Avery yet', (await avery.get('/api/hana/notes')).data.notes.length, 0);
+  eq('only Ty can edit it (Kayla, Avery, another household: not found / not allowed)', [(await kayla.patch(`/api/hana/actions/${d.id}`, { text: 'x' })).status, (await avery.patch(`/api/hana/actions/${d.id}`, { text: 'x' })).status, (await tess.patch(`/api/hana/actions/${d.id}`, { text: 'x' })).status], [404, 404, 404]);
+  const ed = (await ty.patch(`/api/hana/actions/${d.id}`, { text: 'So proud of you for starting the lab report — want help tonight?' })).data.action;
+  eq('Ty edits it → the new words, still waiting', [ed.status, ed.draft.text], ['pending', 'So proud of you for starting the lab report — want help tonight?']);
+  eq('an empty edit is refused', (await ty.patch(`/api/hana/actions/${d.id}`, { text: '  ' })).status, 400);
+  const sent = (await ty.post(`/api/hana/actions/${d.id}/confirm`)).data.action;
+  eq('Send → delivered in MyDay', [sent.status, sent.result], ['done', 'Delivered to Avery in MyDay.']);
+  const an = (await avery.get('/api/hana/notes')).data.notes;
+  eq('Avery sees it, from Ty, as encouragement', an.map((n) => [n.from, n.kind, n.body, n.read]), [['Ty', 'encouragement', 'So proud of you for starting the lab report — want help tonight?', false]]);
+  eq('…Evan doesn’t, Kayla doesn’t, the Test house doesn’t', [(await evan.get('/api/hana/notes')).data.notes.length, (await kayla.get('/api/hana/notes')).data.notes.length, (await tess.get('/api/hana/notes')).data.notes.length], [0, 0, 0]);
+  eq('…only Avery can mark it read', [(await evan.post(`/api/hana/notes/${an[0].id}/read`)).status, (await tess.post(`/api/hana/notes/${an[0].id}/read`)).status, (await avery.post(`/api/hana/notes/${an[0].id}/read`)).status], [404, 404, 200]);
+  eq('…nothing was emailed or pushed for it', (await sql("SELECT COUNT(*)::int AS n FROM hana_notes WHERE id = $1 AND action_id = $2", [an[0].id, d.id]))[0].n, 1);
+  r = (await raw(ty, 'send Avery note: here is the plan for the weekend')).data;
+  eq('a plain note to a kid is refused (kids only get encouragement or reminders) — nothing drafted', [r.actions.length, /can only be encouragement or reminder/.test(r.reply.text)], [0, true]);
+  await ty.put('/api/hana/settings', { kidNoteKinds: ['reminder'] });
+  r = (await raw(kayla, 'send Evan encouragement: you rock')).data;
+  eq('a parent narrows it to reminders → encouragement to a kid is refused, for either parent', [r.actions.length, /can only be reminder/.test(r.reply.text)], [0, true]);
+  r = (await raw(kayla, 'send Evan reminder: piano at 4')).data;
+  eq('…a reminder still drafts', r.actions.map((a) => [a.tool, a.status, a.draft?.kind]), [['draft_note', 'pending', 'reminder']]);
+  await kayla.post(`/api/hana/actions/${r.actions[0].id}/cancel`);
+  eq('…settings: kid note kinds round-trip, and a bad kind → 400', [(await ty.get('/api/hana/settings')).data.kidNoteKinds, (await ty.put('/api/hana/settings', { kidNoteKinds: ['note'] })).status], [['reminder'], 400]);
+  await ty.put('/api/hana/settings', { kidNoteKinds: ['encouragement', 'reminder'] });
+  r = (await raw(ty, 'send Kayla note: can you grab milk on the way home?')).data;
+  await ty.post(`/api/hana/actions/${r.actions[0].id}/confirm`);
+  eq('a note between parents is any short note', (await kayla.get('/api/hana/notes')).data.notes.map((n) => [n.from, n.kind, n.body]), [['Ty', 'note', 'can you grab milk on the way home?']]);
+  r = (await raw(tess, 'send Avery encouragement: hi')).data;
+  eq('another household can’t address our kids (no one by that name there)', [r.actions.length, /no one named Avery/.test(r.reply.text)], [0, true]);
+
+  section('Hana H6 · a draft from an escalation (proactive, still behind the rail)');
+  let [esc] = await sql("SELECT id FROM hana_items WHERE member_id = $1 AND surface = 'escalation' AND subject_member_id = $2 ORDER BY id LIMIT 1", [hanaIds.Ty, hanaIds.Avery]);
+  if (!esc) [esc] = await sql("INSERT INTO hana_items (household_id, member_id, surface, category, item_key, subject_member_id, text, source, as_of, shown_on) VALUES (1, $1, 'escalation', 'homework', 'rail:atrisk', $2, 'Avery hasn’t started the lab report yet.', 'Homework list', now(), $3) RETURNING id", [hanaIds.Ty, hanaIds.Avery, HANA_DAY]);
+  eq('only the parent it was shown to can draft from it (Kayla’s copy is hers; Tess: not found; Avery: not allowed)', [(await kayla.post(`/api/hana/alerts/${esc.id}/draft`)).status, (await tess.post(`/api/hana/alerts/${esc.id}/draft`)).status, (await avery.post(`/api/hana/alerts/${esc.id}/draft`)).status], [404, 404, 403]);
+  const pd = (await ty.post(`/api/hana/alerts/${esc.id}/draft`)).data.action;
+  eq('“Prepare a note” → a kind check-in to Avery, waiting for Ty', [pd.tool, pd.status, pd.draft.to, pd.draft.kind, /proud of you/i.test(pd.draft.text)], ['draft_note', 'pending', 'Avery', 'encouragement', true]);
+  check('…in gentle words (never late, behind or missed)', !/overdue|late\b|behind|missed|forgot/i.test(pd.draft.text), pd.draft.text);
+  eq('…discard → nothing reaches Avery', [(await ty.post(`/api/hana/actions/${pd.id}/cancel`)).data.action.status, (await avery.get('/api/hana/notes')).data.notes.length], ['cancelled', 1]);
+  eq('…and its origin is recorded as the coach', (await sql('SELECT origin FROM hana_actions WHERE id = $1', [pd.id]))[0].origin, 'coach');
+
+  section('Hana H6 · the parents’ log: who approved or discarded what, and when');
+  const tyLog = (await ty.get('/api/hana/log')).data.log;
+  const sentRow = tyLog.find((l) => l.id === d.id);
+  eq('the sent note: approved by Ty, edited, with a time', [sentRow?.status, sentRow?.decidedBy, sentRow?.edited, !!sentRow?.decidedAt], ['done', 'Ty', true, true]);
+  eq('a discarded write shows as discarded', tyLog.some((l) => l.summary.includes('Rail check task') && l.status === 'cancelled' && l.decidedBy === 'Ty'), true);
+  const kLog = (await kayla.get('/api/hana/log')).data.log;
+  eq('Kayla sees every family note (Ty’s too) but not Ty’s own chat actions', [kLog.some((l) => l.id === d.id), kLog.some((l) => l.summary.includes('Rail check task'))], [true, false]);
+  eq('kids have no log; another household sees none of ours', [(await avery.get('/api/hana/log')).status, (await tess.get('/api/hana/log')).data.log.some((l) => tyLog.some((t) => t.id === l.id))], [403, false]);
+
+  section('Hana · universal capability: a couldn’t is a report (what she tried, what she prepared)');
+  r = (await raw(ty, 'call the dentist office')).data;
+  eq('no phone tool → a gap is logged, nothing to confirm', r.actions.map((a) => [a.tool, a.status]), [['report_gap', 'done']]);
+  const rep = (await kayla.get(`/api/hana/report?month=${HANA_DAY.slice(0, 7)}`)).data;
+  check('the family report lists the month’s gaps (for both parents): what, tried, prepared', rep.gaps.some((g) => /Call the dentist office — tried: MyDay has no phone calling — prepared instead/.test(g.text)), JSON.stringify(rep.gaps));
+  eq('…not in another household’s report', (await tess.get(`/api/hana/report?month=${HANA_DAY.slice(0, 7)}`)).data.gaps.length, 0);
+  eq('…and the product backlog event carries the category only (no household, no words)', (await sql("SELECT household_id, member_id, props FROM events WHERE name = 'hana_couldnt' ORDER BY id DESC LIMIT 1"))[0], { household_id: null, member_id: null, props: { category: 'connector' } });
+  eq('taste misses have their own section (empty until something misses)', Array.isArray(rep.tasteMisses), true);
+
+  section('Hana H9 · the monthly report email: once, to each parent, on the 1st');
+  const box0 = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.length;
+  eq('not before the 1st', (await ty.post('/api/hana/run-report?at=2026-11-30T15:00:00Z')).data, null);
+  const sentRep = (await ty.post('/api/hana/run-report?at=2026-12-01T15:00:00Z')).data;
+  const mail = (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail.slice(box0);
+  const [{ n: parentsWithEmail }] = await sql("SELECT COUNT(DISTINCT m.id)::int AS n FROM household_members m JOIN users u ON u.member_id = m.id WHERE m.household_id = 1 AND m.kind = 'adult' AND m.archived_at IS NULL AND u.email LIKE '%@%'");
+  eq('Dec 1, 9 AM: November’s report to every parent (each their own email)', [sentRep, mail.length, mail.every((m) => /family report for November 2026/.test(m.subject))], [{ month: '2026-11', sent: parentsWithEmail }, parentsWithEmail, true]);
+  check('…with the wins, where Hana was wrong, and the gaps in it', mail.every((m) => /Where Hana was wrong/.test(m.text) && /What Hana couldn’t do/.test(m.text) && /Call the dentist office/.test(m.text)), mail[0]?.text);
+  eq('…never twice', (await ty.post('/api/hana/run-report?at=2026-12-01T18:00:00Z')).data, null);
+  eq('kids can’t trigger it', (await avery.post('/api/hana/run-report')).status, 403);
+
+  section('Hana H7 stage 1 · push-to-talk: audio in, the words heard out (nothing sent on its own)');
+  const talk = (c, words, type = 'audio/webm') => c.req('POST', '/api/hana/voice', words.length >= 16 ? `STUB-TRANSCRIPT:${words}` : words, { json: false, headers: { 'Content-Type': type, 'X-MyDay-Upload': '1' } });
+  let v = await talk(ty, 'add task Buy stamps');
+  eq('a parent holds the mic → the words come back to the message box', [v.status, v.data.text], [200, 'add task Buy stamps']);
+  eq('…and nothing happened from it (no task, no message)', (await ty.get('/api/day')).data.tasks.some((t) => t.task === 'Buy stamps'), false);
+  eq('not audio → 415; nothing recorded → 400', [(await talk(ty, 'x'.repeat(40), 'image/png')).status, (await talk(ty, 'hi')).status], [415, 400]);
+  await sql('UPDATE household_members SET ai_consent_at = NULL WHERE id = $1', [hanaIds.Evan]);
+  eq('a child under 13 needs a parent’s AI consent first (their voice goes to a provider)', (await talk(evan, 'what is my homework today')).status, 409);
+  v = await talk(avery, 'how do I start my lab report');
+  eq('a teen with the homework helper can talk to it', [v.status, v.data.text], [200, 'how do I start my lab report']);
+
+  section('Hana · the thinking trail: real steps, for the sender only');
+  eq('no steps for a message that isn’t being answered (or someone else’s)', [(await ty.get('/api/chat/companion/progress/rail-unknown-0001')).data.steps, (await kayla.get('/api/chat/companion/progress/rail-unknown-0001')).data.steps], [[], []]);
+}
+
 async function hanaWatchChecks() {
   const tess = hanaIds.tess;
   const watchItems = async (memberId) => sql("SELECT category, item_key, text, pushed_at FROM hana_items WHERE surface = 'watch' AND member_id = $1 ORDER BY id", [memberId]);
 
   section('Hana H5 · settings: parent-set, both parents are admins, school-night quiet hours by default');
-  eq('defaults: quiet 9 PM–7 AM on school nights (Sun–Thu), $200 low-balance mark, bills 3 days ahead', (await ty.get('/api/hana/settings')).data, { quietStart: '21:00', quietEnd: '07:00', quietDays: [7, 1, 2, 3, 4], pausedUntil: null, muted: [], lowBalance: 200, billLeadDays: 3 });
+  eq('defaults: quiet 9 PM–7 AM on school nights (Sun–Thu), $200 low-balance mark, bills 3 days ahead', (await ty.get('/api/hana/settings')).data, { quietStart: '21:00', quietEnd: '07:00', quietDays: [7, 1, 2, 3, 4], pausedUntil: null, muted: [], lowBalance: 200, billLeadDays: 3, kidNoteKinds: ['encouragement', 'reminder'] });
   eq('kids can’t see or change them (403 ×2), nor run the watch', [(await evan.get('/api/hana/settings')).status, (await avery.put('/api/hana/settings', { muted: ['pickup'] })).status, (await evan.post('/api/hana/run-watch')).status], [403, 403, 403]);
   eq('a bad setting → 400', [(await ty.put('/api/hana/settings', { quietStart: '9pm' })).status, (await ty.put('/api/hana/settings', { muted: ['everything'] })).status], [400, 400]);
 

@@ -8,7 +8,7 @@ import { adminRouter, billingRouter, billingWebhookRouter } from './billing.js';
 import { billsRouter } from './bills.js';
 import { careRouter, proRouter } from './care.js';
 import { assistantRouter } from './assistant.js';
-import { hqRouter } from './hq.js';
+import { hanaVoiceRouter, hqRouter } from './hq.js';
 import { errandsRouter } from './errands.js';
 import { grocersRouter } from './grocers.js';
 import { inboundRouter, inboxRouter } from './inbox.js';
@@ -51,4 +51,4 @@ export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, c
 export const publicRoutes: Router[] = [calendarFeedRouter, inboundRouter, socialPublicRouter, feedGrowthPublicRouter, providersPublicRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
-export const uploadRoutes: Router[] = [lectureUploadRouter, meetingUploadRouter, chatUploadRouter, photoUploadRouter, communityUploadRouter, socialUploadRouter, billingWebhookRouter, appleCallbackRouter, oauthTokenRouter, feedApiV1Router];
+export const uploadRoutes: Router[] = [lectureUploadRouter, meetingUploadRouter, chatUploadRouter, hanaVoiceRouter, photoUploadRouter, communityUploadRouter, socialUploadRouter, billingWebhookRouter, appleCallbackRouter, oauthTokenRouter, feedApiV1Router];

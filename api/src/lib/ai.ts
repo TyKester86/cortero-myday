@@ -266,9 +266,18 @@ class StubModel implements ChatModel {
 }
 
 let cached: ChatModel | null | undefined;
+let fastCached: ChatModel | null | undefined;
 
-/** The configured model, or null when chat isn't set up (no key, no stub). */
-export function chatModel(): ChatModel | null {
+/**
+ * The configured model, or null when chat isn't set up (no key, no stub).
+ * fast: a quick question (short, no files) may go to CHAT_FAST_MODEL when one is set; anything else, and
+ * every install without it, gets the main model.
+ */
+export function chatModel(fast = false): ChatModel | null {
+  if (fast && process.env.ANTHROPIC_KEY && process.env.CHAT_FAST_MODEL) {
+    fastCached ??= new ClaudeModel(process.env.ANTHROPIC_KEY, process.env.CHAT_FAST_MODEL);
+    return fastCached;
+  }
   if (cached !== undefined) return cached;
   const key = process.env.ANTHROPIC_KEY ?? '';
   if (key) cached = new ClaudeModel(key, process.env.CHAT_MODEL || 'claude-opus-5-5');

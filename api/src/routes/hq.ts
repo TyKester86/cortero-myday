@@ -13,8 +13,13 @@
  * H5: GET/PUT /api/hana/settings — parents: quiet hours, thresholds, mutes, quiet her.
  *     The watch runs every 15 minutes per household (job hana-watch).
  * H9: GET /api/hana/report?month=YYYY-MM — parents only, wins and where Hana was wrong.
+ * H6: PATCH /api/hana/actions/:id — edit a drafted note before it goes (the proposer only).
+ *     POST /api/hana/alerts/:id/draft — a kind check-in drafted from a homework escalation.
+ *     GET /api/hana/notes, POST /api/hana/notes/:id/read — notes delivered to you, in the app.
+ *     GET /api/hana/log — parents: what Hana prepared, who approved or discarded it, when.
+ * H7 Stage 1: POST /api/hana/voice — push-to-talk audio in, the words heard out (nothing sent).
  */
-import { Router } from 'express';
+import express, { Router, type Request } from 'express';
 import type { DateStr } from '@myday/shared';
 import { config } from '../config.js';
 import { asSystem, inHousehold, pool } from '../db.js';
@@ -25,11 +30,19 @@ import { registerJob } from '../lib/schedulers.js';
 import { requireParent, viewerOf } from '../lib/chief/scope.js';
 import { balances, billsDue, choresFor, familyFor, feedInbox, healthFor, homeworkFor, scheduleFor } from '../lib/chief/tools.js';
 import { briefFor, markItem, type BriefKind, type ItemOutcome } from '../lib/chief/brief.js';
-import { familyReport } from '../lib/chief/needle.js';
+import { familyReport, reportEmail } from '../lib/chief/needle.js';
+import { sendMail } from '../lib/mail.js';
+import { listMembers } from '../lib/members.js';
 import { coachFor, coachTarget, dismissNudge, refreshEscalations, setStep } from '../lib/chief/coach.js';
 import { runWatch, saveSettings, settingsOf } from '../lib/chief/watch.js';
+import { auditLog, draftFromEscalation, editDraft, markNoteRead, notesFor } from '../lib/hana.js';
+import { logEvent } from '../lib/events.js';
+import { rateLimiter } from '../lib/pin.js';
+import { transcriber } from '../lib/transcribe.js';
+import { requireAiConsent } from './account.js';
 
 export const hqRouter = Router();
+export const hanaVoiceRouter = Router();
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const dateQ = (v: unknown, fallback: DateStr): DateStr => (typeof v === 'string' && DATE.test(v) ? v : fallback);
@@ -145,6 +158,48 @@ hqRouter.put('/api/hana/settings', async (req, res) => {
   res.json(await saveSettings(v, req.body as Record<string, unknown>));
 });
 
+hqRouter.patch('/api/hana/actions/:id', async (req, res) => {
+  res.json({ action: await editDraft(self(req), idParam(req.params.id), (req.body as { text?: unknown }).text) });
+});
+
+hqRouter.post('/api/hana/alerts/:id/draft', async (req, res) => {
+  res.json({ action: await draftFromEscalation(self(req), idParam(req.params.id)) });
+});
+
+hqRouter.get('/api/hana/notes', async (req, res) => {
+  res.json({ notes: await notesFor(self(req)) });
+});
+
+hqRouter.post('/api/hana/notes/:id/read', async (req, res) => {
+  await markNoteRead(self(req), idParam(req.params.id));
+  res.json({ ok: true });
+});
+
+hqRouter.get('/api/hana/log', async (req, res) => {
+  res.json({ log: await auditLog(self(req)) });
+});
+
+// H7 Stage 1: only when someone holds the mic button (never always-listening); up to ~60 seconds.
+const VOICE_MAX = 3 * 1024 * 1024;
+const voiceLimit = rateLimiter(Number(process.env.VOICE_PER_HOUR) || 40, 60 * 60_000);
+const AUDIO = /^audio\/(webm|ogg|mp4|mpeg|wav|x-m4a|aac)(;.*)?$/;
+hanaVoiceRouter.post('/api/hana/voice', express.raw({ type: () => true, limit: VOICE_MAX }), async (req: Request, res) => {
+  const me = self(req);
+  // A child's voice goes to a transcription provider: under 13, a parent turns that on first.
+  await requireAiConsent(me);
+  const t = transcriber();
+  if (!t) throw new HttpError(503, 'Talking to Hana needs a grown-up to finish setting it up');
+  const mime = String(req.headers['content-type'] ?? '');
+  if (!AUDIO.test(mime) && !(t.kind === 'stub' && mime.startsWith('text/plain'))) throw new HttpError(415, 'That isn’t audio Hana can hear');
+  const audio = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (audio.length < 16) throw new HttpError(400, 'Nothing was recorded — hold the button while you talk');
+  if (!voiceLimit(String(me.id))) throw new HttpError(429, 'That’s a lot of talking — try again soon');
+  const ext = (mime.match(/audio\/(\w+)/)?.[1] ?? 'webm').replace('x-m4a', 'm4a').replace('mpeg', 'mp3');
+  const text = (await t.transcribe(audio, mime.split(';')[0] ?? 'audio/webm', `voice.${ext}`)).trim().slice(0, 2000);
+  await logEvent('hana_voice', { chars: text.length }, me.id);
+  res.json({ text });
+});
+
 /** The watch over every household, each inside its own scope. */
 export async function runAllWatches(at: Date = new Date()): Promise<number> {
   const { rows } = await asSystem(() => pool.query<{ id: number }>("SELECT DISTINCT household_id AS id FROM household_members WHERE kind = 'adult' AND archived_at IS NULL"));
@@ -168,3 +223,48 @@ hqRouter.post('/api/hana/run-watch', async (req, res) => {
 });
 
 registerJob({ name: 'hana-watch', everyMs: 15 * 60 * 1000, run: async () => void (await runAllWatches()) });
+
+/** H9: on the 1st (from 8 AM household time), last month's report goes to each parent's own email — once. */
+export async function sendMonthlyReport(at: Date = new Date()): Promise<{ month: string; sent: number } | null> {
+  const local = new Intl.DateTimeFormat('en-CA', { timeZone: config.tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(at);
+  const part = (t: string): number => Number(local.find((p) => p.type === t)?.value);
+  if (part('day') !== 1 || part('hour') < 8) return null;
+  const y = part('year');
+  const mo = part('month');
+  const month = `${mo === 1 ? y - 1 : y}-${String(mo === 1 ? 12 : mo - 1).padStart(2, '0')}`;
+  const { rows: s } = await pool.query<{ sent: string | null }>('SELECT report_sent_month AS sent FROM hana_settings LIMIT 1');
+  if (s[0]?.sent === month) return null;
+  // Only a family Hana actually worked for that month gets a report.
+  const { rows: active } = await pool.query("SELECT 1 FROM hana_items WHERE shown_on >= $1::date AND shown_on < ($1::date + interval '1 month') LIMIT 1", [`${month}-01`]);
+  if (!active.length) return null;
+  await pool.query(
+    'INSERT INTO hana_settings (report_sent_month) VALUES ($1) ON CONFLICT (household_id) DO UPDATE SET report_sent_month = EXCLUDED.report_sent_month',
+    [month],
+  );
+  let sent = 0;
+  for (const p of (await listMembers()).filter((m) => m.kind === 'adult')) {
+    const { rows } = await pool.query<{ email: string }>("SELECT email FROM users WHERE member_id = $1 AND email LIKE '%@%' LIMIT 1", [p.id]);
+    if (!rows[0]) continue;
+    const mail = reportEmail(await familyReport(viewerOf(p), month), config.publicUrl);
+    if (await sendMail({ to: rows[0].email, ...mail }).catch(() => false)) sent++;
+  }
+  return { month, sent };
+}
+
+registerJob({
+  name: 'hana-report',
+  everyMs: 60 * 60 * 1000,
+  run: async () => {
+    const { rows } = await asSystem(() => pool.query<{ id: number }>("SELECT DISTINCT household_id AS id FROM household_members WHERE kind = 'adult' AND archived_at IS NULL"));
+    for (const r of rows) await inHousehold(r.id, () => sendMonthlyReport()).catch((e) => console.error('hana-report', r.id, e));
+  },
+});
+
+/** Dev/test only: send the monthly report "as if" at a given time. */
+hqRouter.post('/api/hana/run-report', async (req, res) => {
+  const v = viewerOf(self(req));
+  requireParent(v, 'The family report');
+  if (process.env.PUSH_STUB !== '1') throw new HttpError(404, 'Not found');
+  const at = typeof req.query.at === 'string' && !Number.isNaN(Date.parse(req.query.at)) ? new Date(req.query.at) : new Date();
+  res.json(await sendMonthlyReport(at));
+});

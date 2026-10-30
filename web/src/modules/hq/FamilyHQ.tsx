@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { CRISIS_RESOURCES, type HanaAlert, type HanaFamilyReport, type HanaSettings, type HanaWatchCategory } from '@myday/shared';
+import { CRISIS_RESOURCES, type HanaAction, type HanaAlert, type HanaFamilyReport, type HanaSettings, type HanaWatchCategory } from '@myday/shared';
 import { api, useLoad } from '../../api';
 import { HanaFace } from '../../components/NavIcon';
 import { HanaBriefCard } from './HanaBrief';
 import { CoachCard } from './Coach';
 import { useSession } from '../../session';
+import { HanaLog, HqDraft } from './Notes';
 
 const thisMonth = (): string => {
   const n = new Date();
@@ -14,10 +15,21 @@ const thisMonth = (): string => {
 /** Crisis first, then anything Hana is watching that still needs someone. */
 function Alerts() {
   const { data, setData } = useLoad<{ alerts: HanaAlert[] }>('/api/hana/alerts');
+  const [drafts, setDrafts] = useState<Record<number, HanaAction>>({});
+  const [sent, setSent] = useState<Record<number, string>>({});
+  const [err, setErr] = useState<Record<number, string>>({});
   if (!data || !data.alerts.length) return null;
   const done = async (id: number): Promise<void> => {
     await api(`/api/hana/items/${id}/outcome`, 'POST', { outcome: 'acted' });
     setData({ alerts: data.alerts.filter((a) => a.id !== id) });
+  };
+  const prepare = async (id: number): Promise<void> => {
+    try {
+      const r = await api<{ action: HanaAction }>(`/api/hana/alerts/${id}/draft`, 'POST');
+      setDrafts({ ...drafts, [id]: r.action });
+    } catch (e) {
+      setErr({ ...err, [id]: e instanceof Error ? e.message : 'Couldn’t prepare a note' });
+    }
   };
   return (
     <div className="hq-alerts" data-testid="hq-alerts">
@@ -37,9 +49,24 @@ function Alerts() {
             {a.source}
             {a.asOf ? ` · ${new Date(a.asOf).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}
           </small>
-          <button type="button" className="btn small" onClick={() => void done(a.id)}>
-            {a.kind === 'crisis' ? 'I’ve checked in' : 'Handled'}
-          </button>
+          {drafts[a.id] && !sent[a.id] && (
+            <HqDraft
+              action={drafts[a.id] as HanaAction}
+              onDone={(r) => setSent({ ...sent, [a.id]: r.status === 'done' ? r.result : 'Discarded — nothing was sent.' })}
+            />
+          )}
+          {sent[a.id] && <p className="small muted" data-testid="hq-draft-result">{sent[a.id]}</p>}
+          {err[a.id] && <p className="error small">{err[a.id]}</p>}
+          <div className="row">
+            {a.kind === 'escalation' && !drafts[a.id] && (
+              <button type="button" className="btn small ghost" onClick={() => void prepare(a.id)} data-testid="hq-prepare-note">
+                Prepare a note
+              </button>
+            )}
+            <button type="button" className="btn small" onClick={() => void done(a.id)}>
+              {a.kind === 'crisis' ? 'I’ve checked in' : 'Handled'}
+            </button>
+          </div>
         </div>
       ))}
     </div>
@@ -94,6 +121,30 @@ function Report() {
             </ul>
           ) : (
             <p className="muted">Nothing marked wrong this month. Tap “That’s wrong” on anything she gets wrong — it shows up here.</p>
+          )}
+          <h3>What Hana couldn’t do</h3>
+          {data.gaps.length ? (
+            <ul data-testid="hq-gaps">
+              {data.gaps.map((g, i) => (
+                <li key={i}>
+                  {g.date}: {g.text}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Nothing this month.</p>
+          )}
+          {data.tasteMisses.length > 0 && (
+            <>
+              <h3>Suggestions that missed</h3>
+              <ul data-testid="hq-taste">
+                {data.tasteMisses.map((t, i) => (
+                  <li key={i}>
+                    {t.date}: {t.text}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </>
       )}
@@ -173,9 +224,23 @@ function HanaSettingsCard() {
           </select>
         </label>
       </div>
+      <fieldset className="row">
+        <legend className="small">Notes you send the kids can be</legend>
+        {(['encouragement', 'reminder'] as const).map((k) => (
+          <label key={k}>
+            <input
+              type="checkbox"
+              checked={f.kidNoteKinds.includes(k)}
+              onChange={(e) => setDraft({ ...f, kidNoteKinds: e.target.checked ? [...f.kidNoteKinds, k] : f.kidNoteKinds.filter((x) => x !== k) })}
+              data-testid={`hq-kid-note-${k}`}
+            />{' '}
+            {k === 'encouragement' ? 'Encouragement' : 'Reminders'}
+          </label>
+        ))}
+      </fieldset>
       <div className="row">
         {draft && (
-          <button type="button" className="btn small" onClick={() => void save({ quietStart: f.quietStart, quietEnd: f.quietEnd, quietDays: f.quietDays, muted: f.muted, lowBalance: f.lowBalance, billLeadDays: f.billLeadDays })} data-testid="hq-settings-save">
+          <button type="button" className="btn small" onClick={() => void save({ quietStart: f.quietStart, quietEnd: f.quietEnd, quietDays: f.quietDays, muted: f.muted, lowBalance: f.lowBalance, billLeadDays: f.billLeadDays, kidNoteKinds: f.kidNoteKinds })} data-testid="hq-settings-save">
             Save
           </button>
         )}
@@ -189,7 +254,7 @@ function HanaSettingsCard() {
   );
 }
 
-/** Family HQ (parents): Hana's view of the whole household. Read-only — she never sends, spends or commits anything. */
+/** Family HQ (parents): Hana's view of the whole household. She prepares; a parent approves — nothing goes on its own. */
 export default function FamilyHQ() {
   const { members } = useSession();
   const kids = members.filter((m) => m.kind === 'kid');
@@ -209,6 +274,7 @@ export default function FamilyHQ() {
           ))}
         </div>
       )}
+      <HanaLog />
       <HanaSettingsCard />
       <Report />
     </section>

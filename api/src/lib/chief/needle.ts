@@ -47,6 +47,14 @@ export async function familyReport(v: Viewer, month: string): Promise<FamilyRepo
     `SELECT shown_on::text AS shown_on, surface, text, source FROM hana_items WHERE outcome = 'wrong' AND shown_on >= $1 AND shown_on < $2 ORDER BY shown_on, id`,
     [start, next],
   );
+  const { rows: gaps } = await pool.query<{ shown_on: DateStr; category: string; text: string }>(
+    "SELECT shown_on::text AS shown_on, category, text FROM hana_items WHERE surface = 'couldnt' AND shown_on >= $1 AND shown_on < $2 ORDER BY shown_on, id LIMIT 50",
+    [start, next],
+  );
+  const { rows: taste } = await pool.query<{ shown_on: DateStr; text: string }>(
+    "SELECT shown_on::text AS shown_on, text FROM hana_items WHERE surface = 'taste' AND outcome IN ('dismissed', 'wrong') AND shown_on >= $1 AND shown_on < $2 ORDER BY shown_on, id LIMIT 50",
+    [start, next],
+  );
   const h = hw[0] ?? { due: 0, ontime: 0 };
   const b = br[0] ?? { shown: 0, acted: 0 };
   const nShown = nd.reduce((s, r) => s + r.shown, 0);
@@ -65,5 +73,31 @@ export async function familyReport(v: Viewer, month: string): Promise<FamilyRepo
     nudges: { shown: nShown, dismissed: nDismissed, byCategory: nd },
     wins,
     wrong: wrong.map((w) => ({ date: w.shown_on, surface: w.surface, text: w.text, source: w.source })),
+    gaps: gaps.map((g) => ({ date: g.shown_on, category: g.category, text: g.text })),
+    tasteMisses: taste.map((t) => ({ date: t.shown_on, text: t.text })),
   };
+}
+
+/** The report as a plain-text email (to the parents only; no other recipients, ever). */
+export function reportEmail(r: FamilyReport, publicUrl: string): { subject: string; text: string } {
+  const [y, m] = r.month.split('-').map(Number) as [number, number];
+  const label = new Date(Date.UTC(y, m - 1, 15)).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const lines = [
+    `Your family report from Hana — ${label}`,
+    '',
+    `Homework on time: ${r.homework.rate === null ? 'nothing was due' : `${r.homework.rate}% (${r.homework.onTime} of ${r.homework.due})`}`,
+    `Missed logistics: ${r.logistics.missed}`,
+    `Brief items acted on: ${r.briefs.rate === null ? 'no briefs yet' : `${r.briefs.rate}%`}`,
+    '',
+    ...(r.wins.length ? ['What went well:', ...r.wins.map((w) => `  • ${w}`), ''] : []),
+    'Where Hana was wrong:',
+    ...(r.wrong.length ? r.wrong.map((w) => `  • ${w.date}: ${w.text}`) : ['  • Nothing marked wrong.']),
+    '',
+    'What Hana couldn’t do:',
+    ...(r.gaps.length ? r.gaps.map((g) => `  • ${g.date}: ${g.text}`) : ['  • Nothing this month.']),
+    ...(r.tasteMisses.length ? ['', 'Suggestions that missed:', ...r.tasteMisses.map((t) => `  • ${t.date}: ${t.text}`)] : []),
+    '',
+    `The full report: ${publicUrl}/hq`,
+  ];
+  return { subject: `MyDay: your family report for ${label}`, text: lines.join('\n') };
 }

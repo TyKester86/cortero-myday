@@ -9,6 +9,7 @@ import { due } from '../../dates';
 import { TodayOnCalendar } from '../calendar/Calendar';
 import { count } from '../../format';
 import { HanaBriefCard } from '../hq/HanaBrief';
+import { HanaNotesCard } from '../hq/Notes';
 import { CoachCard } from '../hq/Coach';
 
 /** Today's checklist for one person. Checking a chore pays out instantly. */
@@ -52,6 +53,7 @@ export default function HomeChores() {
         {data.member.name}'s {data.weekday}
       </h1>
       {/* A kid's own day from Hana (only their own: never a sibling's items or anything grown-ups-only). */}
+      {own && !isAdult && <HanaNotesCard />}
       {own && !isAdult && <CoachCard />}
       {own && !isAdult && <HanaBriefCard kinds={['morning', 'evening']} />}
       <div className="stats">

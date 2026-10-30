@@ -9,6 +9,7 @@ import { TodayOnCalendar } from '../calendar/Calendar';
 import { count } from '../../format';
 import { NavIcon } from '../../components/NavIcon';
 import { HanaBriefCard } from '../hq/HanaBrief';
+import { HanaNotesCard } from '../hq/Notes';
 
 const greeting = (h: number): string => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
 
@@ -223,6 +224,7 @@ export default function Today() {
       {evening && closeOut}
 
       <h2 className="eyebrow">Also today</h2>
+      <HanaNotesCard />
       <HanaBriefCard kinds={['morning', 'evening']} compact />
       <p className="small">
         <Link to="/hq" data-testid="today-hq-link">
