@@ -13,11 +13,12 @@ import type {
   MoneyResponse,
   MoneyTransaction,
 } from '@myday/shared';
-import { pool, tx } from '../db.js';
+import { asSystem, inHousehold, pool, tx } from '../db.js';
 import { addDays, today } from '../lib/dates.js';
 import { HttpError, idParam, int, str } from '../lib/http.js';
 import { logEvent } from '../lib/events.js';
 import { requireAdult } from '../lib/members.js';
+import { registerJob } from '../lib/schedulers.js';
 import { decryptToken, encryptToken, moneyProvider, type MoneyProvider } from '../lib/money/provider.js';
 import { detectRecurring, safeToSpend, type TxnLite } from '../lib/money/analyze.js';
 
@@ -208,6 +209,26 @@ moneyRouter.post('/api/money/sync', async (req, res) => {
   }
   res.json(await moneyView());
 });
+
+/** Q11: every household's linked banks, read again every few hours, so the Financial Mind is never quietly stale. */
+export async function syncAllBanks(): Promise<number> {
+  const p = moneyProvider();
+  if (!p) return 0;
+  const { rows } = await asSystem(() =>
+    pool.query<{ id: number; household_id: number; access_token_enc: string; provider: string }>(
+      'SELECT id, household_id, access_token_enc, provider FROM money_items WHERE (last_synced_at IS NULL OR last_synced_at < $1)',
+      [new Date(Date.now() - 5 * 3_600_000)],
+    ),
+  );
+  let n = 0;
+  for (const r of rows) {
+    if (r.provider !== p.kind) continue;
+    await inHousehold(r.household_id, () => syncItem(p, r.id, decryptToken(r.access_token_enc)));
+    n++;
+  }
+  return n;
+}
+registerJob({ name: 'money-sync', everyMs: 6 * 60 * 60 * 1000, run: async () => void (await syncAllBanks()) });
 
 moneyRouter.get('/api/money/transactions', async (req, res) => {
   requireAdult(req);

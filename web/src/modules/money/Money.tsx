@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { BillsResponse, ExchangeRequest, LinkTokenResponse, MoneyMind, MoneyResponse, MoneyTransaction } from '@myday/shared';
 import { MoneyMindPanel } from './MoneyMind';
 import { NavIcon } from '../../components/NavIcon';
@@ -18,6 +18,8 @@ interface PlaidLinkHandler {
 interface PlaidGlobal {
   create: (opts: {
     token: string;
+    /** A bank that signs in on its own site sends the person back here (OAuth); Link picks up where it left off. */
+    receivedRedirectUri?: string;
     onSuccess: (publicToken: string, metadata: { institution?: { name?: string } | null }) => void;
     onExit?: () => void;
   }) => PlaidLinkHandler;
@@ -157,6 +159,34 @@ export default function Money() {
   const { toast, show } = useToast();
   const confirm = useConfirm();
 
+  // Q11: back from a bank's own sign-in page (OAuth) — finish the same Link session.
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has('oauth_state_id')) return;
+    let token: string | null = null;
+    try {
+      token = sessionStorage.getItem('plaid.link');
+    } catch {
+      token = null;
+    }
+    if (!token) return;
+    const back = window.location.href;
+    window.history.replaceState(null, '', '/money');
+    void loadPlaid().then((Plaid) =>
+      Plaid.create({
+        token: token as string,
+        receivedRedirectUri: back,
+        onSuccess: (publicToken, meta) => {
+          const body: ExchangeRequest = { publicToken, institution: meta.institution?.name ?? 'Bank' };
+          void api<MoneyResponse>('/api/money/exchange', 'POST', body).then((r) => {
+            setData(r);
+            mind.reload();
+            show('Bank linked');
+          });
+        },
+      }).open(),
+    );
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
 
@@ -180,6 +210,11 @@ export default function Money() {
       const body: ExchangeRequest = { publicToken: `public-fake-${linkToken.slice(-6)}`, institution: 'Demo Bank (fake)' };
       await run(api<MoneyResponse>('/api/money/exchange', 'POST', body), 'Demo bank linked');
       return;
+    }
+    try {
+      sessionStorage.setItem('plaid.link', linkToken);
+    } catch {
+      /* no storage: an OAuth bank just needs Link started again */
     }
     const Plaid = await loadPlaid();
     Plaid.create({
@@ -219,6 +254,12 @@ export default function Money() {
               ? 'Bank connections aren’t switched on yet — bills still work.'
               : 'Link a bank to see what’s safe to spend.'}
         </span>
+        {ms && mind.data && (
+          <small className={mind.data.stale ? 'money-fresh stale' : 'money-fresh'} data-testid="money-fresh">
+            From your bank as of {new Date(mind.data.asOf).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+            {mind.data.stale ? ` — ${mind.data.stale}; tap Sync for today’s numbers` : ''}
+          </small>
+        )}
         <span className="wallet" aria-hidden="true">
           <NavIcon name="money" size={24} />
         </span>

@@ -1,7 +1,9 @@
 /**
- * The real Plaid client (REST over fetch). Read-only products only:
- * transactions + balances. Not exercised locally — it gets its first real
- * call when sandbox keys are plugged in at the last mile.
+ * The real Plaid client (REST over fetch), PRODUCTION only — MyDay runs real finances (Ty,
+ * 2026-10-11). Read-only: the Transactions product (accounts with their balances, and
+ * transactions). Nothing here can move money; no payment or transfer endpoint is called, ever.
+ * Balances come from /accounts/get (refreshed with transactions; not the separately billed
+ * Balance product) and are shown with the time of the last sync.
  */
 import type { DateStr } from '@myday/shared';
 import { HttpError } from '../http.js';
@@ -20,9 +22,10 @@ export class PlaidProvider implements MoneyProvider {
   constructor(
     private readonly clientId: string,
     private readonly secret: string,
-    env: 'sandbox' | 'production',
+    /** Where a bank's own sign-in sends the person back (OAuth banks); registered in the Plaid dashboard. */
+    private readonly redirectUri: string | null = null,
   ) {
-    this.base = `https://${env}.plaid.com`;
+    this.base = 'https://production.plaid.com';
   }
 
   private async call(path: string, body: Json): Promise<Json> {
@@ -47,8 +50,10 @@ export class PlaidProvider implements MoneyProvider {
       client_name: 'MyDay',
       user: { client_user_id: clientUserId },
       products: ['transactions'],
+      transactions: { days_requested: 365 },
       country_codes: ['US'],
       language: 'en',
+      ...(this.redirectUri ? { redirect_uri: this.redirectUri } : {}),
     });
     return s(r.link_token);
   }
@@ -59,7 +64,7 @@ export class PlaidProvider implements MoneyProvider {
   }
 
   async accounts(accessToken: string): Promise<ProviderAccount[]> {
-    const r = await this.call('/accounts/balance/get', { access_token: accessToken });
+    const r = await this.call('/accounts/get', { access_token: accessToken });
     const list = Array.isArray(r.accounts) ? r.accounts : [];
     return list.filter(isObj).map((a): ProviderAccount => {
       const b = isObj(a.balances) ? a.balances : {};

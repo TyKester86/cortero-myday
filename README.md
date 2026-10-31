@@ -140,7 +140,7 @@ Money is grown-ups only. It links a bank through Plaid Link and syncs accounts p
 - **Paycheck detection:** the same rules, applied to deposits.
 - **Safe to spend:** checking balance − recurring charges due before the next paycheck, or the next 14 days when no paycheck is detected.
 
-Keys come from `PLAID_CLIENT_ID`, `PLAID_SECRET` and `PLAID_ENV` (`sandbox` or `production`). Bank access tokens are AES-256-GCM encrypted with `MONEY_TOKEN_KEY`. Nothing in the app can move money.
+Plaid runs in **production only** (MyDay runs real finances): `PLAID_CLIENT_ID` and `PLAID_SECRET`, installed with `scripts/set-plaid-keys.sh` (hidden input, verified against Plaid first, sent over SSH, never printed); `PLAID_ENV` must be `production` or unset — any other value leaves Money off. `PLAID_REDIRECT_URI` (registered in the Plaid dashboard) lets OAuth banks send people back to `/money`. Balances and transactions sync every 6 hours and on demand, and every figure says when it's from. Bank access tokens are AES-256-GCM encrypted with `MONEY_TOKEN_KEY`. Nothing in the app can move money. Local tests use a labeled fake provider (`MONEY_PROVIDER=fake`), never available on a production server.
 
 `DEV_LOGIN_TOKEN` enables `/dev-login?token=…&member=<key>` for verification. It is **temporary** and off by default; blank it once Google sign-in works.
 

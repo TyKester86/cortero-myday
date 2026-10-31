@@ -7050,6 +7050,7 @@ async function hanaBrainSuite() {
     await hanaMessagingChecks();
     await hanaInitiativeChecks();
     await hanaStandingChecks();
+    await plaidProductionChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7451,6 +7452,29 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function plaidProductionChecks() {
+  section('Q11 · Plaid PRODUCTION only — no sandbox anywhere in the finance path');
+  const pick = (env) => {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', "const m = await import('./dist/lib/money/provider.js'); const p = m.moneyProvider(); console.log(JSON.stringify({ kind: p?.kind ?? null, base: p?.base ?? null, redirect: p?.redirectUri ?? null }))"], {
+      cwd: apiDir,
+      env: { PATH: process.env.PATH, DATABASE_URL: 'postgres://x@127.0.0.1:1/x', PLAID_CLIENT_ID: '0123456789abcdef01234567', PLAID_SECRET: '0123456789abcdef0123456789abcd', PLAID_REDIRECT_URI: 'https://staging.example/money', ...(env === null ? {} : { PLAID_ENV: env }) },
+      encoding: 'utf8',
+    });
+    return JSON.parse(r.stdout.trim().split('\n').at(-1) || '{}');
+  };
+  eq('production keys → the real Plaid, production host, with the OAuth return address', pick('production'), { kind: 'plaid', base: 'https://production.plaid.com', redirect: 'https://staging.example/money' });
+  eq('PLAID_ENV unset or blank → production', [pick(null).base, pick('').base], ['https://production.plaid.com', 'https://production.plaid.com']);
+  eq('sandbox or development keys are refused — Money stays off rather than show play money', [pick('sandbox').kind, pick('development').kind], [null, null]);
+  const h = await fetch(`${BASE}/`);
+  const cspH = h.headers.get('content-security-policy') ?? '';
+  check('the page may only talk to Plaid production (no sandbox host)', /connect-src 'self' https:\/\/production\.plaid\.com(;|$)/.test(cspH) && !/sandbox\.plaid|development\.plaid/.test(cspH), cspH);
+  check('JP4 fix: the browser may ask for location on this site (it was blocked outright)', /geolocation=\(self\)/.test(h.headers.get('permissions-policy') ?? ''), h.headers.get('permissions-policy'));
+  const src = ['lib/money/plaid.ts', 'lib/money/provider.ts', 'lib/security.ts', 'routes/money.ts', 'routes/mind.ts', 'lib/money/mind.ts'].map((f) => readFileSync(path.join(apiDir, 'src', f), 'utf8')).join('\n');
+  check('no live sandbox reference in the finance path’s code (only the rule that refuses it)', !/sandbox\.plaid|PLAID_ENV=sandbox|'sandbox' \|/.test(src) && (src.match(/sandbox/gi) ?? []).length <= 2, (src.match(/.*sandbox.*/gi) ?? []).join(' | '));
+  const m = (await ty.get('/api/money/mind')).data;
+  check('the Financial Mind carries a freshness stamp (as-of, and a stale warning past 36 hours)', typeof m.asOf === 'string' && 'stale' in m, JSON.stringify({ asOf: m.asOf, stale: m.stale }));
 }
 
 async function hanaStandingChecks() {

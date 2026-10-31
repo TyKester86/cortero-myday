@@ -46,10 +46,10 @@ GOOGLE_CLIENT_SECRET=
 ALLOWED_EMAILS=
 # Ask Hana / tutor (Claude) — paste the key at the last mile.
 ANTHROPIC_KEY=
-# Money (Plaid, read-only) — paste sandbox keys at the last mile.
+# Money (Plaid PRODUCTION, read-only) — installed by scripts/set-plaid-keys.sh, never pasted here.
 PLAID_CLIENT_ID=
 PLAID_SECRET=
-PLAID_ENV=sandbox
+PLAID_ENV=production
 MONEY_TOKEN_KEY=$(openssl rand -hex 32)
 # TEMPORARY — verification only. Blank this line once Google sign-in works.
 DEV_LOGIN_TOKEN=$(openssl rand -hex 24)

@@ -489,6 +489,8 @@ small.next { display: block; color: var(--sun); margin-top: 2px; }
 .voice-mic { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--sun); background: var(--card, #fff); font-size: 20px; cursor: pointer; touch-action: none; }
 .voice-mic.on { background: var(--sun); }
 .voice-bubble { max-width: min(320px, calc(100vw - 32px)); margin: 0; }
+.money-fresh { display: block; margin-top: 4px; font-size: 0.8em; opacity: 0.85; }
+.money-fresh.stale { color: var(--hy-terra, inherit); opacity: 1; }
 .hubgroup h2 { margin: 18px 0 8px; }
 .hubtiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .hubtile { display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 1px solid var(--line); background: var(--card); border-radius: 12px; text-decoration: none; color: var(--text); font-weight: 600; }

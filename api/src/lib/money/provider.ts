@@ -1,9 +1,11 @@
 /**
  * Read-only bank data. One interface, two implementations:
- *   - PlaidProvider: the real Plaid API (PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV).
- *   - FakeProvider: deterministic local data (MONEY_PROVIDER=fake, never in production).
- * Selection: Plaid when its keys are set; otherwise the fake if explicitly
- * asked for outside production; otherwise Money is "not set up".
+ *   - PlaidProvider: the real Plaid API in PRODUCTION (PLAID_CLIENT_ID / PLAID_SECRET; PLAID_ENV must
+ *     be production or unset; PLAID_REDIRECT_URI for banks that sign in on their own site).
+ *   - FakeProvider: deterministic local test data (MONEY_PROVIDER=fake) — never on a production
+ *     server, and always labeled as demo data where it shows.
+ * There is no sandbox: MyDay runs real finances. Keys for any other Plaid environment are refused
+ * (Money stays "not set up" and says why in the log) rather than showing play-money as real.
  */
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
 import type { DateStr } from '@myday/shared';
@@ -50,9 +52,12 @@ export function moneyProvider(): MoneyProvider | null {
   if (cached !== undefined) return cached;
   const id = process.env.PLAID_CLIENT_ID ?? '';
   const secret = process.env.PLAID_SECRET ?? '';
-  if (id && secret) {
-    const env = process.env.PLAID_ENV === 'production' ? 'production' : 'sandbox';
-    cached = new PlaidProvider(id, secret, env);
+  const env = (process.env.PLAID_ENV?.trim() || 'production').toLowerCase();
+  if (id && secret && env !== 'production') {
+    console.error(`money: PLAID_ENV is “${env}” — MyDay runs real finances only (production); Money stays off until production keys are installed`);
+    cached = null;
+  } else if (id && secret) {
+    cached = new PlaidProvider(id, secret, process.env.PLAID_REDIRECT_URI?.trim() || null);
   } else if (process.env.MONEY_PROVIDER === 'fake' && !config.production) {
     cached = new FakeProvider();
   } else {
