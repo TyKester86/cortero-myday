@@ -85,7 +85,7 @@ export function detectRecurring(txns: TxnLite[], direction: 'out' | 'in', today:
   return out.sort((a, b) => b.monthly - a.monthly);
 }
 
-function sameDayNextMonth(d: DateStr): DateStr {
+export function sameDayNextMonth(d: DateStr): DateStr {
   const [y, m, day] = d.split('-').map(Number);
   const year = (y ?? 0) + ((m ?? 1) === 12 ? 1 : 0);
   const month = ((m ?? 1) % 12) + 1;
@@ -94,7 +94,7 @@ function sameDayNextMonth(d: DateStr): DateStr {
 }
 
 /** Step a recurring item forward from its next date through `until` (exclusive). */
-function occurrences(r: Recurring, from: DateStr, until: DateStr): DateStr[] {
+export function occurrences(r: Recurring, from: DateStr, until: DateStr): DateStr[] {
   const out: DateStr[] = [];
   let d = r.nextDate;
   for (let guard = 0; guard < 60 && d < until; guard++) {

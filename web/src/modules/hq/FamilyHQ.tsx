@@ -148,6 +148,21 @@ function Report() {
           ) : (
             <p className="muted">Nothing this month.</p>
           )}
+          {data.money && (
+            <>
+              <h3>{data.month.endsWith('-12') ? 'The annual money physical' : 'Money check-up'}</h3>
+              <p data-testid="hq-money">
+                Net position {data.money.net.toLocaleString('en-US', { style: 'currency', currency: 'USD' })} — {data.money.trajectory}
+              </p>
+              {data.money.moves.length > 0 && (
+                <ol>
+                  {data.money.moves.map((m) => (
+                    <li key={m.text}>{m.text}</li>
+                  ))}
+                </ol>
+              )}
+            </>
+          )}
           {data.tasteMisses.length > 0 && (
             <>
               <h3>Suggestions that missed</h3>
@@ -175,7 +190,7 @@ const NIGHTS = [
   [5, 'Fri'],
   [6, 'Sat'],
 ] as const;
-const CATEGORY_LABEL: Record<HanaWatchCategory, string> = { pickup: 'Pickups nobody is on', conflict: 'Schedule conflicts', bills: 'Bills while money is low', homework: 'Homework at risk', loops: 'Loops due today', expiry: 'Papers expiring' };
+const CATEGORY_LABEL: Record<HanaWatchCategory, string> = { pickup: 'Pickups nobody is on', conflict: 'Schedule conflicts', bills: 'Bills while money is low', homework: 'Homework at risk', loops: 'Loops due today', expiry: 'Papers expiring', money: 'Money (dips, limits, checks)' };
 
 /** Either parent can tune her down, change the thresholds, or quiet her. */
 function HanaSettingsCard() {

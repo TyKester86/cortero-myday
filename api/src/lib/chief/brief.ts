@@ -23,6 +23,7 @@ import { findConflicts, type ConflictOptions } from './conflicts.js';
 import { loopLine, loopsFor } from './loops.js';
 import { openText } from '../seal.js';
 import { expiryLine, listVault } from './papers.js';
+import { moneyBrief } from './money.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -261,6 +262,12 @@ export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
     sections.push({ title: v.parent ? 'Pickups & handoffs' : 'Rides', drafts: s.pickups });
     sections.push({ title: v.parent ? 'Needs a decision' : 'Heads up', drafts: s.conflicts });
     sections.push({ title: v.parent ? 'Homework due today & tomorrow' : 'Homework', drafts: await homeworkDrafts(v, t, addDays(t, 1)) });
+    if (v.parent) {
+      sections.push({
+        title: 'Money',
+        drafts: (await moneyBrief()).map((x) => ({ key: x.key, category: 'money' as const, text: x.text, subjectId: null, source: SOURCE.money, asOf: x.asOf, check: x.check, headsUp: x.headsUp })),
+      });
+    }
     if (v.parent) sections.push({ title: 'Bills due this week', drafts: await billDrafts(v) });
     if (v.parent) sections.push({ title: 'From the inbox', drafts: await mailDrafts() });
     if (v.parent) {

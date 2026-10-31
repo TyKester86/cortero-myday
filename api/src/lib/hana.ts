@@ -32,6 +32,8 @@ import { viewerOf } from './chief/scope.js';
 import { balances, billsDue, choresFor, feedInbox, healthFor, homeworkFor, scheduleFor } from './chief/tools.js';
 import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
+import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
+import { holdWant } from '../routes/mind.js';
 
 interface ToolDef<S extends z.ZodType> {
   name: string;
@@ -633,6 +635,84 @@ export const HANA_TOOLS = [
     },
   }),
 
+  // ---------- Q6: the Financial Mind — the picture, the math, the 24-hour list. She never moves money. ----------
+  def({
+    name: 'money_mind',
+    description:
+      'READ-ONLY, grown-ups only. The household’s whole money picture with the math shown: safe-to-spend until payday (cash − every committed outflow, itemized) and pace; ' +
+      'a predicted overdraft with its prepared fix; tight pay periods and drafted due-date moves; every debt (balance, APR, minimum, utilization) with avalanche vs snowball ' +
+      '(interest, debt-free dates, assumptions); sinking funds; the 24-hour list; capture checks (unclaimed match, use-it-or-lose-it money, charges after a cancel, ' +
+      'subscriptions to review, price changes, unusual bills); and wins. Use it before stating any money number.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, required: [], additionalProperties: false },
+    summary: () => 'Look at the whole money picture',
+    run: async (me) => {
+      requireParentMember(me);
+      const m = await moneyMind();
+      return `${provenance({ source: SOURCE.money, asOf: m.asOf, stale: m.stale })}\n${mindLines(m).join('\n') || 'Nothing is set up yet: link the bank, or add bills, debts and funds on Money.'}`;
+    },
+  }),
+  def({
+    name: 'finance_calc',
+    description:
+      'READ-ONLY calculator for professor mode — use it for every figure instead of mental math. op: ' +
+      '"loan" (principal, apr, years → monthly payment, total interest); "payoff" (principal = balance, apr, payment → months, interest); ' +
+      '"growth" (principal = start, monthly, rate = annual %, years → future value); "refi" (principal = balance, apr = current, years = remaining, new_apr, new_years, costs → payment change, break-even, lifetime interest); ' +
+      '"debt_plan" (extra → the household’s own debts, avalanche vs snowball at that extra a month). Unused fields are null.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({
+      op: z.enum(['loan', 'payoff', 'growth', 'refi', 'debt_plan']),
+      principal: z.number().min(0).max(100_000_000).nullable(),
+      apr: z.number().min(0).max(100).nullable(),
+      years: z.number().min(0).max(60).nullable(),
+      payment: z.number().min(0).max(10_000_000).nullable(),
+      monthly: z.number().min(0).max(10_000_000).nullable(),
+      rate: z.number().min(-50).max(100).nullable(),
+      new_apr: z.number().min(0).max(100).nullable(),
+      new_years: z.number().min(0).max(60).nullable(),
+      costs: z.number().min(0).max(10_000_000).nullable(),
+      extra: z.number().min(0).max(10_000_000).nullable(),
+    }),
+    json: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['loan', 'payoff', 'growth', 'refi', 'debt_plan'] },
+        principal: { type: ['number', 'null'] },
+        apr: { type: ['number', 'null'] },
+        years: { type: ['number', 'null'] },
+        payment: { type: ['number', 'null'] },
+        monthly: { type: ['number', 'null'] },
+        rate: { type: ['number', 'null'] },
+        new_apr: { type: ['number', 'null'] },
+        new_years: { type: ['number', 'null'] },
+        costs: { type: ['number', 'null'] },
+        extra: { type: ['number', 'null'] },
+      },
+      required: ['op', 'principal', 'apr', 'years', 'payment', 'monthly', 'rate', 'new_apr', 'new_years', 'costs', 'extra'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Work out the ${i.op.replace('_', ' ')} math`,
+    run: async (me, i) => financeCalc(me, i),
+  }),
+  def({
+    name: 'hold_want',
+    description:
+      'Put a non-essential buy on the family’s 24-hour list (grown-ups). Nothing is blocked — she holds the want for a day, then asks once whether it’s still wanted. ' +
+      'Offer it when they mention a non-essential purchase over the family’s wait-list threshold.',
+    destructive: false,
+    schema: z.object({ what: z.string().min(1).max(120), amount: z.number().positive().max(1_000_000) }),
+    json: { type: 'object', properties: { what: { type: 'string' }, amount: { type: 'number' } }, required: ['what', 'amount'], additionalProperties: false },
+    summary: (i) => `Hold “${i.what}” ($${i.amount.toFixed(2)}) on the 24-hour list`,
+    run: async (me, i) => {
+      requireParentMember(me);
+      await holdWant(me.id, i.what, i.amount);
+      return `Held: ${i.what} ($${i.amount.toFixed(2)}). I’ll ask tomorrow whether it’s still wanted — nothing is blocked.`;
+    },
+  }),
+
   // ---------- H2: the family board, read-only, every answer with its source and as-of ----------
   def({
     name: 'family_schedule',
@@ -1098,6 +1178,16 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if ((x = m.match(/^(direct|hints)(?: answers| first)?(?: for (\w+))?$/i))) return [{ name: 'set_homework_help', input: { kid_name: x[2] ?? null, style: (x[1] ?? '').toLowerCase() } }];
   if (/^what['’]?s my (?:score|streak|xp|level)/i.test(m)) return [{ name: 'my_stats', input: {} }];
   if (/^how['’]?s (?:my|our) money/i.test(m)) return [{ name: 'money_summary', input: {} }];
+  if (/^(?:what(?:['’]s| is) )?safe to spend|^money picture/i.test(m)) return [{ name: 'money_mind', input: {} }];
+  if ((x = m.match(/^hold (.{2,80}?) \$(\d+(?:\.\d{1,2})?)$/i))) return [{ name: 'hold_want', input: { what: x[1], amount: Number(x[2]) } }];
+  if ((x = m.match(/^calc (loan|payoff|growth) ([\d.]+) ([\d.]+) ([\d.]+)(?: ([\d.]+))?$/i))) {
+    const [a, b, c, e] = [Number(x[2]), Number(x[3]), Number(x[4]), x[5] === undefined ? null : Number(x[5])];
+    const base = { principal: null, apr: null, years: null, payment: null, monthly: null, rate: null, new_apr: null, new_years: null, costs: null, extra: null };
+    const op = (x[1] ?? '').toLowerCase();
+    if (op === 'loan') return [{ name: 'finance_calc', input: { ...base, op, principal: a, apr: b, years: c } }];
+    if (op === 'payoff') return [{ name: 'finance_calc', input: { ...base, op, principal: a, apr: b, payment: c } }];
+    return [{ name: 'finance_calc', input: { ...base, op, principal: a, monthly: b, rate: c, years: e } }];
+  }
   if ((x = m.match(/^add homework for (\w+):\s*(.+?)(?: due (\d{4}-\d{2}-\d{2}))?$/i))) {
     return [{ name: 'add_homework', input: { kid_name: x[1], assignment: x[2], subject: '', due: x[3] ?? null } }];
   }
@@ -1234,6 +1324,76 @@ export async function editDraft(me: HouseholdMember, id: number, text: unknown, 
   return toAction(out[0]);
 }
 
+/** Professor mode's calculator: every figure computed, the formula and the assumptions said. */
+async function financeCalc(
+  me: HouseholdMember,
+  i: { op: 'loan' | 'payoff' | 'growth' | 'refi' | 'debt_plan'; principal: number | null; apr: number | null; years: number | null; payment: number | null; monthly: number | null; rate: number | null; new_apr: number | null; new_years: number | null; costs: number | null; extra: number | null },
+): Promise<string> {
+  const need = (v: number | null, name: string): number => {
+    if (v === null) throw new HttpError(400, `${i.op} needs ${name}`);
+    return v;
+  };
+  const $ = usd;
+  if (i.op === 'loan') {
+    const P = need(i.principal, 'principal');
+    const apr = need(i.apr, 'apr');
+    const n = Math.round(need(i.years, 'years') * 12);
+    const a = amortize(P, apr, n);
+    return [
+      `Payment = P × r ÷ (1 − (1 + r)^−n), with P = ${$(P)}, r = ${apr}% ÷ 12 = ${(apr / 12).toFixed(4)}% a month, n = ${n} months.`,
+      `→ ${$(a.payment)} a month; ${$(a.interest)} in interest over the life of the loan (${$(P + a.interest)} paid in all).`,
+      'Assumes a fixed rate, no fees, every payment on time.',
+    ].join('\n');
+  }
+  if (i.op === 'payoff') {
+    const B = need(i.principal, 'principal (the balance)');
+    const apr = need(i.apr, 'apr');
+    const pay = need(i.payment, 'payment');
+    const p = monthsToPay(B, apr, pay);
+    if (p.months === null) return `At ${$(pay)} a month the balance never falls: the first month's interest alone is ${$((B * apr) / 1200)} (${$(B)} × ${apr}% ÷ 12). Any payment above that starts to pay it down.`;
+    return [
+      `n = −ln(1 − r·B ÷ payment) ÷ ln(1 + r), with B = ${$(B)}, r = ${apr}% ÷ 12, payment = ${$(pay)}.`,
+      `→ ${p.months} months (about ${(p.months / 12).toFixed(1)} years); ${$(p.interest ?? 0)} in interest.`,
+      'Assumes the APR holds, no new charges, the same payment every month.',
+    ].join('\n');
+  }
+  if (i.op === 'growth') {
+    const S = i.principal ?? 0;
+    const M = i.monthly ?? 0;
+    const rate = need(i.rate, 'rate');
+    const years = need(i.years, 'years');
+    const g = growth(S, M, rate, years);
+    return [
+      `FV = S(1 + r)^n + M × ((1 + r)^n − 1) ÷ r, with S = ${$(S)}, M = ${$(M)} a month, r = ${rate}% ÷ 12, n = ${Math.round(years * 12)} months.`,
+      `→ ${$(g.value)} in ${years} years, of which ${$(g.contributed)} is what went in and ${$(g.value - g.contributed)} is growth.`,
+      `Assumes a steady ${rate}% a year (real returns vary year to year), compounded monthly, before taxes and fees, in future dollars (not adjusted for inflation).`,
+    ].join('\n');
+  }
+  if (i.op === 'refi') {
+    const B = need(i.principal, 'principal (the balance)');
+    const now = amortize(B, need(i.apr, 'apr'), Math.round(need(i.years, 'years') * 12));
+    const next = amortize(B, need(i.new_apr, 'new_apr'), Math.round(need(i.new_years, 'new_years') * 12));
+    const costs = i.costs ?? 0;
+    const save = Math.round((now.payment - next.payment) * 100) / 100;
+    const lifetime = Math.round((now.interest - (next.interest + costs)) * 100) / 100;
+    return [
+      `Now: ${$(now.payment)} a month, ${$(now.interest)} interest left over ${i.years} years at ${i.apr}%.`,
+      `Refinanced: ${$(next.payment)} a month, ${$(next.interest)} interest over ${i.new_years} years at ${i.new_apr}%, plus ${$(costs)} in costs.`,
+      save > 0 ? `→ ${$(save)} a month less; the costs are paid back in ${costs > 0 ? `${Math.ceil(costs / save)} months` : 'no time (there are none)'}.` : `→ The payment goes up ${$(-save)} a month.`,
+      `→ Over the whole life, ${lifetime >= 0 ? `${$(lifetime)} less` : `${$(-lifetime)} more`} in interest and costs${(i.new_years ?? 0) > (i.years ?? 0) ? ' — the longer term is part of why' : ''}.`,
+      'What would change this answer: moving or paying it off before the break-even, a different rate quote, or closing costs rolled into the loan.',
+    ].join('\n');
+  }
+  requireParentMember(me);
+  const plan = debtPlan((await moneyMind()).debts.debts, i.extra ?? 0);
+  if (!plan.plans.length) return 'There are no debts on Money yet — add them (balance, APR, minimum) and I’ll model it.';
+  return [
+    ...plan.plans.map((p) => `${p.strategy}: ${p.months === null ? 'never finishes at these payments' : `${p.months} months → debt-free ${p.debtFree}, ${$(p.interest ?? 0)} interest${p.saved ? ` (${$(p.saved)} less than minimums only)` : ''}`}${p.order.length ? `; paid off in order ${p.order.join(' → ')}` : ''}`),
+    plan.why,
+    `Assumptions: ${plan.assumptions.join(' ')}`,
+  ].join('\n');
+}
+
 /** C5: "Fill it in" — the values Hana would write, shown to the parent first; nothing saved until they OK it. */
 export async function proposeFill(me: HouseholdMember, docId: number): Promise<HanaAction> {
   if (me.kind !== 'adult') throw new HttpError(403, 'Papers are for grown-ups');
@@ -1335,7 +1495,7 @@ export function capabilities(): HanaCapabilities {
       return { name: t.name, tier: d?.readOnly ? 'T0' : SENDS.has(t.name) ? 'T2' : 'T1', reads: !!d?.readOnly };
     }),
     rails: [
-      'She never moves money.',
+      'She never moves money. Payments, transfers and fixes are prepared — a grown-up makes every one; there is no money-moving tool at any tier.',
       'She never signs anything.',
       'She never deletes mail or calendar events.',
       'She never sends to anyone a grown-up didn’t approve on that draft.',

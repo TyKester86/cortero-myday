@@ -1304,6 +1304,188 @@ export interface MoneyResponse {
   transactions: MoneyTransaction[];
 }
 
+/* ---------- Q6: the Financial Mind (parents only; she never moves money) ---------- */
+
+export type MoneyPace = 'on pace' | 'ahead' | 'hot' | 'short';
+
+/** Something already promised out of checking before payday. */
+export interface MindCommitment {
+  what: string;
+  amount: number;
+  date: DateStr;
+  kind: 'recurring' | 'bill' | 'minimum' | 'reserve';
+}
+
+/** The headline: cash minus every committed outflow until payday — what the household can spend and stay whole. */
+export interface MindSafeToSpend {
+  amount: number;
+  cash: number;
+  until: DateStr;
+  basis: 'paycheck' | 'pay schedule' | '14-days';
+  committed: MindCommitment[];
+  committedTotal: number;
+  /** Recurring charges that land on a card (they move the card balance, not checking). */
+  onCards: Array<{ merchant: string; amount: number; date: DateStr }>;
+  pace: { label: MoneyPace; text: string; spent: number; expected: number; hot: number; perDay: number; daysLeft: number };
+}
+
+/** "This account dips negative on the 9th unless $180 moves" — with the fix prepared (a parent does it). */
+export interface MindOverdraft {
+  account: string;
+  date: DateStr;
+  low: number;
+  shortBy: number;
+  fix: string;
+  fixKind: 'transfer' | 'move_bill' | 'split' | 'call';
+  assumptions: string[];
+}
+
+export interface MindPeriod {
+  start: DateStr;
+  end: DateStr;
+  /** The paycheck that starts it (or the cash on hand, for the stretch you're in). */
+  income: number;
+  incomeLabel: string;
+  obligations: Array<{ what: string; amount: number; date: DateStr }>;
+  total: number;
+  net: number;
+  tight: boolean;
+}
+
+/** A drafted fix to the month's rhythm — a parent makes the call or the change. */
+export interface MindMove {
+  what: string;
+  from: DateStr;
+  to: DateStr;
+  why: string;
+}
+
+export interface MindDebt {
+  id: number | null;
+  name: string;
+  kind: string;
+  balance: number;
+  apr: number | null;
+  minimum: number;
+  dueDay: number | null;
+  limit: number | null;
+  utilization: number | null;
+  nextDue: DateStr | null;
+  autopay: boolean;
+  /** Balance (and limit) come from the linked bank card. */
+  linked: boolean;
+}
+
+export interface PayoffPlan {
+  strategy: 'avalanche' | 'snowball' | 'minimums';
+  months: number | null;
+  /** YYYY-MM, or null when this pace never finishes. */
+  debtFree: string | null;
+  interest: number | null;
+  /** Interest saved against paying only the minimums (null when minimums alone never finish). */
+  saved: number | null;
+  order: string[];
+}
+
+export interface MindDebts {
+  debts: MindDebt[];
+  total: number;
+  minimums: number;
+  extra: number;
+  plans: PayoffPlan[];
+  recommended: 'avalanche' | 'snowball' | null;
+  why: string;
+  assumptions: string[];
+  warnings: string[];
+}
+
+export interface SinkingFund {
+  id: number;
+  name: string;
+  amount: number;
+  dueOn: DateStr;
+  saved: number;
+  yearly: boolean;
+  /** What to set aside each month to have it on time. */
+  monthly: number;
+  months: number;
+}
+
+/** The 24-hour list: held, not blocked. */
+export interface MoneyWant {
+  id: number;
+  what: string;
+  amount: number;
+  by: string;
+  addedAt: string;
+  readyAt: string;
+  ready: boolean;
+  decided: 'bought' | 'let_go' | null;
+}
+
+export interface CaptureCheck {
+  key: string;
+  kind: 'match' | 'benefit' | 'cancelled' | 'review' | 'price' | 'unusual';
+  text: string;
+  /** Dollars a year at stake, when it can be said. */
+  yearly: number | null;
+  merchantKey: string | null;
+}
+
+export interface MoneyBenefit {
+  id: number;
+  kind: 'fsa' | 'dependent_care_fsa' | 'hsa' | 'other';
+  label: string;
+  amount: number;
+  deadline: DateStr;
+}
+
+export interface MoneyMark {
+  merchantKey: string;
+  label: string;
+  mark: 'cancelled' | 'keep';
+  markedOn: DateStr;
+}
+
+export interface MoneySettings {
+  wantThreshold: number;
+  extraPayment: number;
+  cushion: number;
+  payAnchor: DateStr | null;
+  payCadence: 'weekly' | 'biweekly' | 'semimonthly' | 'monthly' | null;
+  payAmount: number | null;
+}
+
+export interface MoneyMind {
+  source: string;
+  asOf: string;
+  stale: string | null;
+  safe: MindSafeToSpend | null;
+  /** Why there's no headline yet (no bank linked, …). */
+  safeWhyNot: string | null;
+  overdraft: MindOverdraft | null;
+  choreography: { periods: MindPeriod[]; moves: MindMove[]; note: string | null };
+  debts: MindDebts;
+  funds: SinkingFund[];
+  wants: MoneyWant[];
+  checks: CaptureCheck[];
+  benefits: MoneyBenefit[];
+  marks: MoneyMark[];
+  wins: string[];
+  settings: MoneySettings;
+}
+
+/** The money physical (the parents' report): where the household stands and the three highest-value moves. */
+export interface MoneyPhysical {
+  asOf: DateStr;
+  cash: number;
+  invested: number;
+  debt: number;
+  net: number;
+  trajectory: string;
+  moves: Array<{ text: string; value: number | null }>;
+}
+
 export interface LinkTokenResponse {
   provider: MoneyProviderKind;
   linkToken: string;
@@ -2169,6 +2351,8 @@ export interface InvestAccount {
   allocation: Allocation;
   monthlyContribution: number;
   employerMatch: number;
+  /** The most the employer would add a month (0 = not entered). Below it, match is left unclaimed. */
+  matchMax: number;
   history: Array<{ asOf: DateStr; balance: number }>;
 }
 
@@ -3219,7 +3403,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3264,6 +3448,8 @@ export interface HanaFamilyReport {
   gaps: Array<{ date: DateStr; category: string; text: string }>;
   /** Suggestions that missed the family's taste (set aside or marked wrong). */
   tasteMisses: Array<{ date: DateStr; text: string }>;
+  /** Q6: the money physical (null with no money set up). */
+  money: MoneyPhysical | null;
   /** C4: the month's loop ledger. */
   loops: HanaLoopLedger;
 }
@@ -3297,7 +3483,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3377,7 +3563,7 @@ export interface HanaLoop {
   mine: boolean;
   about: string | null;
   due: DateStr | null;
-  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document';
+  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document' | 'money';
   sourceLabel: string;
   /** Opened from a grown-up's own chat: theirs until shared. */
   private: boolean;

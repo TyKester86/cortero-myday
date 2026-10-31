@@ -6926,6 +6926,7 @@ async function hanaBrainSuite() {
     await hanaLoopChecks();
     await hanaLadderChecks();
     await hanaPapersChecks();
+    await hanaMoneyChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7173,6 +7174,162 @@ async function hanaCoachChecks() {
   await startServer(hanaNow());
 }
 
+async function hanaMoneyChecks() {
+  const tess = hanaIds.tess;
+  const SHAME = /overspen|irresponsib|careless|should have|blew it|bad with money|wasteful|guilt|you need to stop/i;
+  // The household's bank, as the suite's clock sees it (Mon Nov 2): checking $312.40, savings, a Visa near its limit.
+  const [chk] = await sql("SELECT id, item_id FROM money_accounts WHERE account_id = 'hana-e2e-acct'");
+  const [sav] = await sql("INSERT INTO money_accounts (household_id, item_id, account_id, name, type, subtype, current, available, updated_at) VALUES (1, $1, 'hana-e2e-sav', 'Hana Savings', 'depository', 'savings', 500, 500, now()) RETURNING id", [chk.item_id]);
+  const [card] = await sql("INSERT INTO money_accounts (household_id, item_id, account_id, name, mask, type, subtype, current, available, updated_at) VALUES (1, $1, 'hana-e2e-card', 'Hana Visa', '4410', 'credit', 'credit card', 1800, 200, now()) RETURNING id", [chk.item_id]);
+  let n = 0;
+  const txn = (acct, day, name, amount, category) => sql('INSERT INTO money_transactions (household_id, account_id, txn_id, day, name, merchant, amount, category, pending) VALUES (1, $1, $2, $3, $4, $4, $5, $6, false)', [acct, `hana-mind-${n++}`, day, name, amount, category]);
+  for (const d of ['2026-09-11', '2026-09-25', '2026-10-09', '2026-10-23']) await txn(chk.id, d, 'Acme Payroll', -2000, 'INCOME');
+  for (const d of ['2026-08-03', '2026-09-03', '2026-10-03']) await txn(chk.id, d, 'City Power', 100, 'RENT_AND_UTILITIES');
+  for (const [d, a] of [['2026-07-20', 60], ['2026-08-20', 72], ['2026-09-20', 55], ['2026-10-20', 120]]) await txn(chk.id, d, 'Gas Co', a, 'RENT_AND_UTILITIES');
+  for (const [d, a] of [['2026-07-12', 15.49], ['2026-08-12', 15.49], ['2026-09-12', 15.49], ['2026-10-12', 17.99]]) await txn(card.id, d, 'StreamCo', a, 'ENTERTAINMENT');
+  for (let d = '2026-09-03', i = 0; i < 20; i++) {
+    await txn(chk.id, d, 'Corner Market', 30, 'FOOD_AND_DRINK');
+    d = new Date(Date.parse(`${d}T12:00:00Z`) + 3 * 86_400_000).toISOString().slice(0, 10);
+  }
+
+  section('Hana Q6 · the Financial Mind is for grown-ups; it reads the household’s whole picture');
+  eq('kids get no money mind, no debts, no 24-hour list', [(await avery.get('/api/money/mind')).status, (await avery.post('/api/money/debts', { name: 'x' })).status, (await evan.post('/api/money/wants', { what: 'x', amount: 5 })).status], [403, 403, 403]);
+  let m = (await ty.post('/api/money/debts', { name: 'Hana Visa', kind: 'credit_card', accountId: card.id, apr: 24.99, minimum: 40, dueDay: 4 })).data;
+  m = (await ty.post('/api/money/debts', { name: 'Car loan', kind: 'auto', balance: 8000, apr: 6.5, minimum: 250, dueDay: 15 })).data;
+  m = (await kayla.post('/api/money/debts', { name: 'Store card', kind: 'credit_card', balance: 300, apr: 12, minimum: 25, dueDay: 20 })).data;
+  m = (await ty.post('/api/money/funds', { name: 'Car insurance', amount: 600, dueOn: '2027-05-01' })).data;
+  eq('a linked card takes its balance and limit from the bank (90% used)', (({ balance, limit, utilization, linked }) => [balance, limit, utilization, linked])(m.debts.debts.find((d) => d.name === 'Hana Visa')), [1800, 2000, 90, true]);
+  eq('a sinking fund becomes a monthly set-aside ($600 over 6 months)', [m.funds[0].monthly, m.funds[0].months], [100, 6]);
+
+  section('Hana Q6 · safe-to-spend: cash − every committed outflow until payday, with pace — from tools, never vibes');
+  const s = m.safe;
+  eq('payday from the bank’s paychecks (Fri Nov 6)', [s.until, s.basis], ['2026-11-06', 'paycheck']);
+  eq('…committed: the power bill, the Visa minimum, the water bill, and this stretch’s insurance set-aside', s.committed.map((c) => [c.what, c.amount, c.kind]), [
+    ['City Power', 100, 'recurring'], ['Hana Visa minimum', 40, 'minimum'], ['Water', 64.2, 'bill'], ['Set aside for Car insurance', 13.14, 'reserve'],
+  ]);
+  eq('…$312.40 − $217.34 = $95.06 safe to spend', [s.cash, s.committedTotal, s.amount], [312.4, 217.34, 95.06]);
+  check('…a card subscription moves the card, not checking: StreamCo is never subtracted', !s.committed.some((c) => c.what === 'StreamCo') && s.onCards.every((c) => c.merchant !== 'City Power'), JSON.stringify(s.onCards));
+  check('…pace: $90 of everyday spending since the Oct 23 paycheck is ahead of the even line', s.pace.label === 'ahead' && /^Ahead of pace by \$55 — about \$23\.7\d a day for the 4 days to payday\.$/.test(s.pace.text), s.pace.text);
+  check('the Money page leads with it; no shame words anywhere in the picture', !SHAME.test(JSON.stringify(m)));
+
+  section('Hana Q6 · overdraft prediction: the dip found days early, the fix prepared (a parent makes it)');
+  eq('no dip at $0 cushion', m.overdraft, null);
+  m = (await ty.put('/api/money/settings', { cushion: 100 })).data;
+  eq('with a $100 cushion: Thu Nov 5 dips to $78.20 — move $30 from savings by Wed', [m.overdraft?.date, m.overdraft?.low, m.overdraft?.shortBy, m.overdraft?.fixKind, m.overdraft?.fix], ['2026-11-05', 78.2, 30, 'transfer', 'Move $30 from Hana Savings to Hana Checking by Wed, Nov 4.']);
+  check('…its assumptions are labeled (paychecks, $10.00 a day of everyday spending)', m.overdraft.assumptions.some((a) => /\$10\.00 a day/.test(a)), JSON.stringify(m.overdraft.assumptions));
+
+  section('Hana Q6 · payday choreography: every obligation on the pay rhythm; the tight stretch and the drafted move');
+  m = (await ty.put('/api/money/settings', { cushion: 150 })).data;
+  const [p1, p2] = m.choreography.periods;
+  eq('the stretch to Friday is tight against a $150 cushion; the next isn’t', [p1.start, p1.end, p1.income, p1.total, p1.net, p1.tight, p2.incomeLabel, p2.tight], ['2026-11-02', '2026-11-06', 312.4, 204.2, 108.2, true, 'paycheck Fri, Nov 6', false]);
+  eq('…the drafted move: the water bill after the paycheck', m.choreography.moves.map((x) => [x.what, x.from, x.to, x.why]), [['Water', '2026-11-05', '2026-11-07', 'Moving it from Thu, Nov 5 to Sat, Nov 7 puts it after the Fri, Nov 6 paycheck — the stretch to Fri, Nov 6 goes from $108.20 to $172.40.']]);
+  m = (await ty.put('/api/money/settings', { cushion: 100 })).data;
+  const pay = (await ty.put('/api/money/settings', { payAnchor: '2026-11-13', payCadence: 'biweekly', payAmount: 1900 })).data;
+  eq('the bank’s paycheck wins over a typed pay schedule', pay.safe.basis, 'paycheck');
+
+  section('Hana Q6 · debt command: every liability, avalanche vs snowball, interest and debt-free dates, assumptions shown');
+  const d = m.debts;
+  eq('three debts, $10,100, $315 a month in minimums', [d.debts.length, d.total, d.minimums], [3, 10100, 315]);
+  check('…the Visa’s 90% is a warning, said as a fact', d.warnings.some((w) => /^Hana Visa is at 90% of its \$2,000\.00 limit — \$200\.00 of room before it's over\.$/.test(w)), JSON.stringify(d.warnings));
+  const live = (await ty.get('/api/money/payoff?extra=200')).data;
+  const [av, sn, mins] = live.plans;
+  eq('modeled live at $200 extra: avalanche goes after the 24.99% Visa first; snowball after the smallest balance', [av.strategy, av.order[0], sn.strategy, sn.order[0], mins.strategy], ['avalanche', 'Hana Visa', 'snowball', 'Store card', 'minimums']);
+  check('…avalanche costs no more interest than snowball, and both beat minimums (sooner, cheaper)', av.interest <= sn.interest && av.saved > 0 && sn.saved > 0 && av.months < mins.months && /^\d{4}-\d{2}$/.test(av.debtFree), JSON.stringify(live.plans));
+  // The same math by hand, one debt: $1,000 at 12% paying $100 a month.
+  let bal = 1000;
+  let interest = 0;
+  let months = 0;
+  while (bal > 0.004) { const i = bal * 0.01; bal += i; interest += i; bal -= Math.min(bal, 100); months++; }
+  check('finance_calc (professor mode) shows the math and gets it right: payoff, a 30-year loan, growth', await (async () => {
+    const one = (await hanaSay(ty, 'calc payoff 1000 12 100')).reply.text;
+    return one.includes(`${months} months`) && one.includes(`$${(Math.round(interest * 100) / 100).toFixed(2)} in interest`) && /n = −ln/.test(one);
+  })(), `${months} months, ${interest}`);
+  check('…$200,000 at 6% over 30 years is $1,199.10 a month', /\$1,199\.10 a month/.test((await hanaSay(ty, 'calc loan 200000 6 30')).reply.text));
+  check('…$100 a month at 0% for a year is $1,200.00', /→ \$1,200\.00 in 1 years/.test((await hanaSay(ty, 'calc growth 0 100 0 1')).reply.text));
+
+  section('Hana Q6 · capture checks and C6: unclaimed match, use-it-or-lose-it money, price changes, unusual bills, subscriptions');
+  await sql("INSERT INTO invest_accounts (household_id, owner_id, name, kind, monthly_contribution, employer_match, match_max) VALUES (1, $1, 'Ty 401(k)', '401k', 300, 100, 150)", [hanaIds.Ty]);
+  m = (await ty.post('/api/money/benefits', { kind: 'fsa', label: '2026 health FSA', amount: 320, deadline: '2026-12-31' })).data;
+  const ck = Object.fromEntries(m.checks.map((c) => [c.kind, c.text]));
+  eq('each, in plain words with the dollars', [ck.match, ck.benefit, ck.price, ck.review], [
+    'Ty 401(k): your employer would add up to $150.00 a month and adds $100.00 now — $50.00 a month ($600 a year) of match is unclaimed. Usually that means raising your own contribution.',
+    '$320.00 left in 2026 health FSA — use it by Thu, Dec 31 or it\'s gone (59 days).',
+    'StreamCo went from $15.49 to $17.99 (+16%) on Mon, Oct 12 — $30 a year more.',
+    'Still using StreamCo? $15.49 a month — $186 a year. Keep it or mark it cancelled.',
+  ]);
+  check('“this bill is unusual because…”, from the household’s own history', /^Gas Co is unusual this time: \$120\.00 on Tue, Oct 20 is 100% above your usual \$60\.00 \(the 3 before ranged \$55\.00–\$72\.00\)\./.test(ck.unusual ?? ''), ck.unusual);
+  eq('no review for the power bill (a utility, not a subscription)', m.checks.filter((c) => c.kind === 'review').length, 1);
+  m = (await ty.put('/api/money/marks', { merchant: 'StreamCo', mark: 'keep' })).data;
+  eq('“Keep” quiets the review for 90 days', m.checks.some((c) => c.kind === 'review'), false);
+  await sql("UPDATE money_marks SET mark = 'cancelled', marked_on = '2026-10-01'");
+  m = (await ty.get('/api/money/mind')).data;
+  eq('a charge after it was marked cancelled is caught', m.checks.filter((c) => c.kind === 'cancelled').map((c) => c.text), ['StreamCo charged $17.99 on Mon, Oct 12, after it was marked cancelled on Thu, Oct 1 — worth a call to stop it and ask for that back.']);
+
+  section('Hana Q6 · the 24-hour list: held, not blocked; asked once when the day is up');
+  let r = await hanaSay(ty, 'hold Noise-cancelling headphones $180');
+  const hold = r.actions?.find((a) => a.tool === 'hold_want');
+  eq('Hana offers it; it waits for the OK like every write', [hold?.status, hold?.summary], ['pending', 'Hold “Noise-cancelling headphones” ($180.00) on the 24-hour list']);
+  await ty.post(`/api/hana/actions/${hold.id}/confirm`);
+  m = (await ty.get('/api/money/mind')).data;
+  const w = m.wants[0];
+  eq('…on the list, not ready yet', [w.what, w.amount, w.by, w.ready, w.decided], ['Noise-cancelling headphones', 180, 'Ty', false, null]);
+
+  section('Hana Q6 · the watch: payments and the dip become loops (fix attached); closed on the bank’s evidence');
+  await sql("UPDATE money_wants SET added_at = added_at - interval '25 hours'");
+  await ty.put('/api/hana/settings', { muted: [] });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 15)}`);
+  const loops = (await ty.get('/api/hana/loops')).data.loops.filter((l) => l.source === 'money');
+  const want3 = [
+    ['Hana Checking dips to $78.20 on Thu, Nov 5 unless $30.00 moves. Prepared fix: Move $30 from Hana Savings to Hana Checking by Wed, Nov 4.', '2026-11-04', 'the family'],
+    ['Pay Hana Visa minimum $40.00 by Wed, Nov 4 — prepared from Hana Checking; you make the payment', '2026-11-04', 'the family'],
+    ['Pay Water $64.20 by Thu, Nov 5 — prepared from Hana Checking; you make the payment', '2026-11-05', 'Ty'],
+  ];
+  check('money loops: the dip (due the day before), the Visa minimum, the water bill (and any other unpaid bill due this week)', want3.every((x) => loops.some((l) => JSON.stringify([l.what, l.due, l.owedBy]) === JSON.stringify(x))) && loops.every((l) => /^Pay .* — prepared from Hana Checking; you make the payment$|^Hana Checking dips/.test(l.what)), JSON.stringify(loops.map((l) => l.what)));
+  const said = (await sql("SELECT item_key, member_id, text FROM hana_items WHERE surface = 'watch' AND category = 'money' ORDER BY item_key"));
+  eq('the watch says each once: the dip, the near-limit card, the checks, and the want whose day is up (to Ty only)', [...new Set(said.map((x) => x.item_key.replace(/:\d{4}-\d{2}-\d{2}$/, '').replace(/^money:check:(\w+):.*$/, 'check:$1')))].sort(), [
+    'check:benefit', 'check:cancelled', 'check:match', 'check:price', 'check:unusual', 'money:overdraft', 'money:util:Hana Visa:2026-11:near', `money:want:${w.id}`,
+  ].sort());
+  eq('…the want is Ty’s alone', said.filter((x) => x.item_key.startsWith('money:want')).map((x) => x.member_id), [hanaIds.Ty]);
+  check('…facts, never judgment', !said.some((x) => SHAME.test(x.text)));
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 16)}`);
+  eq('…said once, not every pass', (await sql("SELECT COUNT(*)::int AS n FROM hana_items WHERE surface = 'watch' AND category = 'money'"))[0].n, said.length);
+  await txn(chk.id, '2026-11-02', 'Hana Visa', 40, 'LOAN_PAYMENTS');
+  await ty.put('/api/money/settings', { cushion: 0 });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 17)}`);
+  const closed = (await ty.get('/api/hana/loops?closed=1')).data.loops.filter((l) => l.source === 'money' && !l.open);
+  eq('the minimum closes when the payment posts; the dip closes when the projection stops dipping', closed.map((l) => l.evidence).sort(), ['A $40.00 payment to Hana Visa posted on Mon, Nov 2', 'The balance projection no longer dips'].sort());
+  m = (await ty.get('/api/money/mind')).data;
+  eq('…and the paid minimum leaves safe-to-spend ($95.06 → $135.06)', m.safe.amount, 135.06);
+
+  section('Hana Q6 · the brief, the report’s money physical, wins');
+  const money = (await ty.get('/api/hana/brief?kind=morning')).data.sections.find((x) => x.title === 'Money')?.items.map((i) => i.text) ?? [];
+  check('the parents’ brief leads with the headline number and its pace', /^Safe to spend: \$135\.06 until Fri, Nov 6\. Ahead of pace by \$\d+ — about \$\d+\.\d\d a day for the 4 days to payday\.$/.test(money[0] ?? ''), JSON.stringify(money));
+  eq('kids’ briefs have no money', (await avery.get('/api/hana/brief?kind=morning')).data.sections.some((x) => x.title === 'Money'), false);
+  await sql("INSERT INTO money_snapshots (household_id, day, safe, debt_total, debt_free_month, net) VALUES (1, '2026-10-01', 50, 10400, '2031-01', -9000)");
+  m = (await ty.get('/api/money/mind')).data;
+  check('wins are marked from the record: the debt-free date moved closer, debt down $300', m.wins.some((x) => /^The debt-free date moved closer: Jan 2031 → \w{3} 20[23]\d\.$/.test(x)) && m.wins.includes('Debt is down $300 since Thu, Oct 1.'), JSON.stringify(m.wins));
+  const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
+  eq('the report carries the money physical: cash, debt, net = cash + invested − debt, three moves', [rep.money?.cash, rep.money?.debt, Math.round((rep.money.cash + rep.money.invested - rep.money.debt) * 100) / 100 === rep.money.net, rep.money?.moves.length], [812.4, 10100, true, 3]);
+  check('…the trend since the first record; the moves ranked by value', /^Net position is (up|down) \$[\d,]+ since Thu, Oct 1\.$/.test(rep.money.trajectory) && rep.money.moves[0].value >= rep.money.moves[1].value && rep.money.moves[1].value >= rep.money.moves[2].value, JSON.stringify(rep.money));
+  check('Hana says the picture with the math shown, and no account numbers', await (async () => {
+    const t = (await hanaSay(ty, 'safe to spend')).reply.text;
+    return /Safe to spend: \$135\.06/.test(t) && /Math: \$312\.40 in checking − \$177\.34 committed = \$135\.06/.test(t) && !/4410/.test(t);
+  })());
+
+  section('Hana Q6 · the rail: she never moves money, at any tier');
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('no payment, transfer or purchase tool exists; the rail says so', [caps.tools.filter((t) => /pay|transfer|purchase|checkout|move_money/i.test(t.name)).map((t) => t.name), /never moves money/.test(caps.rails[0])], [[], true]);
+  eq('money_mind and finance_calc read; hold_want waits for a tap', ['money_mind', 'finance_calc', 'hold_want'].map((x) => caps.tools.find((t) => t.name === x)?.tier), ['T0', 'T0', 'T1']);
+  eq('another household sees none of it', [(await tess.get('/api/money/mind')).data.debts.debts.length, (await tess.get('/api/money/mind')).data.funds.length, (await tess.del(`/api/money/debts/${m.debts.debts[0].id}`)).status], [0, 0, 404]);
+
+  for (const t of ['debts', 'sinking_funds', 'money_wants', 'money_marks', 'money_benefits', 'money_snapshots', 'money_settings']) await sql(`DELETE FROM ${t}`);
+  await sql("DELETE FROM money_transactions WHERE txn_id LIKE 'hana-mind-%'");
+  await sql('DELETE FROM money_accounts WHERE id IN ($1, $2)', [sav.id, card.id]);
+  await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
+  await sql("DELETE FROM open_loops WHERE source = 'money'");
+  await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
 async function hanaPapersChecks() {
   const tess = hanaIds.tess;
   const put = (c, body, { type = 'text/plain', name = 'slip.txt', photo = false } = {}) =>
@@ -7399,7 +7556,9 @@ async function hanaLoopChecks() {
 
   section('Hana C4 · the ledger in the family report');
   const rep = (await kayla.get('/api/hana/report?month=2026-11')).data.loops;
-  eq('November, as Kayla sees it: 5 opened (not Ty’s private one), at least one closed on time', [rep.opened, rep.closedOnTime >= 1], [5, true]);
+  // Plus the watch's own payment loops since Q6 (bills not on autopay due this week — however many earlier suites left).
+  const payLoops = (await sql("SELECT COUNT(*)::int AS n FROM open_loops WHERE source = 'money'"))[0].n;
+  eq('November, as Kayla sees it: 5 opened (not Ty’s private one) + the payment loops, at least one closed on time', [rep.opened, rep.closedOnTime >= 1, payLoops >= 1], [5 + payLoops, true, true]);
   const oct = (await kayla.get('/api/hana/report?month=2026-10')).data.loops;
   check('October’s break is reported like a fact: what, when it was due, what it cost', oct.broken.some((b) => b.what === 'Kayla: Sign the reading log' && b.due === '2026-10-30' && b.cost === 'still open 3 day(s) after its date'), JSON.stringify(oct));
   eq('…another household’s report has none of ours', (await tess.get('/api/hana/report?month=2026-11')).data.loops.opened, 0);
@@ -7629,7 +7788,7 @@ async function hanaWatchChecks() {
   eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
   eq('a second pass pushes nothing new (no loops)', (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data.pushed, 0);
   check('the watch alerts show on Family HQ', (await ty.get('/api/hana/alerts')).data.alerts.some((a) => a.kind === 'watch' && a.text.includes('Evan piano lesson')));
-  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework'].includes(r.category)));
+  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money since Q6)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money'].includes(r.category)));
 
   section('Hana H5 · quiet hours: held on a school night, except a same-day logistics failure');
   await ty.post('/api/calendar/events', { title: 'Evan swim', startsOn: '2026-11-03', startTime: '16:00', endTime: '17:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });

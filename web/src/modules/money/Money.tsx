@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { BillsResponse, ExchangeRequest, LinkTokenResponse, MoneyResponse, MoneyTransaction } from '@myday/shared';
+import type { BillsResponse, ExchangeRequest, LinkTokenResponse, MoneyMind, MoneyResponse, MoneyTransaction } from '@myday/shared';
+import { MoneyMindPanel } from './MoneyMind';
 import { NavIcon } from '../../components/NavIcon';
 import { useSession } from '../../session';
 import { api, useLoad } from '../../api';
@@ -149,6 +150,7 @@ export default function Money() {
   const { me } = useSession();
   const { data, error, setData } = useLoad<MoneyResponse>('/api/money');
   const bills = useLoad<BillsResponse>('/api/bills');
+  const mind = useLoad<MoneyMind>('/api/money/mind');
   const [q, setQ] = useState('');
   const [found, setFound] = useState<MoneyTransaction[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -162,6 +164,7 @@ export default function Money() {
     setBusy(true);
     try {
       setData(await p);
+      mind.reload();
       show(msg);
     } catch (e) {
       show(e instanceof Error ? e.message : 'Something went wrong');
@@ -194,6 +197,7 @@ export default function Money() {
   };
 
   const s = data.safeToSpend;
+  const ms = mind.data?.safe ?? null;
   const synced = data.items.map((i) => i.lastSyncedAt).filter(Boolean).sort().at(-1) ?? null;
   const head = (
     <>
@@ -203,11 +207,13 @@ export default function Money() {
           {[me.household?.name, new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' }), synced ? `Updated ${ago(synced)}` : null].filter(Boolean).join(' · ')}
         </p>
       </header>
-      <div className="sage-card money-hero" data-testid={s ? 'safe-to-spend' : 'safe-to-spend-empty'}>
+      <div className="sage-card money-hero" data-testid={s || ms ? 'safe-to-spend' : 'safe-to-spend-empty'}>
         <span className="label">Safe to spend</span>
-        <div className="sage-big">{s ? usd(s.amount) : '—'}</div>
+        <div className="sage-big">{ms ? usd(ms.amount) : s ? usd(s.amount) : '—'}</div>
         <span>
-          {s
+          {ms
+            ? `Until ${new Date(`${ms.until}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, after every bill, minimum and set-aside. ${ms.pace.text}`
+            : s
             ? `Available until ${new Date(`${s.until}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} (${s.basis === 'paycheck' ? 'next paycheck' : 'next 2 weeks'}), after bills`
             : data.provider === 'none'
               ? 'Bank connections aren’t switched on yet — bills still work.'
@@ -219,6 +225,7 @@ export default function Money() {
       </div>
       <BillRows bills={bills.data} />
       {s && <Forecast checking={s.checking} upcoming={s.upcoming} />}
+      {mind.data && <MoneyMindPanel mind={mind.data} setMind={mind.setData} cards={data.accounts.filter((a) => a.type === 'credit')} />}
     </>
   );
 
@@ -255,7 +262,7 @@ export default function Money() {
         </div>
       ) : (
         <>
-          {s && s.upcoming.length > 0 && (
+          {s && !ms && s.upcoming.length > 0 && (
             <div className="card">
               <h2>Coming out before then</h2>
               <ul className="plain rows">

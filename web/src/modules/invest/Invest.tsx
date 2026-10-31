@@ -51,7 +51,7 @@ export default function Invest() {
   const confirm = useConfirm();
   const { members } = useSession();
   const { data, error, setData } = useLoad<InvestResponse>('/api/invest');
-  const [acct, setAcct] = useState({ name: '', kind: '401k' as InvestKind, owner: '', monthlyContribution: '', employerMatch: '' });
+  const [acct, setAcct] = useState({ name: '', kind: '401k' as InvestKind, owner: '', monthlyContribution: '', employerMatch: '', matchMax: '' });
   const [plan, setPlan] = useState<null | { target: Allocation; expectedReturnPct: number; inflationPct: number; yearsToRetire: number; withdrawalPct: number }>(null);
   const [msg, setMsg] = useState<string | null>(null);
   if (error) return <p className="error">{error}</p>;
@@ -111,7 +111,7 @@ export default function Invest() {
           onSubmit={(e) => {
             e.preventDefault();
             void run(api('/api/invest/accounts', 'POST', { ...acct, owner: acct.owner || null }), 'Account added').then(() =>
-              setAcct({ ...acct, name: '', monthlyContribution: '', employerMatch: '' }),
+              setAcct({ ...acct, name: '', monthlyContribution: '', employerMatch: '', matchMax: '' }),
             );
           }}
         >
@@ -135,6 +135,7 @@ export default function Invest() {
           </select>
           <input value={acct.monthlyContribution} onChange={(e) => setAcct({ ...acct, monthlyContribution: e.target.value })} placeholder="$/mo you add" inputMode="decimal" />
           <input value={acct.employerMatch} onChange={(e) => setAcct({ ...acct, employerMatch: e.target.value })} placeholder="$/mo match" inputMode="decimal" />
+          <input value={acct.matchMax} onChange={(e) => setAcct({ ...acct, matchMax: e.target.value })} placeholder="Most match $/mo" inputMode="decimal" aria-label="The most your employer would match a month" />
           <button className="btn small">Add</button>
         </form>
       </div>

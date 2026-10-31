@@ -10,6 +10,7 @@ import { logEvent } from '../events.js';
 import { scheduleFor } from './tools.js';
 import { requireParent, type Viewer } from './scope.js';
 import { loopLedger } from './loops.js';
+import { moneyPhysical, usd } from '../money/mind.js';
 
 export type FamilyReport = HanaFamilyReport;
 
@@ -77,6 +78,7 @@ export async function familyReport(v: Viewer, month: string): Promise<FamilyRepo
     gaps: gaps.map((g) => ({ date: g.shown_on, category: g.category, text: g.text })),
     tasteMisses: taste.map((t) => ({ date: t.shown_on, text: t.text })),
     loops: await loopLedger(v, month),
+    money: await moneyPhysical(),
   };
 }
 
@@ -101,6 +103,15 @@ export function reportEmail(r: FamilyReport, publicUrl: string): { subject: stri
     'What Hana couldn’t do:',
     ...(r.gaps.length ? r.gaps.map((g) => `  • ${g.date}: ${g.text}`) : ['  • Nothing this month.']),
     ...(r.tasteMisses.length ? ['', 'Suggestions that missed:', ...r.tasteMisses.map((t) => `  • ${t.date}: ${t.text}`)] : []),
+    ...(r.money
+      ? [
+          '',
+          r.month.endsWith('-12') ? 'The annual money physical:' : 'Money check-up:',
+          `  Net position: ${usd(r.money.net)} (${usd(r.money.cash)} cash + ${usd(r.money.invested)} invested − ${usd(r.money.debt)} debt)`,
+          `  ${r.money.trajectory}`,
+          ...(r.money.moves.length ? ['  The highest-value moves:', ...r.money.moves.map((x, i) => `    ${i + 1}. ${x.text}`)] : []),
+        ]
+      : []),
     '',
     `The full report: ${publicUrl}/hq`,
   ];

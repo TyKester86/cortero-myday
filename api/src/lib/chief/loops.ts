@@ -39,7 +39,7 @@ interface Row {
 }
 const COLS = 'id, what, owed_by_member, owed_by_name, ours, about_member, due::text AS due, source, source_ref, opened_by, private, closed_at, closed_by, closed_evidence, created_at';
 
-const SOURCE_LABEL: Record<LoopSource, string> = { chat: 'From a chat with Hana', manual: 'Added by hand', calendar: 'MyDay calendar', email: 'Forwarded mail', document: 'Papers' };
+const SOURCE_LABEL: Record<LoopSource, string> = { chat: 'From a chat with Hana', manual: 'Added by hand', calendar: 'MyDay calendar', email: 'Forwarded mail', document: 'Papers', money: 'Money' };
 const daysBetween = (a: DateStr, b: DateStr): number => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
 const weekday = (d: DateStr): string => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long' });
 

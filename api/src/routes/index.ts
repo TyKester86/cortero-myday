@@ -11,6 +11,7 @@ import { assistantRouter } from './assistant.js';
 import { hanaVoiceRouter, hqRouter } from './hq.js';
 import { calendarSourcesRouter } from './calendarSources.js';
 import { papersRouter, papersUploadRouter } from './papers.js';
+import { mindRouter } from './mind.js';
 import { errandsRouter } from './errands.js';
 import { grocersRouter } from './grocers.js';
 import { inboundRouter, inboxRouter } from './inbox.js';
@@ -43,7 +44,7 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter, hqRouter, calendarSourcesRouter, papersRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter, hqRouter, calendarSourcesRouter, papersRouter, mindRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
 // The Feed is open to anyone with the app (no household needed): community + social routes do their own 18+ checks.

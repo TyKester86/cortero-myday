@@ -44,8 +44,8 @@ function mix(b: Record<string, unknown>, prefix: '' | 'target'): Allocation {
 const round1 = (n: number): number => Math.round(n * 10) / 10;
 
 async function investView(): Promise<InvestResponse> {
-  const { rows: accts } = await pool.query<{ id: number; name: string; kind: InvestAccount['kind']; owner: string | null; monthly_contribution: string; employer_match: string }>(
-    `SELECT a.id, a.name, a.kind, m.name AS owner, a.monthly_contribution, a.employer_match
+  const { rows: accts } = await pool.query<{ id: number; name: string; kind: InvestAccount['kind']; owner: string | null; monthly_contribution: string; employer_match: string; match_max: string }>(
+    `SELECT a.id, a.name, a.kind, m.name AS owner, a.monthly_contribution, a.employer_match, a.match_max
        FROM invest_accounts a LEFT JOIN household_members m ON m.id = a.owner_id ORDER BY a.id`,
   );
   const { rows: bals } = await pool.query<{ account_id: number; as_of: DateStr; balance: string; stocks_pct: string; bonds_pct: string; cash_pct: string; other_pct: string }>(
@@ -83,6 +83,7 @@ async function investView(): Promise<InvestResponse> {
       },
       monthlyContribution: Number(a.monthly_contribution),
       employerMatch: Number(a.employer_match),
+      matchMax: Number(a.match_max),
       history: mine.map((b) => ({ asOf: b.as_of, balance: Number(b.balance) })),
     };
   });
@@ -120,8 +121,9 @@ investRouter.post('/api/invest/accounts', async (req, res) => {
   if (!kind) throw new HttpError(400, 'Pick an account type');
   const owner = typeof b.owner === 'string' && b.owner ? await memberByKey(b.owner) : null;
   if (b.owner && !owner) throw new HttpError(404, 'No such household member');
-  await pool.query('INSERT INTO invest_accounts (owner_id, name, kind, monthly_contribution, employer_match) VALUES ($1, $2, $3, $4, $5)', [
+  await pool.query('INSERT INTO invest_accounts (owner_id, name, kind, monthly_contribution, employer_match, match_max) VALUES ($1, $2, $3, $4, $5, $6)', [
     owner?.id ?? null, str(b.name, 'name', 60, true), kind, amount(b.monthlyContribution ?? 0, 'monthlyContribution', 1_000_000), amount(b.employerMatch ?? 0, 'employerMatch', 1_000_000),
+    amount(b.matchMax ?? 0, 'matchMax', 1_000_000),
   ]);
   res.status(201).json(await investView());
 });
@@ -130,14 +132,15 @@ investRouter.patch('/api/invest/accounts/:id', async (req, res) => {
   requireAdult(req);
   const id = idParam(req.params.id);
   const b = req.body as Record<string, unknown>;
-  const { rows } = await pool.query<{ name: string; monthly_contribution: string; employer_match: string }>('SELECT name, monthly_contribution, employer_match FROM invest_accounts WHERE id = $1', [id]);
+  const { rows } = await pool.query<{ name: string; monthly_contribution: string; employer_match: string; match_max: string }>('SELECT name, monthly_contribution, employer_match, match_max FROM invest_accounts WHERE id = $1', [id]);
   const cur = rows[0];
   if (!cur) throw new HttpError(404, 'No such account');
-  await pool.query('UPDATE invest_accounts SET name = $2, monthly_contribution = $3, employer_match = $4 WHERE id = $1', [
+  await pool.query('UPDATE invest_accounts SET name = $2, monthly_contribution = $3, employer_match = $4, match_max = $5 WHERE id = $1', [
     id,
     b.name === undefined ? cur.name : str(b.name, 'name', 60, true),
     b.monthlyContribution === undefined ? cur.monthly_contribution : amount(b.monthlyContribution, 'monthlyContribution', 1_000_000),
     b.employerMatch === undefined ? cur.employer_match : amount(b.employerMatch, 'employerMatch', 1_000_000),
+    b.matchMax === undefined ? cur.match_max : amount(b.matchMax, 'matchMax', 1_000_000),
   ]);
   res.json(await investView());
 });

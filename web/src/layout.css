@@ -562,3 +562,11 @@ html:has(.app:not(.sidebar) nav.tabs) { scroll-padding-bottom: calc(180px + env(
   .fl-brand { font-size: 20px; gap: 8px; }
   .social-top { gap: 8px; }
 }
+
+/* Q6: Hana's money mind on Money */
+.money-mind { display: grid; gap: 12px; }
+.money-mind .warn-card { border-left: 4px solid var(--hy-amber); }
+.money-mind li.tight b { color: var(--hy-terra); }
+.money-mind .mind-plans { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-block: 8px; }
+.money-mind .mind-plans th, .money-mind .mind-plans td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--hy-line); font-variant-numeric: tabular-nums; }
+.money-mind .mind-plans tr.recommended td { font-weight: 600; }

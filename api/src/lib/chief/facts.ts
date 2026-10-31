@@ -19,6 +19,7 @@ export const SOURCE = {
   loops: 'Open loops',
   inbox: 'Forwarded mail',
   papers: 'Papers & the vault',
+  money: 'Linked bank + your bills, debts and funds',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 
