@@ -18,6 +18,7 @@ export const SOURCE = {
   family: 'Household members',
   loops: 'Open loops',
   inbox: 'Forwarded mail',
+  papers: 'Papers & the vault',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 

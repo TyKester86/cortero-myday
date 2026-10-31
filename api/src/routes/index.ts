@@ -10,6 +10,7 @@ import { careRouter, proRouter } from './care.js';
 import { assistantRouter } from './assistant.js';
 import { hanaVoiceRouter, hqRouter } from './hq.js';
 import { calendarSourcesRouter } from './calendarSources.js';
+import { papersRouter, papersUploadRouter } from './papers.js';
 import { errandsRouter } from './errands.js';
 import { grocersRouter } from './grocers.js';
 import { inboundRouter, inboxRouter } from './inbox.js';
@@ -42,7 +43,7 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter, hqRouter, calendarSourcesRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter, hqRouter, calendarSourcesRouter, papersRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
 // The Feed is open to anyone with the app (no household needed): community + social routes do their own 18+ checks.
@@ -52,4 +53,4 @@ export const preHouseholdRouters: Router[] = [adminRouter, circlesStaffRouter, c
 export const publicRoutes: Router[] = [calendarFeedRouter, inboundRouter, socialPublicRouter, feedGrowthPublicRouter, providersPublicRouter];
 
 /** Routes that take raw (non-JSON) bodies, mounted before the JSON parser. */
-export const uploadRoutes: Router[] = [lectureUploadRouter, meetingUploadRouter, chatUploadRouter, hanaVoiceRouter, photoUploadRouter, communityUploadRouter, socialUploadRouter, billingWebhookRouter, appleCallbackRouter, oauthTokenRouter, feedApiV1Router];
+export const uploadRoutes: Router[] = [lectureUploadRouter, meetingUploadRouter, chatUploadRouter, hanaVoiceRouter, papersUploadRouter, photoUploadRouter, communityUploadRouter, socialUploadRouter, billingWebhookRouter, appleCallbackRouter, oauthTokenRouter, feedApiV1Router];

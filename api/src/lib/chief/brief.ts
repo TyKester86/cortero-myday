@@ -22,6 +22,7 @@ import { billsDue, choresFor, homeworkFor, scheduleFor, type ScheduleItem } from
 import { findConflicts, type ConflictOptions } from './conflicts.js';
 import { loopLine, loopsFor } from './loops.js';
 import { openText } from '../seal.js';
+import { expiryLine, listVault } from './papers.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -262,6 +263,14 @@ export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
     sections.push({ title: v.parent ? 'Homework due today & tomorrow' : 'Homework', drafts: await homeworkDrafts(v, t, addDays(t, 1)) });
     if (v.parent) sections.push({ title: 'Bills due this week', drafts: await billDrafts(v) });
     if (v.parent) sections.push({ title: 'From the inbox', drafts: await mailDrafts() });
+    if (v.parent) {
+      sections.push({
+        title: 'Expiring soon',
+        drafts: (await listVault())
+          .filter((x) => x.expiring)
+          .map((x) => ({ key: `expiry:${x.id}`, category: 'expiry' as const, text: expiryLine(x), subjectId: null, source: SOURCE.papers, asOf: new Date().toISOString(), check: null, headsUp: (x.daysLeft ?? 0) <= 30 })),
+      });
+    }
     sections.push({ title: v.parent ? 'Chores & points' : 'Chores & points', drafts: await choreDrafts(v, t) });
   } else if (kind === 'evening') {
     const tm = addDays(t, 1);

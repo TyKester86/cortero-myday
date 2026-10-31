@@ -26,13 +26,14 @@ import { CopyPolicyError, sendTo } from '../push.js';
 import { conflictOptions } from './brief.js';
 import { findConflicts } from './conflicts.js';
 import { detectCalendarLoops, loopLine, loopsFor } from './loops.js';
+import { expiryBucket, expiryLine, listVault } from './papers.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
 import { requireParent, viewerOf, type Viewer } from './scope.js';
 import { balances, billsDue, scheduleFor, type ScheduleItem } from './tools.js';
 
-export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops'];
+export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry'];
 
 const DEFAULTS: HanaSettings = {
   quietStart: '21:00',
@@ -174,6 +175,8 @@ interface Finding {
   subjectId: number | null;
   source: string;
   asOf: string;
+  /** Said once ever, not once a day (an expiry at each stage). */
+  once?: boolean;
 }
 
 const clock = (t: string | null): string => {
@@ -256,6 +259,12 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
     findings.push({ key: `loop:${l.id}`, category: 'loops', text: loopLine(l, false), sameDay: false, subjectId: null, source: SOURCE.loops, asOf: new Date().toISOString() });
   }
 
+  // C5: an expiry, once at each stage (entering its window, a month out, a week, the day, after).
+  for (const x of await listVault()) {
+    const b = expiryBucket(x);
+    if (b) findings.push({ key: `expiry:${x.id}:${b}`, category: 'expiry', text: expiryLine(x), sameDay: false, subjectId: null, source: SOURCE.papers, asOf: new Date().toISOString(), once: true });
+  }
+
   // Crisis signals in the content she reads (calendar and homework text): never alone, never silently.
   await crisisScan(members, sched.data);
 
@@ -270,6 +279,8 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
   for (const f of findings) {
     if (s.muted.includes(f.category)) continue;
     for (const pid of f.to ?? parents.map((p) => p.id)) {
+      // Once ever (not once a day): an earlier day's item with the same key means it was said.
+      if (f.once && (await pool.query("SELECT 1 FROM hana_items WHERE member_id = $1 AND surface = 'watch' AND item_key = $2 AND shown_on < $3 LIMIT 1", [pid, f.key, day])).rowCount) continue;
       const { rows } = await pool.query<{ id: number; pushed_at: Date | null }>(
         `INSERT INTO hana_items (member_id, surface, category, item_key, subject_member_id, text, source, as_of, shown_on)
          VALUES ($1, 'watch', $2, $3, $4, $5, $6, $7, $8)

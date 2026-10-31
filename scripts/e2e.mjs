@@ -5001,6 +5001,8 @@ async function uiGate() {
     eq('…no photo yet: “Add photo” on her avatar; the Feed’s own cover', [await jp.getByTestId('add-photo').count(), await jp.getByTestId('profile-cover').locator('img.feed-horn').count()], [1, 1]);
     await jp.goto(`${FEED}/u/nova.reads`);
     await jp.getByTestId('profile-handle').waitFor({ timeout: 10000 });
+    // The header arrives before the posts: wait for them, not just the name.
+    await jp.getByTestId('person').getByText(/zine/i).first().waitFor({ timeout: 10000 }).catch(() => undefined);
     eq('/u/<handle>: someone’s public profile, with their posts', [await jp.getByTestId('profile-handle').innerText(), /zine/i.test(await jp.getByTestId('person').innerText()), await jp.getByTestId('edit-profile').count()], ['@nova.reads', true, 0]);
     await jp.goto(`${FEED}/people/${raeId}`);
     await jp.getByTestId('profile-tab-about').click();
@@ -6923,6 +6925,7 @@ async function hanaBrainSuite() {
     await hanaCalendarChecks();
     await hanaLoopChecks();
     await hanaLadderChecks();
+    await hanaPapersChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7168,6 +7171,93 @@ async function hanaCoachChecks() {
   const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
   eq('report: nudges set aside are counted (parents tune categories down from this)', [rep.nudges.dismissed, rep.nudges.byCategory.find((c) => c.category === 'homework')?.dismissed], [1, 1]);
   await startServer(hanaNow());
+}
+
+async function hanaPapersChecks() {
+  const tess = hanaIds.tess;
+  const put = (c, body, { type = 'text/plain', name = 'slip.txt', photo = false } = {}) =>
+    c.req('POST', `/api/papers/upload?name=${encodeURIComponent(name)}${photo ? '&photo=1' : ''}`, body, { json: false, headers: { 'Content-Type': type, 'X-MyDay-Upload': '1' } });
+  const [{ email: tyEmail }] = await sql("SELECT email FROM users WHERE member_id = $1 AND email LIKE '%@%' ORDER BY id LIMIT 1", [hanaIds.Ty]);
+  const [{ age: averyAge }] = await sql('SELECT age FROM household_members WHERE id = $1', [hanaIds.Avery]);
+  const SLIP = [
+    'Lincoln Elementary — Field Trip Permission Slip',
+    'Avery’s class visits the science museum on Friday. Please return by November 6.',
+    'Student name: ________',
+    'Age: ________',
+    'Parent/guardian name: ________',
+    'Parent email: ________',
+    'Insurance carrier: ________',
+    'Member ID: ________',
+    'Allergies: ________',
+    'Parent signature: ________',
+    'Date: ________',
+  ].join('\n');
+
+  section('Hana C5 · Papers: in by upload or photo; she reads what it is, whose, what’s needed, by when');
+  eq('kids have no Papers (list, upload)', [(await avery.get('/api/papers')).status, (await put(avery, SLIP)).status], [403, 403]);
+  let r = await put(ty, SLIP);
+  const doc = r.data.doc;
+  eq('a permission slip, for Avery, due Nov 6, with its blanks', [r.status, doc.kind, doc.about, doc.deadline, doc.fields], [201, 'permission_slip', 'Avery', '2026-11-06', ['Student name', 'Age', 'Parent/guardian name', 'Parent email', 'Insurance carrier', 'Member ID', 'Allergies', 'Parent signature', 'Date']]);
+  eq('…sealed at rest', (await sql("SELECT COUNT(*)::int AS n FROM documents WHERE position(convert_to('Permission Slip', 'UTF8') in file_enc) > 0"))[0].n, 0);
+  eq('…the original opens for a parent; not for another household', [(await kayla.get(`/api/papers/${doc.id}/file`)).status, (await tess.get(`/api/papers/${doc.id}/file`)).status, (await tess.get('/api/papers')).data.papers.length], [200, 404, 0]);
+  const slipLoop = (await kayla.get('/api/hana/loops')).data.loops.find((l) => l.source === 'document');
+  eq('its deadline is an open loop for the family', [slipLoop?.what.endsWith('Field Trip Permission Slip'), slipLoop?.due, slipLoop?.about], [true, '2026-11-06', 'Avery']);
+  r = await put(ty, Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'), { type: 'image/png', name: 'IMG_2231.png', photo: true });
+  eq('a photo Hana can’t read (no model here) is kept, and a parent says what it is', [r.status, r.data.doc.readBy, r.data.doc.source], [201, 'person', 'photo']);
+  const fixed = (await ty.patch(`/api/papers/${r.data.doc.id}`, { title: 'Soccer medical form', kind: 'medical', about: 'Evan', deadline: '2026-11-12', fields: ['Player name', 'Doctor signature'] })).data.doc;
+  eq('…corrected → a medical form for Evan, due Nov 12 (and its loop opens)', [fixed.title, fixed.kind, fixed.about, (await ty.get('/api/hana/loops')).data.loops.some((l) => l.due === '2026-11-12' && l.about === 'Evan')], ['Soccer medical form', 'medical', 'Evan', true]);
+
+  section('Hana C5 · the vault: numbers sealed and masked, the whole number only on a tap (logged)');
+  eq('kids can’t add to it', (await avery.post('/api/vault', { kind: 'passport', label: 'x' })).status, 403);
+  await ty.post('/api/vault', { kind: 'insurance_card', label: 'Family health insurance', issuer: 'BlueCross', number: 'XYZ123456789', notes: 'Group: G-4421', expires: '2026-11-20' });
+  await ty.post('/api/vault', { kind: 'passport', label: 'Ty’s passport', holder: 'Ty', issuer: 'U.S.', number: '567123499', expires: '2027-03-01' });
+  const v = (await kayla.post('/api/vault', { kind: 'drivers_license', label: 'Kayla’s driver’s license', holder: 'Kayla', issuer: 'Oklahoma', number: 'D55500123', expires: '2029-08-15' })).data.vault;
+  const card = v.find((x) => x.kind === 'insurance_card');
+  eq('masked for both parents; expiring ones flagged with their lead time (passport 6 months, card 30 days)', [card.masked, v.find((x) => x.kind === 'passport').expiring, card.expiring, v.find((x) => x.kind === 'drivers_license').expiring], ['•••• 6789', true, true, false]);
+  check('…the full number never comes back in the list', !JSON.stringify((await ty.get('/api/papers')).data).includes('XYZ123456789'));
+  eq('…sealed at rest', (await sql("SELECT COUNT(*)::int AS n FROM vault_items WHERE position(convert_to('XYZ1234', 'UTF8') in number_enc) > 0"))[0].n, 0);
+  eq('Show number → the parent sees it; logged as which item, never the number', [(await kayla.post(`/api/vault/${card.id}/reveal`)).data.number, (await sql("SELECT props::text AS p FROM events WHERE name = 'vault_reveal' ORDER BY id DESC LIMIT 1"))[0].p.includes('XYZ')], ['XYZ123456789', false]);
+  eq('…another household can’t reveal it', (await tess.post(`/api/vault/${card.id}/reveal`)).status, 404);
+
+  section('Hana C5 · “Fill it in”: from what the household holds; what it isn’t, said; never a signature');
+  const pf = (await ty.post(`/api/papers/${doc.id}/fill`)).data.action;
+  const val = Object.fromEntries(pf.fill.values.map((x) => [x.label, x.value]));
+  eq('the fill-in, shown before anything is saved', [pf.tool, pf.status, val], ['fill_form', 'pending', { 'Student name': 'Avery', Age: String(averyAge), 'Parent/guardian name': 'Ty', 'Parent email': tyEmail, 'Insurance carrier': 'BlueCross', 'Member ID': 'XYZ123456789', Allergies: null, 'Parent signature': null, Date: '2026-11-02' }]);
+  eq('…each value says where it came from; the signature says it’s yours', [pf.fill.values.find((x) => x.label === 'Member ID').from, pf.fill.values.find((x) => x.label === 'Parent signature').from], ['Vault: insurance card', 'You sign this']);
+  check('…and the card says what MyDay doesn’t hold', /not held: Allergies/.test(pf.summary), pf.summary);
+  eq('nothing saved yet; only Ty can OK it', [(await ty.get('/api/papers')).data.papers.find((d) => d.id === doc.id).completion, (await kayla.post(`/api/hana/actions/${pf.id}/confirm`)).status], [null, 404]);
+  await ty.post(`/api/hana/actions/${pf.id}/confirm`);
+  const filled = await ty.req('GET', `/api/papers/${doc.id}/filled`, undefined, { json: false });
+  check('Use this → a filled copy to check and sign, with the signature line blank', filled.status === 200 && /Avery/.test(filled.data) && /BlueCross/.test(filled.data) && /<th>Parent signature<\/th><td><span class="sign"><\/span>/.test(filled.data), String(filled.data).slice(0, 300));
+  const pf2 = await ty.post(`/api/papers/${fixed.id}/fill`);
+  eq('the corrected photo’s blanks can be filled too (then discarded)', [pf2.status, (await ty.post(`/api/hana/actions/${pf2.data.action.id}/cancel`)).data.action.status], [200, 'cancelled']);
+  eq('Done → its loop closes on that evidence', [(await ty.post(`/api/papers/${doc.id}/done`)).data.doc.done, (await ty.get('/api/hana/loops?closed=1')).data.loops.find((l) => l.id === slipLoop.id)?.evidence], [true, 'Marked done on Papers by Ty']);
+
+  section('Hana C5 · a form by forwarded mail lands in Papers (one loop, not two)');
+  const ib = (await ty.post('/api/inbox/address')).data;
+  await fetch(`${BASE}/inbound/email?key=e2e-inbound-secret-0123456789`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: ib.address, from: 'Rec League <league@rec.example>', subject: 'Spring soccer registration form', text: 'Please complete the registration form and return it by November 9.\nPlayer name: ______\nParent phone: ______' }) });
+  const mailDoc = (await ty.get('/api/papers')).data.papers.find((d) => d.title === 'Spring soccer registration form');
+  eq('it’s on Papers: a registration, due Nov 9, with its blanks', [mailDoc?.kind, mailDoc?.deadline, mailDoc?.fields], ['registration', '2026-11-09', ['Player name', 'Parent phone']]);
+  eq('…and one loop for it (the mail’s), not a second', (await ty.get('/api/hana/loops')).data.loops.filter((l) => l.due === '2026-11-09').length, 1);
+
+  section('Hana C5 · expiries in the brief and the watch, ahead of time, once per stage');
+  const exp = (await ty.get('/api/hana/brief?kind=morning')).data.sections.find((s) => s.title === 'Expiring soon')?.items.map((i) => i.text) ?? [];
+  check('the parents’ brief says what’s coming up for renewal, in plain words', exp.some((t) => /^Ty’s passport expires in about 4 months \(Mar 1, 2027\) — time to renew; passports take weeks\.$/.test(t)) && exp.some((t) => /^Family health insurance expires in 18 days \(Nov 20, 2026\)/.test(t)) && !exp.some((t) => /Kayla’s driver’s license/.test(t)), JSON.stringify(exp));
+  check('…never the number', !JSON.stringify(exp).includes('XYZ'));
+  eq('kids’ briefs have no vault', (await avery.get('/api/hana/brief?kind=morning')).data.sections.some((s) => s.title === 'Expiring soon'), false);
+  await ty.put('/api/hana/settings', { muted: [] });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 15)}`);
+  const ex1 = await sql("SELECT item_key FROM hana_items WHERE surface = 'watch' AND category = 'expiry' AND member_id = $1 ORDER BY item_key", [hanaIds.Ty]);
+  eq('the watch: the passport entering its window, the card a month out', ex1.map((x) => x.item_key.split(':')[2]).sort(), ['lead', 'month']);
+  await sql("UPDATE hana_items SET shown_on = '2026-11-01' WHERE surface = 'watch' AND category = 'expiry'");
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 16)}`);
+  eq('…said once per stage, not every day', (await sql("SELECT COUNT(*)::int AS n FROM hana_items WHERE surface = 'watch' AND category = 'expiry' AND shown_on = $1", [HANA_DAY]))[0].n, 0);
+  check('Hana can say what’s open and expiring (no numbers)', /Ty’s passport expires/.test((await hanaSay(ty, 'what papers are open?')).reply.text) && !/XYZ123/.test((await hanaSay(ty, 'anything expiring?')).reply.text));
+
+  await sql('DELETE FROM documents');
+  await sql('DELETE FROM vault_items');
+  await sql('DELETE FROM open_loops');
+  await sql("DELETE FROM hana_items WHERE category = 'expiry'");
 }
 
 async function hanaLadderChecks() {

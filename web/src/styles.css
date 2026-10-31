@@ -762,3 +762,10 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .loop { display: grid; gap: 0.2rem; }
 .loop.past, .loop.today { border-left: 3px solid var(--accent); padding-left: 0.5rem; }
 .pill.mail-noise { opacity: 0.6; }
+
+/* C5: Papers and the vault */
+.papers-list { list-style: none; padding: 0; margin: 0.5rem 0; display: grid; gap: 0.6rem; }
+.paper { display: grid; gap: 0.35rem; }
+.paper-fill { width: 100%; border-collapse: collapse; margin: 0.4rem 0; }
+.paper-fill th { text-align: left; font-weight: 600; padding: 0.3rem 0.5rem 0.3rem 0; width: 45%; vertical-align: top; }
+.paper-fill td { padding: 0.3rem 0; }

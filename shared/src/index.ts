@@ -1990,6 +1990,8 @@ export interface HanaAction {
   draft?: { to: string; kind: HanaNoteKind; text: string } | null;
   /** C3: a drafted email or invite — the exact recipients the approval sends to, and what it says. */
   email?: { to: string[]; subject: string; body: string; invite: boolean } | null;
+  /** C5: a form's fill-in — exactly the values that will be saved, and where each came from. */
+  fill?: { documentId: number; title: string; values: PaperField[] } | null;
 }
 
 export type HanaNoteKind = 'note' | 'encouragement' | 'reminder';
@@ -3217,7 +3219,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3295,7 +3297,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3319,6 +3321,49 @@ export interface HanaSettings {
   kidDayLimit: number;
 }
 
+/* ---------- C5: papers and the household vault ---------- */
+
+/** One blank on a form, as Hana filled it — where the value came from, or empty (she never signs). */
+export interface PaperField {
+  label: string;
+  value: string | null;
+  /** "Household members", "Vault: insurance card", "You sign this" — or null when nothing held it. */
+  from: string | null;
+}
+
+export interface PaperDoc {
+  id: number;
+  kind: 'form' | 'permission_slip' | 'medical' | 'insurance' | 'registration' | 'other';
+  title: string;
+  about: string | null;
+  needed: string;
+  deadline: DateStr | null;
+  fields: string[];
+  source: 'upload' | 'photo' | 'email';
+  hasFile: boolean;
+  mime: string | null;
+  /** Who read it: the model, the rules, or a person who said what it is. */
+  readBy: 'ai' | 'rules' | 'person';
+  completion: PaperField[] | null;
+  done: boolean;
+  addedAt: string;
+}
+
+export interface VaultItem {
+  id: number;
+  kind: 'drivers_license' | 'passport' | 'insurance_card' | 'registration' | 'warranty' | 'id_card' | 'other';
+  label: string;
+  holder: string | null;
+  issuer: string;
+  /** "•••• 4821" — the whole number only on a parent's tap. */
+  masked: string | null;
+  hasNotes: boolean;
+  expires: DateStr | null;
+  daysLeft: number | null;
+  /** Inside its heads-up window (a passport six months out, a license two). */
+  expiring: boolean;
+}
+
 /* ---------- C4: open loops ---------- */
 
 /** A commitment being tracked: what, who owes it, by when, where it came from. Closes only on evidence. */
@@ -3332,7 +3377,7 @@ export interface HanaLoop {
   mine: boolean;
   about: string | null;
   due: DateStr | null;
-  source: 'chat' | 'manual' | 'calendar' | 'email';
+  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document';
   sourceLabel: string;
   /** Opened from a grown-up's own chat: theirs until shared. */
   private: boolean;

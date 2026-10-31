@@ -11,6 +11,7 @@ const HealthToday = lazy(() => import('./health/HealthToday'));
 // Community (grown-ups 18+ only — never a kid route).
 const Calendar = lazy(() => import('./calendar/Calendar'));
 const FamilyHQ = lazy(() => import('./hq/FamilyHQ'));
+const Papers = lazy(() => import('./papers/Papers'));
 const Inbox = lazy(() => import('./inbox/Inbox'));
 const Errands = lazy(() => import('./errands/Errands'));
 const Meetings = lazy(() => import('./meetings/Meetings'));
@@ -133,6 +134,7 @@ export const MODULES: ModuleRoute[] = [
   { path: '/family', element: <Family />, audience: 'adult', familyOnly: true, nav: { label: 'Family', icon: 'family', group: 'family', tabFor: ['adult'] } },
   // Hana's look at the whole household (parents): the brief, what she's watching, the monthly report.
   { path: '/hq', element: <FamilyHQ />, audience: 'adult', nav: { label: 'Family HQ', icon: 'hana', group: 'family' } },
+  { path: '/papers', element: <Papers />, audience: 'adult', nav: { label: 'Papers', icon: 'records', group: 'family' } },
   { path: '/money', element: <Money />, audience: 'adult', module: 'money', nav: { label: 'Money', icon: 'money', group: 'money', tabFor: ['adult'] } },
   { path: '/me', element: <MeHub />, audience: 'all', nav: { label: 'Me', icon: 'everything', group: 'me', tabFor: ['adult'] } },
   { path: '/homework', element: <Homework />, audience: 'all', kidsOnly: true, nav: { label: 'Homework', icon: 'homework', group: 'family', tabFor: ['kid'] } },

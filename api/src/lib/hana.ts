@@ -9,7 +9,7 @@
  */
 import type { BetaTool } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { z } from 'zod';
-import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type DateStr, type HanaAction, type HanaCapabilities, type HanaLogEntry, type HanaSuggestionEntry, type HanaNote, type HanaNoteKind, type HouseholdMember, type Weekday } from '@myday/shared';
+import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type DateStr, type HanaAction, type HanaCapabilities, type HanaLogEntry, type HanaSuggestionEntry, type PaperField, type HanaNote, type HanaNoteKind, type HouseholdMember, type Weekday } from '@myday/shared';
 import { pool } from '../db.js';
 import { profileFor, plannedSession } from '../routes/health.js';
 import { datesOf } from './recur.js';
@@ -31,6 +31,7 @@ import { crisisIn, escalateCrisis } from './chief/guard.js';
 import { viewerOf } from './chief/scope.js';
 import { balances, billsDue, choresFor, feedInbox, healthFor, homeworkFor, scheduleFor } from './chief/tools.js';
 import { loopLine, loopsFor, openLoop } from './chief/loops.js';
+import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
 
 interface ToolDef<S extends z.ZodType> {
   name: string;
@@ -862,6 +863,57 @@ export const HANA_TOOLS = [
       return sendApproved(me, i.to, `Invitation: ${i.title} — ${i.date} ${i.start}`, `${i.note ? `${i.note}\n\n` : ''}${i.title}\n${i.date}, ${i.start}–${i.end}${i.location ? `\n${i.location}` : ''}`, [{ filename: 'invite.ics', content: ics, type: 'text/calendar; method=REQUEST' }]);
     },
   }),
+  // ---------- C5: papers — filled from what the household holds; never signed ----------
+  def({
+    name: 'fill_form',
+    description: 'Fill in a form on the Papers page from household data (proposed from Papers — “Fill it in”). Waits for the parent’s OK; the signature is always left for them.',
+    destructive: false,
+    schema: z.object({
+      document_id: z.number().int().positive(),
+      title: z.string().max(120),
+      values: z.array(z.object({ label: z.string().max(60), value: z.string().max(200).nullable(), from: z.string().max(60).nullable() })).max(25),
+    }),
+    json: {
+      type: 'object',
+      properties: {
+        document_id: { type: 'integer' },
+        title: { type: 'string' },
+        values: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: ['string', 'null'] }, from: { type: ['string', 'null'] } }, required: ['label', 'value', 'from'], additionalProperties: false } },
+      },
+      required: ['document_id', 'title', 'values'],
+      additionalProperties: false,
+    },
+    summary: (i) => {
+      const filled = i.values.filter((v) => v.value).length;
+      const missing = i.values.filter((v) => !v.value && !/sign/i.test(v.label)).map((v) => v.label);
+      return `Fill in “${i.title}”: ${filled} of ${i.values.length} blanks${missing.length ? ` (not held: ${missing.join(', ')})` : ''}; the signature is yours`;
+    },
+    run: async (me, i) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'Papers are for grown-ups');
+      // Exactly the values the parent saw and approved — never a signature.
+      await saveCompletion(i.document_id, i.values.map((v) => (/sign/i.test(v.label) ? { ...v, value: null, from: 'You sign this' } : v)));
+      return `Filled in — open it on Papers to check, finish the blanks, and sign it yourself.`;
+    },
+  }),
+  def({
+    name: 'papers',
+    description: 'The family’s open papers (forms, slips, registrations — what’s needed, whose, by when) and vault items expiring soon (numbers never shown). Grown-ups only.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, additionalProperties: false },
+    summary: () => 'Look at Papers and the vault',
+    run: async (me) => {
+      if (me.kind !== 'adult') throw new HttpError(403, 'Papers are for grown-ups');
+      const docs = (await listDocs()).filter((d) => !d.done);
+      const exp = (await listVault()).filter((v) => v.expiring);
+      const lines = [
+        ...docs.map((d) => `- ${d.title}${d.about ? ` (${d.about})` : ''}: ${d.needed || 'to look at'}${d.deadline ? `, by ${d.deadline}` : ''}`),
+        ...exp.map((v) => `- ${expiryLine(v)}`),
+      ];
+      return `${provenance({ source: SOURCE.papers, asOf: new Date().toISOString(), stale: null })}\n${lines.length ? lines.join('\n') : 'Nothing open, nothing expiring.'}`;
+    },
+  }),
   // ---------- C4: open loops ----------
   def({
     name: 'track_loop',
@@ -970,6 +1022,7 @@ export const toAction = (r: ActionRow): HanaAction => ({
   status: r.status,
   result: r.result,
   draft: r.tool === 'draft_note' && r.input ? (r.input as unknown as HanaAction['draft']) : null,
+  fill: r.tool === 'fill_form' && r.input ? { documentId: Number(r.input.document_id), title: String(r.input.title), values: r.input.values as PaperField[] } : null,
   email:
     (r.tool === 'draft_email' || r.tool === 'draft_invite') && r.input
       ? r.tool === 'draft_email'
@@ -1012,6 +1065,7 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if (/^what['’]?s on (?:the )?calendar/i.test(m)) return [{ name: 'get_calendar', input: { from: null, days: 7 } }];
   if ((x = m.match(/^(?:track:\s*)?(i|the \w+)(?:'ll|’ll| will) (.+?) by (\d{4}-\d{2}-\d{2})$/i))) return [{ name: 'track_loop', input: { what: x[2], owed_by: /^i$/i.test(x[1] ?? '') ? 'me' : x[1], due: x[3] } }];
   if (/^what(?:['’]s| is) still open/i.test(m)) return [{ name: 'open_loops', input: {} }];
+  if (/^what papers|^anything expiring/i.test(m)) return [{ name: 'papers', input: {} }];
   if ((x = m.match(/^what['’]?s (?:the family|our) schedule(?: on (\d{4}-\d{2}-\d{2}))?(?: for (\d+) days?)?/i))) return [{ name: 'family_schedule', input: { from: x[1] ?? null, days: Number(x[2] ?? 1) } }];
   if ((x = m.match(/^what homework is due(?: for (\w+))?/i))) return [{ name: 'homework_status', input: { person: x[1] ?? null } }];
   if ((x = m.match(/^chores and points(?: for (\w+))?/i))) return [{ name: 'chores_and_points', input: { person: x[1] ?? null } }];
@@ -1178,6 +1232,22 @@ export async function editDraft(me: HouseholdMember, id: number, text: unknown, 
   );
   if (!out[0]) throw new HttpError(409, 'That draft was already decided');
   return toAction(out[0]);
+}
+
+/** C5: "Fill it in" — the values Hana would write, shown to the parent first; nothing saved until they OK it. */
+export async function proposeFill(me: HouseholdMember, docId: number): Promise<HanaAction> {
+  if (me.kind !== 'adult') throw new HttpError(403, 'Papers are for grown-ups');
+  const doc = await getDoc(docId);
+  if (!doc.fields.length) throw new HttpError(400, 'Hana didn’t find any blanks on this one — add them on Papers first');
+  const tool = byName('fill_form');
+  if (!tool) throw new Error('fill_form missing');
+  const input = tool.schema.parse({ document_id: doc.id, title: doc.title, values: await fillFrom(doc, me) });
+  const { rows } = await pool.query<ActionRow>(
+    "INSERT INTO hana_actions (member_id, tool, input, summary, origin) VALUES ($1, 'fill_form', $2, $3, 'chat') RETURNING id, tool, summary, status, result, input",
+    [me.id, JSON.stringify(input), tool.summary(input)],
+  );
+  if (!rows[0]) throw new Error('fill insert returned nothing');
+  return toAction(rows[0]);
 }
 
 /** H6, proactive: from a homework escalation, a kind check-in drafted for this parent to edit, send or discard. */

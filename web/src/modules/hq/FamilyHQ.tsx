@@ -175,7 +175,7 @@ const NIGHTS = [
   [5, 'Fri'],
   [6, 'Sat'],
 ] as const;
-const CATEGORY_LABEL: Record<HanaWatchCategory, string> = { pickup: 'Pickups nobody is on', conflict: 'Schedule conflicts', bills: 'Bills while money is low', homework: 'Homework at risk', loops: 'Loops due today' };
+const CATEGORY_LABEL: Record<HanaWatchCategory, string> = { pickup: 'Pickups nobody is on', conflict: 'Schedule conflicts', bills: 'Bills while money is low', homework: 'Homework at risk', loops: 'Loops due today', expiry: 'Papers expiring' };
 
 /** Either parent can tune her down, change the thresholds, or quiet her. */
 function HanaSettingsCard() {

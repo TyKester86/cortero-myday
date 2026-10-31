@@ -22,6 +22,7 @@ import { pushConfigured, sendTo } from '../lib/push.js';
 import { currentKeyId, openText, sealText } from '../lib/seal.js';
 import { triageEmail, type MailClass } from '../lib/extract.js';
 import { closeOnReply, openLoop } from '../lib/chief/loops.js';
+import { addDoc } from '../lib/chief/papers.js';
 
 export const inboxRouter = Router();
 /** The inbound-email webhook: public (the shared secret is in the URL), outside /api. */
@@ -194,6 +195,11 @@ inboundRouter.post('/inbound/email', express.json({ limit: '2mb' }), async (req,
     const sender = mail.from.match(/^\s*"?([^"<]+?)"?\s*</)?.[1]?.trim() || domain;
     for (const [k, c] of tri.commitments.entries()) {
       await openLoop(null, { what: c.what, owedBy: c.owedBy === 'us' ? 'the family' : sender, due: c.due, source: 'email', sourceRef: `mail:${domain}:${c.owedBy}:${emailId}:${k}` });
+    }
+    // C5: a form or slip by mail lands in Papers (its deadline is already a loop if the mail asked for it).
+    if (tri.class !== 'noise' && /permission slip|form|registration|waiver|sign (?:and|&) return/i.test(`${mail.subject}
+${mail.text}`)) {
+      await addDoc(null, { source: 'email', sourceRef: `mail:${emailId}`, title: mail.subject, text: mail.text, noLoop: tri.commitments.some((c) => c.owedBy === 'us') });
     }
     const items = await suggestFromEmail(mail, today());
     for (const s of items) await pool.query('INSERT INTO inbox_items (email_id, kind, data, summary) VALUES ($1, $2, $3, $4)', [emailId, s.kind, JSON.stringify(s.data), s.summary]);

@@ -39,7 +39,7 @@ interface Row {
 }
 const COLS = 'id, what, owed_by_member, owed_by_name, ours, about_member, due::text AS due, source, source_ref, opened_by, private, closed_at, closed_by, closed_evidence, created_at';
 
-const SOURCE_LABEL: Record<LoopSource, string> = { chat: 'From a chat with Hana', manual: 'Added by hand', calendar: 'MyDay calendar', email: 'Forwarded mail' };
+const SOURCE_LABEL: Record<LoopSource, string> = { chat: 'From a chat with Hana', manual: 'Added by hand', calendar: 'MyDay calendar', email: 'Forwarded mail', document: 'Papers' };
 const daysBetween = (a: DateStr, b: DateStr): number => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
 const weekday = (d: DateStr): string => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long' });
 
@@ -136,6 +136,11 @@ export async function closeLoop(v: Viewer, id: number, note: unknown): Promise<H
   );
   if (!rows[0]) throw new HttpError(409, 'That one is already closed');
   return toLoop(rows[0], await listMembers(), v.me);
+}
+
+/** A loop from a source item (a document) closes on that item's own evidence — in the parent's name. */
+export async function closeLoopByRef(sourceRef: string, by: HouseholdMember, evidence: string): Promise<void> {
+  await pool.query('UPDATE open_loops SET closed_at = $2, closed_by = $3, closed_evidence = $4 WHERE source_ref = $1 AND closed_at IS NULL', [sourceRef, new Date(), by.id, evidence]);
 }
 
 /** Closed on the wrong evidence (a reply that wasn't the form): open again. */
