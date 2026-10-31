@@ -34,6 +34,7 @@ import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
 import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
 import { holdWant } from '../routes/mind.js';
+import { HOUSE_ACTIONS, houseStatus, planCommand, requireParentHouse, runCommand, stormLines, stormPlan } from './chief/house.js';
 import { listAlerts, NOTHING_BLOCKED, requireParentShield, SHIELD_SOURCE } from './chief/shield.js';
 import { dossier, PEOPLE_SOURCE, personByName, requireParentPeople } from './chief/people.js';
 import { addQuestion, CLINICIAN_LINE, logRefill, medByName, nextVisitFor, prepPacks, requireParentHealth } from './chief/healthops.js';
@@ -88,7 +89,7 @@ async function addChore(i: { person: string; chore: string; days: readonly strin
 
 
 /** Tools whose approval sends or files something outside MyDay (T2). Everything else changes MyDay itself. */
-export const SENDS = new Set(['draft_email', 'draft_invite', 'send_groceries', 'run_errand']);
+export const SENDS = new Set(['draft_email', 'draft_invite', 'send_groceries', 'run_errand', 'house_control']);
 
 /**
  * T2: send exactly what the parent approved, to exactly the addresses on the draft, in their name
@@ -761,6 +762,63 @@ export const HANA_TOOLS = [
     },
   }),
 
+  // ---------- JP3 the house: reads T0; a command is T2 (one parent approval, run once) ----------
+  def({
+    name: 'house_status',
+    description: 'READ-ONLY. The house right now (the family’s Home Assistant): alarm, locks, garage, doors, windows, thermostat, lights — with when each changed. Grown-ups.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, additionalProperties: false },
+    summary: () => 'Read the house',
+    run: async (me) => {
+      requireParentHouse(me);
+      const s = await houseStatus();
+      if (!s.connected) return 'The house isn’t connected to MyDay (a parent can connect Home Assistant in Family HQ).';
+      return [
+        ...s.devices.map((d) => `${d.name} (${d.kind}): ${d.said}`),
+        ...(s.stale ? [`CHECK: ${s.stale}`] : []),
+        provenance({ source: SOURCE.house, asOf: s.asOf ?? new Date().toISOString(), stale: s.stale }),
+      ].join('\n');
+    },
+  }),
+  def({
+    name: 'house_control',
+    description:
+      'Prepare ONE command for the house — lock a lock, close the garage, set the thermostat, turn a light on or off — that runs only when a parent approves it. ' +
+      'You never unlock, open or disarm anything: say those stay in the family’s hands.',
+    destructive: false,
+    schema: z.object({ device: z.string().min(1).max(80), action: z.enum(HOUSE_ACTIONS), value: z.number().nullable() }),
+    json: {
+      type: 'object',
+      properties: { device: { type: 'string' }, action: { type: 'string', enum: [...HOUSE_ACTIONS] }, value: { type: ['number', 'null'], description: 'Degrees, for set_temperature' } },
+      required: ['device', 'action', 'value'],
+      additionalProperties: false,
+    },
+    summary: (i) => `House: ${i.action.replace('_', ' ')} ${i.device}${i.action === 'set_temperature' ? ` to ${i.value}°` : ''}`,
+    precheck: async (me, i) => {
+      requireParentHouse(me);
+      await planCommand(i.device, i.action, i.value);
+    },
+    run: async (me, i) => runCommand(me, i.device, i.action, i.value),
+  }),
+  def({
+    name: 'storm_plan',
+    description: 'READ-ONLY. Storm mode: a severe weather alert for the family’s area today, who is out during it (calendar), pickups inside it, what’s open at the house, and shelter steps.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, additionalProperties: false },
+    summary: () => 'Check for severe weather',
+    run: async (me) => {
+      const v = viewerOf(me);
+      const p = await stormPlan(v);
+      const src = provenance({ source: SOURCE.storm, asOf: new Date().toISOString(), stale: null });
+      if (!p) return `No severe weather alerts for the family’s area today (or no place is set for weather).\n${src}`;
+      return [...stormLines(p, v.parent), `Shelter steps: ${p.steps.join(' ')}`, ...(p.instruction ? [`The weather service says: ${p.instruction}`] : []), src].join('\n');
+    },
+  }),
+
   // ---------- JP6 the shield and JP5 people dossiers (grown-ups) ----------
   def({
     name: 'shield_alerts',
@@ -1318,6 +1376,10 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
     return [{ name: 'remember_family', input: { fact: x[3], kind: (x[2] ?? 'note').toLowerCase(), about: x[1] ?? null } }];
   }
   if ((x = m.match(/^correct family memory #h(\d+): (.+)$/i))) return [{ name: 'correct_family_memory', input: { memory_id: Number(x[1]), fact: x[2] } }];
+  if (/^how['’]?s the house\??$/i.test(m)) return [{ name: 'house_status', input: {} }];
+  if (/^storm\??$|^any storms?\??$/i.test(m)) return [{ name: 'storm_plan', input: {} }];
+  if ((x = m.match(/^house (lock|close|turn_on|turn_off|unlock|open|disarm) (.+?)$/i))) return [{ name: 'house_control', input: { device: x[2], action: (x[1] ?? '').toLowerCase(), value: null } }];
+  if ((x = m.match(/^house set (.+?) to (\d+)$/i))) return [{ name: 'house_control', input: { device: x[1], action: 'set_temperature', value: Number(x[2]) } }];
   if (/^(?:any )?scam warnings\??$/i.test(m)) return [{ name: 'shield_alerts', input: {} }];
   if ((x = m.match(/^dossier (?:for )?(.+)$/i))) return [{ name: 'person_dossier', input: { name: x[1] } }];
   if ((x = m.match(/^prep pack(?: for (\d{4}-\d{2}-\d{2}))?$/i))) return [{ name: 'health_prep', input: { date: x[1] ?? null } }];

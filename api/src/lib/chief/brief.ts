@@ -25,6 +25,7 @@ import { openText } from '../seal.js';
 import { expiryLine, listVault } from './papers.js';
 import { moneyBrief } from './money.js';
 import { packLine, prepPacks } from './healthops.js';
+import { stormLines, stormPlan } from './house.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -259,6 +260,14 @@ async function mailDrafts(): Promise<Draft[]> {
 export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
   const t = today();
   const sections: Array<{ title: string; drafts: Draft[] }> = [];
+  // JP3 storm mode leads any brief while severe weather touches the day.
+  const storm = kind === 'weekly' ? null : await stormPlan(v);
+  if (storm) {
+    sections.push({
+      title: 'Storm mode',
+      drafts: [...stormLines(storm, v.parent), ...(v.parent ? [] : storm.steps.slice(1))].map((text, i) => ({ key: `${storm.key}:${i}`, category: 'storm' as const, text, subjectId: null, source: SOURCE.storm, asOf: storm.asOf, check: null, headsUp: true })),
+    });
+  }
   if (kind === 'morning') {
     const cal = await scheduleFor(v, t, t);
     const s = scheduleDrafts(v, cal, t, 'today', await conflictOptions(dayName));

@@ -704,6 +704,8 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .shield-alert b { margin-right: 4px; }
 .share-card { white-space: pre-wrap; font: inherit; font-size: 0.9em; background: var(--surface-2, transparent); padding: 8px; border-radius: 6px; }
 .dossier { padding: 4px 0 8px; }
+.storm { border-left: 3px solid var(--hy-terra, currentColor); padding: 6px 10px; margin-bottom: 10px; }
+.device.attention b { color: var(--hy-terra, inherit); }
 /* Hana's replies: markdown rendered (never raw **). */
 .bubble.hana { white-space: normal; }
 .md > * { margin: 0; }

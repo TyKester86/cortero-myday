@@ -30,13 +30,14 @@ import { expiryBucket, expiryLine, listVault } from './papers.js';
 import { moneyWatch } from './money.js';
 import { healthWatch } from './healthops.js';
 import { shieldWatch } from './shield.js';
+import { houseWatch, stormWatch } from './house.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
 import { requireParent, viewerOf, type Viewer } from './scope.js';
 import { balances, billsDue, scheduleFor, type ScheduleItem } from './tools.js';
 
-export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry', 'money', 'health', 'shield'];
+export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry', 'money', 'health', 'shield', 'house', 'storm'];
 
 const DEFAULTS: HanaSettings = {
   quietStart: '21:00',
@@ -276,6 +277,10 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
 
   // JP6: the shield — scams, phishing, lures aimed at the kids, security alerts, first-time large charges. Warned, never blocked.
   findings.push(...(await shieldWatch(parents)));
+
+  // JP3: the house (the alarm at once, through quiet hours) and storm mode (kids get the shelter steps).
+  findings.push(...(await houseWatch(parents, at)));
+  findings.push(...(await stormWatch(parents, members, at)));
 
   // Crisis signals in the content she reads (calendar and homework text): never alone, never silently.
   await crisisScan(members, sched.data);

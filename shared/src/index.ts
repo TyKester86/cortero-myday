@@ -3403,7 +3403,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health' | 'shield';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3483,7 +3483,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3785,4 +3785,45 @@ export interface PersonDossier {
 export interface PeopleView {
   people: Person[];
   suggestions: Array<{ name: string; email: string; role: PersonRole; why: string }>;
+}
+
+/* ---------- JP3: the house (reads T0; a command only on a parent's approval, T2) ---------- */
+
+export interface HomeDevice {
+  id: number;
+  entityId: string;
+  kind: 'alarm' | 'lock' | 'thermostat' | 'light' | 'garage' | 'door' | 'window';
+  name: string;
+  state: string;
+  /** Plain words: "armed (away)", "open", "heat, 68° now, set to 70°". */
+  said: string;
+  open: boolean;
+  changedAt: string;
+}
+
+export interface HouseStatus {
+  connected: boolean;
+  devices: HomeDevice[];
+  asOf: string | null;
+  stale: string | null;
+  source: string;
+}
+
+export interface StormPlan {
+  key: string;
+  event: string;
+  severity: string;
+  window: string;
+  headline: string;
+  /** The weather service's own instructions (shown as theirs). */
+  instruction: string;
+  /** Who's out during it, from the calendar. */
+  out: Array<{ title: string; time: string; people: string[]; pickup: string | null }>;
+  /** Pickups inside the storm: the parents' call. */
+  decisions: string[];
+  /** What's open or unlocked at the house (parents only). */
+  house: string[];
+  steps: string[];
+  source: string;
+  asOf: string;
 }

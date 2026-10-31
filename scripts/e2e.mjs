@@ -186,8 +186,59 @@ const oigRows = [
   `DOYLE,CASEY,,,"INDIVIDUAL",PSYCHOLOGIST,,${NPI.excluded},19700101,"1 MAIN ST",TULSA,OK,74101,1128a1,20200101,00000000,00000000,`,
   'SMITH,JOHN,Q,,INDIVIDUAL,NURSE,,0000000000,19650505,"2 ELM ST",DALLAS,TX,75201,1128b4,20190101,00000000,00000000,',
 ];
+// JP3: a fake Home Assistant (needs its token) and a fake National Weather Service.
+const HA_TOKEN = 'ha-test-token-0123456789';
+const HA_STATES = [
+  { entity_id: 'alarm_control_panel.home', state: 'armed_away', attributes: { friendly_name: 'Home alarm' } },
+  { entity_id: 'lock.front_door', state: 'locked', attributes: { friendly_name: 'Front door' } },
+  { entity_id: 'cover.garage_door', state: 'closed', attributes: { friendly_name: 'Garage door', device_class: 'garage' } },
+  { entity_id: 'binary_sensor.back_door', state: 'off', attributes: { friendly_name: 'Back door', device_class: 'door' } },
+  { entity_id: 'climate.hallway', state: 'heat', attributes: { friendly_name: 'Hallway thermostat', current_temperature: 66, temperature: 68 } },
+  { entity_id: 'light.porch', state: 'off', attributes: { friendly_name: 'Porch light' } },
+  { entity_id: 'media_player.tv', state: 'playing', attributes: { friendly_name: 'TV' } },
+  { entity_id: 'sensor.outdoor_temp', state: '41', attributes: { friendly_name: 'Outdoor temperature' } },
+];
+const haCalls = [];
+const nwsHits = [];
+const NWS_ALERTS = [];
+const haSet = (id, state) => { const s = HA_STATES.find((x) => x.entity_id === id); s.state = state; s.last_changed = new Date().toISOString(); };
+const haGet = (id) => HA_STATES.find((x) => x.entity_id === id).state;
+const haAttr = (id, k) => HA_STATES.find((x) => x.entity_id === id).attributes[k];
 const registry = createHttp((req, res) => {
   const u = new URL(req.url, 'http://x');
+  if (u.pathname.startsWith('/ha/api/')) {
+    if (req.headers.authorization !== `Bearer ${HA_TOKEN}`) { res.statusCode = 401; res.end(); return; }
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'GET' && u.pathname === '/ha/api/states') { res.end(JSON.stringify(HA_STATES)); return; }
+    const m = u.pathname.match(/^\/ha\/api\/services\/(\w+)\/(\w+)$/);
+    if (req.method === 'POST' && m) {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        const b = JSON.parse(body || '{}');
+        haCalls.push(`${m[1]}/${m[2]}:${b.entity_id}`);
+        const s = HA_STATES.find((x) => x.entity_id === b.entity_id);
+        if (s) {
+          if (m[2] === 'lock') s.state = 'locked';
+          if (m[2] === 'close_cover') s.state = 'closed';
+          if (m[2] === 'turn_on') s.state = 'on';
+          if (m[2] === 'turn_off') s.state = 'off';
+          if (m[2] === 'set_temperature') s.attributes.temperature = b.temperature;
+        }
+        res.end('[]');
+      });
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+    return;
+  }
+  if (u.pathname === '/nws/alerts/active') {
+    nwsHits.push(u.search.slice(1));
+    res.setHeader('Content-Type', 'application/geo+json');
+    res.end(JSON.stringify({ features: NWS_ALERTS.map((p) => ({ properties: p })) }));
+    return;
+  }
   if (u.pathname === '/nppes') {
     const n = u.searchParams.get('number');
     const r = NPPES[n];
@@ -251,6 +302,7 @@ const serverEnv = (fakeNow) => ({
   FLIGHT_STUB: '1',
   ROBOT_STUB: '1',
   NPPES_URL: `${REG}/nppes`,
+  WEATHER_URL: `${REG}/nws`,
   OIG_CSV_URL: `${REG}/oig.csv`,
   WEB_FEEDS: `testpub|Test Publisher|${RSS},testmind|Test Mind|${RSS_BASE}/mind|adhd,testnews|Test News|${RSS_BASE}/gnews|gnews`,
   ROBOT_ALLOW_LOCAL: '1',
@@ -6960,6 +7012,7 @@ async function hanaBrainSuite() {
     await hanaMemoryChecks();
     await hanaHealthChecks();
     await hanaShieldChecks();
+    await hanaHouseChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7361,6 +7414,91 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaHouseChecks() {
+  const tess = hanaIds.tess;
+  const pending = (r) => (r.actions ?? []).filter((a) => a.status === 'pending');
+
+  section('Hana JP3 · the house: a parent connects the family’s own Home Assistant (it must answer first)');
+  eq('kids can’t see or connect the house', [(await avery.get('/api/house')).status, (await evan.post('/api/house/connect', { url: `${REG}/ha`, token: HA_TOKEN })).status], [403, 403]);
+  eq('a wrong token is refused, said plainly', [(await ty.post('/api/house/connect', { url: `${REG}/ha`, token: 'nope' })).status, (await ty.post('/api/house/connect', { url: `${REG}/ha`, token: 'nope' })).data.error], [400, 'Home Assistant said no — the access token may have been revoked. Make a new long-lived token.']);
+  let h = (await ty.post('/api/house/connect', { url: `${REG}/ha`, token: HA_TOKEN })).data.status;
+  eq('connected: the alarm, locks, garage, a door, the thermostat and a light — in plain words (the TV and a sensor ignored)', h.devices.map((d) => [d.name, d.said]), [
+    ['Home alarm', 'armed (away)'], ['Front door', 'locked'], ['Garage door', 'closed'], ['Back door', 'closed'], ['Hallway thermostat', 'heat, 66° now, set to 68°'], ['Porch light', 'off'],
+  ]);
+  check('the token is sealed at rest, never stored plain', (await sql('SELECT token_enc::text AS t FROM home_connections'))[0].t.includes(HA_TOKEN) === false);
+
+  section('Hana JP3 · a pending alarm is a Jarvis catch — said at once, through quiet hours');
+  haSet('alarm_control_panel.home', 'pending');
+  await ty.post(`/api/hana/run-watch?at=${hanaNow('2026-11-03', 8)}`); // 2 AM local: quiet hours
+  let said = await sql("SELECT member_id, text FROM hana_items WHERE surface = 'watch' AND category = 'house'");
+  const adults = (await sql("SELECT id FROM household_members WHERE household_id = 1 AND kind = 'adult' AND archived_at IS NULL ORDER BY id")).map((x) => x.id);
+  check('every parent told, now, in plain words with the safe next step (Ty and Kayla among them)', said.filter((x) => /^The Home alarm is counting down \(since .+\) — a door opened while it was armed\. If that wasn’t someone in the family, call your alarm company or 911\.$/.test(x.text)).map((x) => x.member_id).sort((a, b) => a - b).join() === adults.join() && adults.includes(hanaIds.Ty) && adults.includes(hanaIds.Kayla), JSON.stringify(said));
+  eq('…never to a kid', said.some((x) => [hanaIds.Avery, hanaIds.Evan].includes(x.member_id)), false);
+  haSet('alarm_control_panel.home', 'triggered');
+  await ty.post(`/api/hana/run-watch?at=${hanaNow('2026-11-03', 9)}`);
+  said = await sql("SELECT text FROM hana_items WHERE surface = 'watch' AND category = 'house' AND text LIKE '%going off%'");
+  check('…and again when it goes off', said.length >= 1 && /Hana can’t disarm it\.$/.test(said[0].text), JSON.stringify(said));
+  haSet('alarm_control_panel.home', 'armed_away');
+
+  section('Hana JP3 · at night: the garage left open, a door unlocked — offered, never done alone');
+  haSet('cover.garage_door', 'open');
+  haSet('lock.front_door', 'unlocked');
+  await ty.post(`/api/hana/run-watch?at=${hanaNow('2026-11-03', 3)}`); // 9 PM local
+  said = (await sql("SELECT text FROM hana_items WHERE surface = 'watch' AND category = 'house' AND item_key LIKE 'house:night:%' AND member_id = $1", [hanaIds.Ty])).map((x) => x.text).sort();
+  eq('both said once, with an offer that needs their OK', said, ['The Front door is unlocked at 9:00 PM. Want me to lock it? I’ll only do it on your OK.', 'The Garage door is still open at 9:00 PM. Want me to close it? I’ll only do it on your OK.']);
+  let r = await hanaSay(ty, 'house close garage door');
+  eq('closing it through Hana is T2 — prepared, waiting for the parent', [pending(r).map((a) => a.summary), haGet('cover.garage_door')], [['House: close garage door'], 'open']);
+  eq('…a kid can’t approve it; the other parent can’t either (it’s Ty’s)', [(await avery.post(`/api/hana/actions/${pending(r)[0].id}/confirm`)).status, (await kayla.post(`/api/hana/actions/${pending(r)[0].id}/confirm`)).status], [403, 404]);
+  const done = (await ty.post(`/api/hana/actions/${pending(r)[0].id}/confirm`)).data.action;
+  eq('…approved: one command sent, the house read back', [done.status, done.result, haGet('cover.garage_door'), haCalls.filter((c) => c === 'cover/close_cover:cover.garage_door').length], ['done', 'Sent to the house: close Garage door. It now reports: closed.', 'closed', 1]);
+  r = await hanaSay(ty, 'house set hallway thermostat to 70');
+  await ty.post(`/api/hana/actions/${pending(r)[0].id}/confirm`);
+  eq('the thermostat, the same way', haAttr('climate.hallway', 'temperature'), 70);
+  for (const verb of ['unlock front door', 'open garage door', 'disarm home alarm']) {
+    r = await hanaSay(ty, `house ${verb}`);
+    eq(`she never does “${verb}” — nothing is prepared`, pending(r).length, 0);
+  }
+  r = await hanaSay(ty, 'house turn_off front door');
+  eq('…and an action that doesn’t fit the device is refused before it’s proposed', [pending(r).length, /She never unlocks, opens or disarms/.test(r.reply.text)], [0, true]);
+  check('Hana reads the house (T0) with its source', /Front door \(lock\): unlocked/.test((await hanaSay(ty, 'how’s the house')).reply.text));
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('reads are T0; a command is T2', ['house_status', 'storm_plan', 'house_control'].map((x) => caps.tools.find((t) => t.name === x)?.tier), ['T0', 'T0', 'T2']);
+
+  section('Hana JP3 · storm mode: severe weather re-plans the evening');
+  eq('no place set: nothing is sent to the weather service', [(await ty.get('/api/house')).data.place, nwsHits.length], [null, 0]);
+  await ty.put('/api/house/place', { lat: 39.0997, lon: -94.5786 });
+  eq('a parent opts in; only rounded coordinates leave MyDay', [(await ty.get('/api/house')).data.place.lat, nwsHits.at(-1)], [39.1, 'point=39.1,-94.58']);
+  NWS_ALERTS.push({ id: 'urn:nws:tw1', event: 'Tornado Warning', severity: 'Extreme', headline: 'Tornado Warning issued November 2 at 3:40PM CST until 7:00PM CST', instruction: 'TAKE COVER NOW! Move to a basement or an interior room on the lowest floor.', onset: '2026-11-02T22:00:00Z', ends: '2026-11-03T01:00:00Z' });
+  const storm = (await ty.get('/api/house')).data.storm;
+  eq('the plan: the window, the pickup inside it (nobody on it), the shelter steps', [storm?.event, storm?.window, storm?.decisions, storm?.steps[0]], [
+    'Tornado Warning', '4:00 PM–7:00 PM', [
+      'Avery soccer practice at 3:30 PM is inside the tornado warning — Kayla is on the pickup. Cancel, move it, or keep everyone home?',
+      'Evan piano lesson at 4:00 PM is inside the tornado warning — nobody is on the pickup yet. Cancel, move it, or keep everyone home?',
+      'Avery drama club at 6:30 PM is inside the tornado warning — nobody is on the pickup yet. Cancel, move it, or keep everyone home?',
+    ], 'Go to the lowest floor, an inside room with no windows (a basement, bathroom or closet).',
+  ]);
+  check('…and what’s open at the house', storm.house.includes('Front door is unlocked'), JSON.stringify(storm.house));
+  const brief = (await ty.get('/api/hana/brief?kind=morning')).data.sections;
+  eq('storm mode leads the brief', brief[0].title, 'Storm mode');
+  const kb = (await avery.get('/api/hana/brief?kind=morning')).data.sections[0];
+  check('a kid’s brief leads with the storm and the shelter steps — not the house, not the pickups', kb.title === 'Storm mode' && kb.items.some((i) => /lowest floor/.test(i.text)) && !kb.items.some((i) => /Front door|pickup/.test(i.text)), JSON.stringify(kb));
+  eq('a kid’s storm view has no house and no decisions', ((s) => [s.house.length, s.decisions.length, s.steps.length > 0])((await avery.get('/api/storm')).data.storm), [0, 0, true]);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 21)}`);
+  said = await sql("SELECT member_id, text FROM hana_items WHERE surface = 'watch' AND category = 'storm'");
+  check('the watch: parents get the plan; kids get the shelter steps (a tornado warning breaks quiet hours)', said.some((x) => x.member_id === hanaIds.Ty && /^Storm mode: Tornado Warning 4:00 PM–7:00 PM\./.test(x.text)) && said.some((x) => x.member_id === hanaIds.Avery && /^Tornado Warning 4:00 PM–7:00 PM: Go to the lowest floor/.test(x.text) && !/Front door/.test(x.text)), JSON.stringify(said));
+  check('Hana says it from her tool, with the weather service’s own words labeled', /The weather service says: TAKE COVER NOW!/.test((await hanaSay(ty, 'storm?')).reply.text));
+  NWS_ALERTS.length = 0;
+  eq('the alert ends → storm mode ends', (await ty.get('/api/house')).data.storm, null);
+
+  section('Hana JP3 · it never leaves the household');
+  eq('another household sees none of it', [((d) => [d.status.connected, d.place, d.storm])((await tess.get('/api/house')).data)], [[false, null, null]]);
+  await ty.del('/api/house/connection');
+  eq('disconnecting removes the token and the readings', (await sql('SELECT (SELECT count(*) FROM home_connections)::int + (SELECT count(*) FROM home_devices)::int AS n'))[0].n, 0);
+  await ty.put('/api/house/place', { lat: 39.1, lon: -94.58, weatherOn: false });
+  await sql('DELETE FROM household_places');
+  await sql("DELETE FROM hana_items WHERE category IN ('house', 'storm')");
 }
 
 async function hanaShieldChecks() {
@@ -7828,7 +7966,7 @@ async function hanaLadderChecks() {
   section('Hana C3 · the hard rails, and the audit log');
   const caps = (await ty.get('/api/hana/capabilities')).data;
   eq('no tool moves money, signs, or deletes mail or events', caps.tools.filter((t) => /pay|transfer|money_move|move_money|wire|sign|delete_event|remove_event|delete_mail|delete_email|archive_mail/i.test(t.name) && !/^money_summary$/.test(t.name)).map((t) => t.name), []);
-  eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'run_errand', 'send_groceries'], 'T0', 'T1']);
+  eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'house_control', 'run_errand', 'send_groceries'], 'T0', 'T1']);
   eq('…and the rails are stated', caps.rails.length, 5);
   eq('kids can’t see it', (await avery.get('/api/hana/capabilities')).status, 403);
   const kLog = (await kayla.get('/api/hana/log')).data.log;
@@ -8158,7 +8296,7 @@ async function hanaWatchChecks() {
   eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
   eq('a second pass pushes nothing new (no loops)', (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data.pushed, 0);
   check('the watch alerts show on Family HQ', (await ty.get('/api/hana/alerts')).data.alerts.some((a) => a.kind === 'watch' && a.text.includes('Evan piano lesson')));
-  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money, health and shield since Q6/Q8/Q9)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health', 'shield'].includes(r.category)));
+  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money, health, shield, house and storm since Q6/Q8/Q9)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health', 'shield', 'house', 'storm'].includes(r.category)));
 
   section('Hana H5 · quiet hours: held on a school night, except a same-day logistics failure');
   await ty.post('/api/calendar/events', { title: 'Evan swim', startsOn: '2026-11-03', startTime: '16:00', endTime: '17:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });

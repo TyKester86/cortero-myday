@@ -23,6 +23,8 @@ export const SOURCE = {
   care: 'Your medications, care schedule & calendar',
   shield: 'Hana’s scam & safety watch (forwarded mail, linked bank)',
   people: 'Your people, mail, loops, calendar & family memory',
+  house: 'Your Home Assistant',
+  storm: 'National Weather Service alert for your area + MyDay calendar',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 

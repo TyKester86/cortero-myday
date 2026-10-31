@@ -14,6 +14,7 @@ import { papersRouter, papersUploadRouter } from './papers.js';
 import { mindRouter } from './mind.js';
 import { healthOpsRouter } from './healthops.js';
 import { peopleRouter } from './people.js';
+import { houseRouter } from './house.js';
 import { errandsRouter } from './errands.js';
 import { grocersRouter } from './grocers.js';
 import { inboundRouter, inboxRouter } from './inbox.js';
@@ -46,7 +47,7 @@ import { recordsRouter } from './records.js';
 import { schoolRouter } from './school.js';
 
 export const extraRouters: Router[] = [programRouter, schoolRouter, lecturesRouter, identityRouter, billsRouter, kidMoneyRouter, engagementRouter,
-  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter, hqRouter, calendarSourcesRouter, papersRouter, mindRouter, healthOpsRouter, peopleRouter];
+  notificationsRouter, recordsRouter, billingRouter, investRouter, circlesRouter, careRouter, photosRouter, accountRouter, calendarRouter, assistantRouter, inboxRouter, grocersRouter, errandsRouter, meetingsRouter, chatFilesRouter, libraryRouter, hqRouter, calendarSourcesRouter, papersRouter, mindRouter, healthOpsRouter, peopleRouter, houseRouter];
 
 /** Routes that work before the household gate (staff/admin, no household of their own needed). */
 // The Feed is open to anyone with the app (no household needed): community + social routes do their own 18+ checks.
