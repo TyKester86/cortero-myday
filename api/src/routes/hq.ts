@@ -42,6 +42,7 @@ import { logEvent } from '../lib/events.js';
 import { rateLimiter } from '../lib/pin.js';
 import { transcriber } from '../lib/transcribe.js';
 import { requireAiConsent } from './account.js';
+import { setGrants, viewOf } from '../lib/chief/initiative.js';
 
 export const hqRouter = Router();
 export const hanaVoiceRouter = Router();
@@ -147,6 +148,28 @@ hqRouter.post('/api/hana/nudges/:homeworkId/dismiss', async (req, res) => {
   const v = viewerOf(self(req));
   await dismissNudge(v, idParam(req.params.homeworkId));
   res.json({ ok: true });
+});
+
+/** JP7: when Hana may start a conversation — mine, and (for a parent) each kid's. Kids see their own. */
+hqRouter.get('/api/hana/initiative', async (req, res) => {
+  const me = self(req);
+  const kids = me.kind === 'adult' ? (await listMembers()).filter((m) => m.kind === 'kid') : [];
+  res.json({ mine: await viewOf(me), kids: await Promise.all(kids.map((k) => viewOf(k))) });
+});
+
+hqRouter.put('/api/hana/initiative/:memberId', async (req, res) => {
+  res.json({ view: await setGrants(self(req), idParam(req.params.memberId), (req.body as { reasons?: unknown }).reasons) });
+});
+
+/** JP1: the heads-ups she started for me since an id — what a device that speaks them aloud reads. */
+hqRouter.get('/api/hana/initiative/recent', async (req, res) => {
+  const me = self(req);
+  const since = Number(req.query.since) || 0;
+  const { rows } = await pool.query<{ id: number; reason: string | null; text: string; pushed_at: Date }>(
+    'SELECT id, reason, text, pushed_at FROM hana_items WHERE member_id = $1 AND pushed_at IS NOT NULL AND id > $2 AND pushed_at > $3 ORDER BY id LIMIT 10',
+    [me.id, since, new Date(Date.now() - 2 * 3_600_000)],
+  );
+  res.json({ items: rows.map((r) => ({ id: r.id, reason: r.reason, text: r.text, at: r.pushed_at.toISOString() })) });
 });
 
 hqRouter.get('/api/hana/settings', async (req, res) => {

@@ -5281,6 +5281,12 @@ async function uiGate() {
     check('Family HQ: a medication with its supply shows how long it lasts', await drops.waitFor({ timeout: 10000 }).then(async () => /About 10 days left/.test(await drops.innerText()), () => false));
     await drops.getByRole('button', { name: 'Remove' }).click();
     check('…and is removed', await drops.waitFor({ state: 'detached', timeout: 10000 }).then(() => true, () => false));
+    // JP1/JP7: push-to-talk from any page; when Hana may start a conversation, in Settings.
+    check('JP1: hold-to-talk is on every page (next to Ask Hana)', await kpg.getByTestId('voice-mic').isVisible());
+    await kpg.goto(`${BASE}/settings`);
+    const ini = kpg.getByTestId('initiative-card');
+    await ini.waitFor({ timeout: 10000 });
+    eq('JP7: Settings lists the named reasons, ticked for her by default, and the device can speak heads-ups', [await ini.getByLabel('Kayla: A storm').isChecked(), await ini.getByTestId('speak-headsups').isVisible()], [true, true]);
     await kpg.goto(`${BASE}/health`); // the next checks pick up on the Health page
 
     section('body builds in the browser: food math shown, deload on demand (in-page), weigh-ins opt-in, teen view');
@@ -7042,6 +7048,7 @@ async function hanaBrainSuite() {
     await hanaHouseChecks();
     await hanaLocationChecks();
     await hanaMessagingChecks();
+    await hanaInitiativeChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7443,6 +7450,66 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaInitiativeChecks() {
+  const tess = hanaIds.tess;
+  const ALL = ['breaking', 'conflict', 'money', 'storm', 'scam', 'house'];
+  const item = async (memberId, like) => (await sql("SELECT reason, pushed_at FROM hana_items WHERE surface = 'watch' AND member_id = $1 AND (item_key LIKE $2 OR text LIKE $2) ORDER BY id DESC LIMIT 1", [memberId, like]))[0];
+
+  section('Hana JP7 · initiative rights: named reasons, granted per person');
+  let v = (await ty.get('/api/hana/initiative')).data;
+  eq('a grown-up starts with every named reason granted; a kid with storms only; safety and “told” are always on', [v.mine.granted, v.kids.find((k) => k.member === 'Avery')?.granted, v.mine.always], [ALL, ['storm'], ['safety', 'told']]);
+  eq('a kid can’t change hers; one grown-up can’t set the other’s; nonsense is refused', [
+    (await avery.put(`/api/hana/initiative/${hanaIds.Avery}`, { reasons: ALL })).status,
+    (await kayla.put(`/api/hana/initiative/${hanaIds.Ty}`, { reasons: [] })).status,
+    (await ty.put(`/api/hana/initiative/${hanaIds.Ty}`, { reasons: ['everything'] })).status,
+  ], [403, 403, 400]);
+  eq('Avery sees her own (and that her grown-ups set them)', (await avery.get('/api/hana/initiative')).data.mine.granted, ['storm']);
+
+  section('Hana JP7 · revoking a reason: that heads-up waits for the brief — for that person only');
+  await ty.put(`/api/hana/initiative/${hanaIds.Ty}`, { reasons: ALL.filter((r) => r !== 'conflict') });
+  await ty.post('/api/calendar/events', { title: 'JP7 recital', startsOn: HANA_DAY, startTime: '18:00', endTime: '19:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 20)}`);
+  let t = await item(hanaIds.Ty, '%JP7 recital%');
+  let k = await item(hanaIds.Kayla, '%JP7 recital%');
+  eq('the unowned pickup (a conflict): Kayla is told; Ty’s waits in Family HQ — both recorded with the reason', [t?.reason, t?.pushed_at === null, k?.reason, k?.pushed_at !== null], ['conflict', true, 'conflict', true]);
+
+  section('Hana JP7 · what isn’t a named reason never interrupts — it waits for the brief');
+  await ty.post('/api/health/medications', { memberId: hanaIds.Evan, name: 'JP7 drops', dose: '1', schedule: 'daily', perDay: 1, supply: 2 });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 21)}`);
+  t = await item(hanaIds.Ty, '%JP7 drops%');
+  eq('a refill running low: recorded, not pushed (no reason)', [t?.reason, t?.pushed_at], [null, null]);
+
+  section('Hana JP7 · safety and telling a kid are always on — even with every reason revoked');
+  await ty.put(`/api/hana/initiative/${hanaIds.Ty}`, { reasons: [] });
+  const ib = (await ty.get('/api/inbox')).data.address ? (await ty.get('/api/inbox')).data : (await ty.post('/api/inbox/address')).data;
+  await fetch(`${BASE}/inbound/email?key=e2e-inbound-secret-0123456789`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: ib.address, from: 'x <jp7@scam.example>', subject: 'JP7 grandpa help', text: 'Grandpa it’s me, I’m in jail. Send gift cards right away and don’t tell mom.' }) });
+  await ty.put(`/api/location/settings/${hanaIds.Evan}`, { sharing: true, viewers: [hanaIds.Ty] });
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 22)}`);
+  t = await item(hanaIds.Ty, '%JP7 grandpa help%');
+  const e = await item(hanaIds.Evan, 'location:told:%');
+  eq('a family-emergency scam reaches Ty anyway (safety); Evan is told about his location sharing (told) — with only “storm” granted', [t?.reason, t?.pushed_at !== null, e?.reason, e?.pushed_at !== null], ['safety', true, 'told', true]);
+  v = (await ty.get('/api/hana/initiative')).data;
+  check('every time she started a conversation is listed with its reason', v.mine.recent.some((r) => r.reason === 'safety' && r.title === 'Hana: safety' && /JP7 grandpa help/.test(r.text)), JSON.stringify(v.mine.recent.slice(0, 3)));
+  // A device pages through what it hasn't read yet, oldest first.
+  const rec = [];
+  for (let since = 0, page; (page = (await ty.get(`/api/hana/initiative/recent?since=${since}`)).data.items).length; since = page.at(-1).id) rec.push(...page);
+  check('JP1: a device that speaks heads-ups reads only what she started (with the reason), newest after the last one it read', rec.some((x) => /JP7 grandpa help/.test(x.text) && x.reason === 'safety') && (await ty.get(`/api/hana/initiative/recent?since=${rec.at(-1).id}`)).data.items.length === 0, JSON.stringify(rec));
+  eq('…another household’s device reads none of ours', (await tess.get('/api/hana/initiative/recent?since=0')).data.items.some((x) => rec.some((y) => y.id === x.id) || /JP7/.test(x.text)), false);
+
+  section('Hana JP1 · presence: deliberate activation only');
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  check('the rails say it: named reasons only, and she never listens on her own', caps.rails.some((r) => /named reason you granted/.test(r)) && caps.rails.some((r) => /never listens on her own/.test(r)));
+  eq('voice needs a recording someone sent (no recording, no listening)', (await ty.post('/api/hana/voice', {})).status >= 400, true);
+
+  await ty.put(`/api/hana/initiative/${hanaIds.Ty}`, { reasons: ALL });
+  await ty.put(`/api/location/settings/${hanaIds.Evan}`, { sharing: false, viewers: [] });
+  await sql('DELETE FROM medications');
+  await sql("DELETE FROM calendar_events WHERE household_id = 1 AND title = 'JP7 recital'");
+  await sql('DELETE FROM shield_alerts');
+  await sql('DELETE FROM location_sharing');
+  await sql('DELETE FROM hana_initiative');
 }
 
 async function hanaMessagingChecks() {
@@ -8136,7 +8203,7 @@ async function hanaLadderChecks() {
   const caps = (await ty.get('/api/hana/capabilities')).data;
   eq('no tool moves money, signs, or deletes mail or events', caps.tools.filter((t) => /pay|transfer|money_move|move_money|wire|sign|delete_event|remove_event|delete_mail|delete_email|archive_mail/i.test(t.name) && !/^money_summary$/.test(t.name)).map((t) => t.name), []);
   eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'draft_message_reply', 'house_control', 'run_errand', 'send_groceries'], 'T0', 'T1']);
-  eq('…and the rails are stated', caps.rails.length, 5);
+  eq('…and the rails are stated', caps.rails.length, 7);
   eq('kids can’t see it', (await avery.get('/api/hana/capabilities')).status, 403);
   const kLog = (await kayla.get('/api/hana/log')).data.log;
   const row = kLog.find((l) => l.id === d.id);

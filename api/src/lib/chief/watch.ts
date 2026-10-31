@@ -33,6 +33,7 @@ import { shieldWatch } from './shield.js';
 import { houseWatch, stormWatch } from './house.js';
 import { disclosures } from './location.js';
 import { kidSafetyDisclosures } from './messaging.js';
+import { mayInterrupt, REASON_TITLE, reasonOf, type Reason } from './initiative.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
@@ -300,26 +301,32 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
   let pushed = 0;
   let held = 0;
   const day = t;
+  const byId = new Map(members.map((m) => [m.id, m]));
   for (const f of findings) {
     if (s.muted.includes(f.category)) continue;
+    // JP7: the named reason it may interrupt for (or null: it waits for the brief).
+    const reason = reasonOf(f);
     for (const pid of f.to ?? parents.map((p) => p.id)) {
       // Once ever (not once a day): an earlier day's item with the same key means it was said.
       if (f.once && (await pool.query("SELECT 1 FROM hana_items WHERE member_id = $1 AND surface = 'watch' AND item_key = $2 AND shown_on < $3 LIMIT 1", [pid, f.key, day])).rowCount) continue;
       const { rows } = await pool.query<{ id: number; pushed_at: Date | null }>(
-        `INSERT INTO hana_items (member_id, surface, category, item_key, subject_member_id, text, source, as_of, shown_on)
-         VALUES ($1, 'watch', $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (member_id, surface, item_key, shown_on) DO UPDATE SET text = EXCLUDED.text, as_of = EXCLUDED.as_of
+        `INSERT INTO hana_items (member_id, surface, category, item_key, subject_member_id, text, source, as_of, shown_on, reason)
+         VALUES ($1, 'watch', $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (member_id, surface, item_key, shown_on) DO UPDATE SET text = EXCLUDED.text, as_of = EXCLUDED.as_of, reason = EXCLUDED.reason
          RETURNING id, pushed_at`,
-        [pid, f.category, f.key, f.subjectId, f.text, f.source, f.asOf, day],
+        [pid, f.category, f.key, f.subjectId, f.text, f.source, f.asOf, day, reason],
       );
       const row = rows[0];
       if (!row || row.pushed_at) continue;
+      // Only a reason this person granted (or safety / telling a kid) may start a conversation.
+      const who = byId.get(pid);
+      if (!who || !(await mayInterrupt(who, reason))) continue;
       if (quiet && !f.sameDay) {
         held++;
         continue;
       }
-      if (await push(pid, f.text)) {
-        await pool.query('UPDATE hana_items SET pushed_at = now() WHERE id = $1', [row.id]);
+      if (await push(pid, f.text, reason)) {
+        await pool.query('UPDATE hana_items SET pushed_at = $2 WHERE id = $1', [row.id, at]);
         pushed++;
       }
     }
@@ -331,12 +338,14 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
       [addDays(t, -1)],
     );
     for (const r of rows) {
+      const who = byId.get(r.member_id);
+      if (!who || !(await mayInterrupt(who, 'breaking'))) continue;
       if (quiet) {
         held++;
         continue;
       }
-      if (await push(r.member_id, r.text)) {
-        await pool.query('UPDATE hana_items SET pushed_at = now() WHERE id = $1', [r.id]);
+      if (await push(r.member_id, r.text, 'breaking')) {
+        await pool.query("UPDATE hana_items SET pushed_at = $2, reason = 'breaking' WHERE id = $1", [r.id, at]);
         pushed++;
       }
     }
@@ -345,13 +354,15 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
   return { found: findings.length, pushed, held, quiet, paused };
 }
 
-async function push(memberId: number, text: string): Promise<boolean> {
+/** She starts a conversation — and says why (JP7). */
+async function push(memberId: number, text: string, reason: Reason | null): Promise<boolean> {
+  const title = reason ? REASON_TITLE[reason] : 'Hana: heads up';
   try {
-    const r = await sendTo(memberId, { title: 'Hana: heads up', body: text, url: '/hq' });
+    const r = await sendTo(memberId, { title, body: text, url: '/hq' });
     return r.delivered > 0 || r.stub;
   } catch (e) {
     if (e instanceof CopyPolicyError) {
-      const r = await sendTo(memberId, { title: 'Hana: heads up', body: 'Something on the family board needs someone — tap to see it.', url: '/hq' });
+      const r = await sendTo(memberId, { title, body: 'Something on the family board needs someone — tap to see it.', url: '/hq' });
       return r.delivered > 0 || r.stub;
     }
     throw e;

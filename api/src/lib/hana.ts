@@ -1793,6 +1793,8 @@ export function capabilities(): HanaCapabilities {
       'She never deletes mail or calendar events.',
       'She never sends to anyone a grown-up didn’t approve on that draft.',
       'Everything that changes MyDay or leaves it waits for a grown-up’s OK, and is in this log.',
+      'She starts a conversation only for a named reason you granted (or safety, or telling a kid what changed about them), inside quiet hours — everything else waits for the brief.',
+      'She never listens on her own: every voice conversation starts with someone pressing to talk.',
     ],
   };
 }

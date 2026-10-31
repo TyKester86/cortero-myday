@@ -3890,3 +3890,25 @@ export interface KidMessageSafety {
   /** Which kid messaging channel feeds it — none exists in MyDay yet. */
   source: string | null;
 }
+
+/* ---------- JP7: initiative rights — when Hana may start a conversation ---------- */
+
+export type InitiativeReason = 'breaking' | 'conflict' | 'money' | 'storm' | 'scam' | 'house';
+export const INITIATIVE_REASONS: Array<{ reason: InitiativeReason; label: string; detail: string }> = [
+  { reason: 'breaking', label: 'A loop about to break', detail: 'Something due today that nobody has closed, homework at real risk.' },
+  { reason: 'conflict', label: 'A conflict that just formed', detail: 'A pickup nobody is on, two places at once, no time to get between them.' },
+  { reason: 'money', label: 'A money problem', detail: 'A bill while money is low, a dip coming, a card near its limit, a new large charge.' },
+  { reason: 'storm', label: 'A storm', detail: 'Severe weather for your area that touches today.' },
+  { reason: 'scam', label: 'A scam warning', detail: 'Phishing, a lure aimed at a kid, a security alert.' },
+  { reason: 'house', label: 'The house at night', detail: 'The garage left open, a door unlocked, a jammed lock.' },
+];
+
+export interface InitiativeView {
+  memberId: number;
+  member: string;
+  granted: InitiativeReason[];
+  /** Always on, and said so: safety (the alarm, a family-emergency scam) and telling a kid what changed about them. */
+  always: Array<'safety' | 'told'>;
+  /** The last times she started a conversation, and why. */
+  recent: Array<{ id: number; reason: InitiativeReason | 'safety' | 'told'; title: string; text: string; at: string }>;
+}

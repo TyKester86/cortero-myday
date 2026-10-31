@@ -65,7 +65,7 @@ async function upload(file: File): Promise<ChatAttachment> {
 }
 
 /** H7 Stage 1: push-to-talk. Records only while the button is held (up to a minute), then Hana hears it. */
-function useVoice(onText: (text: string) => void): {
+export function useVoice(onText: (text: string) => void): {
   state: 'idle' | 'listening' | 'hearing';
   err: string | null;
   supported: boolean;

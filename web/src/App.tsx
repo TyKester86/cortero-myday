@@ -28,6 +28,7 @@ import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
 import { useLocationReporting } from './modules/settings/Location';
+import { useSpokenHeadsUps, VoiceDock } from './components/Presence';
 import { useLoad } from './api';
 import type { LocationSettings } from '@myday/shared';
 
@@ -131,6 +132,8 @@ function Shell() {
   // JP4: only while this member's own location sharing is on, and only while MyDay is open.
   const loc = useLoad<{ mine: LocationSettings }>(me.member ? '/api/location' : null);
   useLocationReporting(!!loc.data?.mine.sharing);
+  // JP1: a device that asked for it speaks the heads-ups Hana starts.
+  useSpokenHeadsUps(!!me.member);
   useEffect(() => {
     applyLook(me.prefs?.theme ?? 'system', me.prefs?.accent ?? 'navy');
   }, [me.prefs]);
@@ -230,9 +233,12 @@ function Shell() {
       <FirstRun />
       <Shortcuts enabled={wide} />
       {nav.hana && location.pathname !== '/hana' && !location.pathname.startsWith('/messages/') && (
-        <Link to="/hana" className="hana-fab" aria-label="Ask Hana" data-testid="hana-fab">
-          <HanaFace size={52} />
-        </Link>
+        <>
+          <Link to="/hana" className="hana-fab" aria-label="Ask Hana" data-testid="hana-fab">
+            <HanaFace size={52} />
+          </Link>
+          <VoiceDock />
+        </>
       )}
       {!sidebar && (
         <nav className="tabs">
