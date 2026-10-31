@@ -27,6 +27,9 @@ import { useKeyboardLayout } from './components/useKeyboard';
 import GroceryPopout from './modules/meals/GroceryPopout';
 import { useRecordingUploads } from './recordings';
 import { SessionProvider, useSession } from './session';
+import { useLocationReporting } from './modules/settings/Location';
+import { useLoad } from './api';
+import type { LocationSettings } from '@myday/shared';
 
 function OfflineBar() {
   const { online, queued } = useOffline();
@@ -125,6 +128,9 @@ function Shell() {
   useKeyboardLayout();
   // Lecture recordings saved on this device upload on their own (load, reconnect, back to the app).
   useRecordingUploads(me.member ? me.userId : null);
+  // JP4: only while this member's own location sharing is on, and only while MyDay is open.
+  const loc = useLoad<{ mine: LocationSettings }>(me.member ? '/api/location' : null);
+  useLocationReporting(!!loc.data?.mine.sharing);
   useEffect(() => {
     applyLook(me.prefs?.theme ?? 'system', me.prefs?.accent ?? 'navy');
   }, [me.prefs]);

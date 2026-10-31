@@ -233,6 +233,30 @@ const registry = createHttp((req, res) => {
     res.end();
     return;
   }
+  if (u.pathname.startsWith('/nws/points/')) {
+    res.setHeader('Content-Type', 'application/geo+json');
+    res.end(JSON.stringify({ properties: { forecast: `${REG_SELF()}/nws/gridpoints/EAX/1,1/forecast`, forecastHourly: `${REG_SELF()}/nws/gridpoints/EAX/1,1/forecast/hourly` } }));
+    return;
+  }
+  if (u.pathname === '/nws/gridpoints/EAX/1,1/forecast/hourly') {
+    const periods = [];
+    for (let i = 0; i < 72; i++) {
+      const s = new Date(Date.parse('2026-11-02T06:00:00Z') + i * 3_600_000);
+      periods.push({ startTime: s.toISOString(), endTime: new Date(s.getTime() + 3_600_000).toISOString(), temperature: 50 + (i % 10), temperatureUnit: 'F', shortForecast: 'Partly Cloudy', probabilityOfPrecipitation: { value: 20 } });
+    }
+    res.setHeader('Content-Type', 'application/geo+json');
+    res.end(JSON.stringify({ properties: { periods } }));
+    return;
+  }
+  if (u.pathname === '/nws/gridpoints/EAX/1,1/forecast') {
+    res.setHeader('Content-Type', 'application/geo+json');
+    res.end(JSON.stringify({ properties: { periods: [
+      { name: 'Today', isDaytime: true, startTime: '2026-11-02T12:00:00Z', endTime: '2026-11-03T00:00:00Z', temperature: 58, temperatureUnit: 'F', shortForecast: 'Sunny', probabilityOfPrecipitation: { value: null } },
+      { name: 'Tonight', isDaytime: false, startTime: '2026-11-03T00:00:00Z', endTime: '2026-11-03T12:00:00Z', temperature: 40, temperatureUnit: 'F', shortForecast: 'Clear', probabilityOfPrecipitation: { value: null } },
+      { name: 'Tuesday', isDaytime: true, startTime: '2026-11-03T12:00:00Z', endTime: '2026-11-04T00:00:00Z', temperature: 52, temperatureUnit: 'F', shortForecast: 'Chance Rain Showers', probabilityOfPrecipitation: { value: 60 } },
+    ] } }));
+    return;
+  }
   if (u.pathname === '/nws/alerts/active') {
     nwsHits.push(u.search.slice(1));
     res.setHeader('Content-Type', 'application/geo+json');
@@ -256,6 +280,9 @@ const registry = createHttp((req, res) => {
 });
 await new Promise((r) => registry.listen(0, '127.0.0.1', r));
 const REG = `http://127.0.0.1:${registry.address().port}`;
+function REG_SELF() {
+  return REG;
+}
 let robotChromium = '';
 try {
   robotChromium = createRequire(path.join(root, 'package.json'))('playwright').chromium.executablePath();
@@ -7013,6 +7040,7 @@ async function hanaBrainSuite() {
     await hanaHealthChecks();
     await hanaShieldChecks();
     await hanaHouseChecks();
+    await hanaLocationChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7414,6 +7442,67 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaLocationChecks() {
+  const tess = hanaIds.tess;
+  const loc = async (c) => (await c.get('/api/location')).data;
+
+  section('Hana JP4 · location sharing — consent first: off by default, and everyone sees who sees them');
+  eq('Avery: off, and she’s told so in plain words', [(await loc(avery)).mine.sharing, (await loc(avery)).mine.viewers], [false, []]);
+  eq('a kid can’t change her own; a sibling can’t; one grown-up can’t set the other’s', [
+    (await avery.put(`/api/location/settings/${hanaIds.Avery}`, { sharing: true, viewers: [hanaIds.Ty] })).status,
+    (await evan.put(`/api/location/settings/${hanaIds.Avery}`, { sharing: true, viewers: [hanaIds.Evan] })).status,
+    (await kayla.put(`/api/location/settings/${hanaIds.Ty}`, { sharing: true, viewers: [hanaIds.Kayla] })).status,
+  ], [403, 403, 403]);
+  eq('sharing must name who sees it', (await ty.put(`/api/location/settings/${hanaIds.Avery}`, { sharing: true, viewers: [] })).status, 400);
+  await ty.put(`/api/location/settings/${hanaIds.Avery}`, { sharing: true, viewers: [hanaIds.Ty, hanaIds.Kayla] });
+  let mine = (await loc(avery)).mine;
+  eq('a parent turns it on for Avery — and Avery sees exactly who sees her, and who set it', [mine.sharing, mine.viewers.map((v) => v.name).sort(), mine.setBy], [true, ['Kayla', 'Ty'], 'Ty']);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 15)}`);
+  let told = await sql("SELECT member_id, text FROM hana_items WHERE surface = 'watch' AND category = 'location'");
+  eq('…and she’s told, once (only her)', told.map((x) => [x.member_id, x.text]), [[hanaIds.Avery, 'Ty turned on location sharing for you. Ty and Kayla can see about where you are. You can check this any time in Settings.']]);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 16)}`);
+  eq('…once, not every pass', (await sql("SELECT count(*)::int AS n FROM hana_items WHERE surface = 'watch' AND category = 'location'"))[0].n, 1);
+
+  section('Hana JP4 · only your own device reports, only while your sharing is on');
+  await ty.put('/api/house/place', { lat: 39.1, lon: -94.58 });
+  eq('Avery’s device reports in; a second report within a minute isn’t kept', [(await avery.post('/api/location/ping', { lat: 39.1004, lon: -94.5803, accuracy: 20 })).data.kept, (await avery.post('/api/location/ping', { lat: 39.1004, lon: -94.5803 })).data.kept], [true, false]);
+  eq('Evan’s sharing is off: nothing is kept', [(await evan.post('/api/location/ping', { lat: 39.2, lon: -94.6 })).status, (await sql('SELECT count(*)::int AS n FROM location_points WHERE member_id = $1', [hanaIds.Evan]))[0].n], [409, 0]);
+  await kayla.put(`/api/location/settings/${hanaIds.Kayla}`, { sharing: true, viewers: [hanaIds.Ty] });
+  await kayla.post('/api/location/ping', { lat: 39.13, lon: -94.58 });
+  const tySees = (await loc(ty)).seen.map((s) => [s.member, s.where]).sort();
+  eq('Ty sees Avery (home) and Kayla (coarse distance) — the only two who share with him', tySees, [['Avery', 'home'], ['Kayla', 'about 3.3 km from home']]);
+  eq('Kayla sees Avery only (Ty doesn’t share with her)', (await loc(kayla)).seen.map((s) => s.member), ['Avery']);
+  eq('Evan sees nobody (no one shares with him); Avery doesn’t see Kayla', [(await loc(evan)).seen.length, (await loc(avery)).seen.length], [0, 0]);
+  const tw = (await hanaSay(ty, 'where is everyone')).reply.text;
+  check('Hana says only what’s shared with the asker — coarse, with when — and says others aren’t known', /Avery: home \(just now\)/.test(tw) && /Kayla: about 3\.3 km from home/.test(tw) && /Anyone not listed doesn’t share their location with you/.test(tw) && !/Evan:/.test(tw) && !/39\.1/.test(tw), tw);
+  check('…and to Kayla, only Avery', !/Kayla: /.test((await hanaSay(kayla, 'where is everyone')).reply.text));
+
+  section('Hana JP4 · location history is memory (C9): inspectable and deletable — by role');
+  eq('Avery sees her own history; her parents see it too', [(await avery.get(`/api/location/history/${hanaIds.Avery}`)).data.points.length, (await kayla.get(`/api/location/history/${hanaIds.Avery}`)).data.points.length], [1, 1]);
+  eq('…nobody else’s: not a sibling’s, not the other grown-up’s', [(await evan.get(`/api/location/history/${hanaIds.Avery}`)).status, (await ty.get(`/api/location/history/${hanaIds.Kayla}`)).status, (await avery.get(`/api/location/history/${hanaIds.Kayla}`)).status], [403, 403, 403]);
+  eq('Avery deletes her own history', [(await avery.del(`/api/location/history/${hanaIds.Avery}`)).data.forgotten, (await loc(avery)).mine.historyPoints], [1, 0]);
+  await ty.put(`/api/location/settings/${hanaIds.Avery}`, { sharing: false, viewers: [] });
+  eq('turned off: nobody sees her any more', (await loc(ty)).seen.map((s) => s.member), ['Kayla']);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 17)}`);
+  told = await sql("SELECT text FROM hana_items WHERE surface = 'watch' AND category = 'location' AND member_id = $1 ORDER BY id", [hanaIds.Avery]);
+  eq('…and she’s told that too', told.at(-1)?.text, 'Ty turned off location sharing for you — nobody can see where you are.');
+  eq('another household sees none of it, and can’t set ours', [(await loc(tess)).seen.length, (await tess.put(`/api/location/settings/${hanaIds.Avery}`, { sharing: true, viewers: [] })).status, (await tess.get(`/api/location/history/${hanaIds.Avery}`)).status], [0, 404, 404]);
+
+  section('Hana JP4 · weather on the timeline (the family’s opted-in place only)');
+  const tl = (await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data;
+  eq('a forecast line for the day, and the hour each timed event starts', [tl.weather, tl.items.find((i) => i.title === 'Avery soccer practice')?.weather], [[{ date: HANA_DAY, text: 'Sunny, high 58°F' }], '55°F, partly cloudy, 20% chance of rain']);
+  eq('another household (no place set) gets none', (await tess.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.weather, undefined);
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('where_is is read-only (T0)', caps.tools.find((t) => t.name === 'where_is')?.tier, 'T0');
+
+  await kayla.put(`/api/location/settings/${hanaIds.Kayla}`, { sharing: false, viewers: [] });
+  await sql('DELETE FROM location_points');
+  await sql('DELETE FROM location_sharing');
+  await sql('DELETE FROM household_places');
+  await sql('DELETE FROM weather_forecasts');
+  await sql("DELETE FROM hana_items WHERE category = 'location'");
 }
 
 async function hanaHouseChecks() {
@@ -8296,7 +8385,7 @@ async function hanaWatchChecks() {
   eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
   eq('a second pass pushes nothing new (no loops)', (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data.pushed, 0);
   check('the watch alerts show on Family HQ', (await ty.get('/api/hana/alerts')).data.alerts.some((a) => a.kind === 'watch' && a.text.includes('Evan piano lesson')));
-  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money, health, shield, house and storm since Q6/Q8/Q9)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health', 'shield', 'house', 'storm'].includes(r.category)));
+  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money, health, shield, house and storm since Q6/Q8/Q9)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health', 'shield', 'house', 'storm', 'location'].includes(r.category)));
 
   section('Hana H5 · quiet hours: held on a school night, except a same-day logistics failure');
   await ty.post('/api/calendar/events', { title: 'Evan swim', startsOn: '2026-11-03', startTime: '16:00', endTime: '17:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });

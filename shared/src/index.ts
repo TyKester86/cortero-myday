@@ -3483,7 +3483,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm' | 'location';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3618,6 +3618,8 @@ export interface TimelineItem {
   busy: boolean;
   pickup: boolean;
   pickupBy: string | null;
+  /** JP4: the forecast for when it starts (the family's opted-in place). */
+  weather?: string | null;
 }
 
 export interface FamilyTimeline {
@@ -3627,6 +3629,8 @@ export interface FamilyTimeline {
   asOf: string;
   stale: string | null;
   items: TimelineItem[];
+  /** JP4: one forecast line per day, when weather is on. */
+  weather?: Array<{ date: DateStr; text: string }>;
   conflicts: Array<{ key: string; kind: 'overlap' | 'pickup' | 'travel' | 'full_day'; date: DateStr; text: string }>;
 }
 
@@ -3823,7 +3827,37 @@ export interface StormPlan {
   decisions: string[];
   /** What's open or unlocked at the house (parents only). */
   house: string[];
+  /** JP4: where the people who share with this parent are. */
+  whereabouts: string[];
   steps: string[];
   source: string;
   asOf: string;
+}
+
+/* ---------- JP4: location — consent first ---------- */
+
+export interface LocationSettings {
+  memberId: number;
+  member: string;
+  sharing: boolean;
+  /** Exactly who may see it. */
+  viewers: Array<{ id: number; name: string }>;
+  keepDays: number;
+  setBy: string | null;
+  updatedAt: string | null;
+  historyPoints: number;
+  lastAt: string | null;
+}
+
+export interface LocationSeen {
+  memberId: number;
+  member: string;
+  /** "home", "about 3.2 km from home". */
+  where: string;
+  home: boolean | null;
+  kmFromHome: number | null;
+  lat: number | null;
+  lon: number | null;
+  at: string | null;
+  ago: string | null;
 }

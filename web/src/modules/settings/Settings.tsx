@@ -6,6 +6,7 @@ import { useSession } from '../../session';
 import { InviteGrownUp, MergeDuplicate } from './HouseholdTools';
 import { Modules } from './Modules';
 import { YourData } from './YourData';
+import { LocationCard } from './Location';
 
 export const ACCENTS: Array<[string, string]> = [
   ['navy', '#c2410c'], // default ember (key kept for saved prefs)
@@ -196,6 +197,7 @@ export default function Settings() {
       {isAdult && hh && <InviteGrownUp />}
       {isAdult && hh && me.isAdmin && <MergeDuplicate />}
       {isAdult && hh && <Modules hh={hh} />}
+      {me.member && <LocationCard />}
       {isAdult && hh && <YourData householdName={hh.name} />}
       {!isAdult && (
         <p className="small muted">

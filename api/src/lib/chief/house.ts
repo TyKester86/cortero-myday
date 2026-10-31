@@ -126,7 +126,7 @@ export async function syncHouse(): Promise<void> {
       );
     }
     await pool.query('DELETE FROM home_devices WHERE NOT (entity_id = ANY($1))', [seen]);
-    await pool.query('UPDATE home_connections SET last_synced_at = now(), last_error = NULL');
+    await pool.query('UPDATE home_connections SET last_synced_at = $1, last_error = NULL', [new Date()]);
   } catch (e) {
     await pool.query('UPDATE home_connections SET last_error = $1', [e instanceof Error ? e.message : 'Unreachable']);
   }
@@ -337,6 +337,9 @@ export async function stormPlan(v: Viewer, now: Date = new Date()): Promise<Stor
   }));
   const steps = SHELTER.find(([re]) => re.test(a.event))?.[1] ?? ['Follow the instructions in the alert.'];
   const house = v.parent ? (await houseStatus()).devices.filter((d) => d.open || (d.kind === 'lock' && d.state === 'unlocked')).map((d) => `${d.name} is ${d.said}`) : [];
+  // JP4: who's home — only the people who share their location with this viewer.
+  const { seenBy } = await import('./location.js');
+  const whereabouts = v.parent ? (await seenBy(v.me, now)).filter((s) => s.at).map((s) => `${s.member}: ${s.where} (${s.ago})`) : [];
   return {
     key: `storm:${a.alert_id}`,
     event: a.event,
@@ -347,6 +350,7 @@ export async function stormPlan(v: Viewer, now: Date = new Date()): Promise<Stor
     out,
     decisions: out.filter((e) => e.pickup).map((e) => `${e.title} at ${e.time} is inside the ${a.event.toLowerCase()} — ${e.pickup}. Cancel, move it, or keep everyone home?`),
     house,
+    whereabouts,
     steps,
     source: 'National Weather Service alert for your area + MyDay calendar',
     asOf: now.toISOString(),
@@ -359,6 +363,7 @@ export function stormLines(p: StormPlan, parent: boolean): string[] {
     ...(parent ? p.decisions : []),
     ...(parent && p.out.length && !p.decisions.length ? [`Out during it: ${p.out.map((e) => `${e.title} at ${e.time}`).join('; ')}.`] : []),
     ...(parent && p.house.length ? [`At the house: ${p.house.join('; ')}.`] : []),
+    ...(parent && p.whereabouts.length ? [`Where everyone is (shared location): ${p.whereabouts.join('; ')}.`] : []),
   ];
 }
 
@@ -376,4 +381,68 @@ export async function stormWatch(parents: HouseholdMember[], members: HouseholdM
     // Kids get the shelter steps only — never the house.
     ...(urgent && kids.length ? [{ key: `${plan.key}:kids`, category: 'storm' as const, text: `${plan.event} ${plan.window}: ${plan.steps.join(' ')}`, sameDay: true, to: kids, subjectId: null, source: plan.source, asOf: plan.asOf, once: true as const }] : []),
   ];
+}
+
+/* ---------- JP4: the forecast, for the timeline (NWS; the opted-in place only) ---------- */
+
+interface Period {
+  startTime: string;
+  endTime: string;
+  name?: string;
+  isDaytime?: boolean;
+  temperature: number;
+  temperatureUnit: string;
+  shortForecast: string;
+  probabilityOfPrecipitation?: { value: number | null };
+}
+
+/** Read the forecast at most hourly. Only a forecast address on the weather service itself is followed. */
+export async function syncForecast(): Promise<void> {
+  const p = await place();
+  if (!p?.weatherOn) return;
+  const { rows } = await pool.query<{ fetched_at: Date }>('SELECT fetched_at FROM weather_forecasts LIMIT 1');
+  if (rows[0] && Date.now() - rows[0].fetched_at.getTime() < 60 * 60_000) return;
+  const base = (process.env.WEATHER_URL || 'https://api.weather.gov').replace(/\/+$/, '');
+  const get = async (url: string): Promise<Record<string, unknown> | null> => {
+    if (!url.startsWith(`${new URL(base).origin}/`)) return null;
+    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/geo+json' }, signal: AbortSignal.timeout(10_000) });
+    return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+  };
+  try {
+    const pt = (await get(`${base}/points/${p.lat},${p.lon}`))?.properties as { forecast?: string; forecastHourly?: string } | undefined;
+    if (!pt?.forecast || !pt.forecastHourly) return;
+    const periods = async (url: string): Promise<Period[]> => (((await get(url))?.properties as { periods?: Period[] } | undefined)?.periods ?? []).slice(0, 200);
+    const hourly = await periods(pt.forecastHourly);
+    const daily = await periods(pt.forecast);
+    await pool.query(
+      `INSERT INTO weather_forecasts (hourly, daily, fetched_at) VALUES ($1, $2, $3)
+       ON CONFLICT (household_id) DO UPDATE SET hourly = $1, daily = $2, fetched_at = $3`,
+      [JSON.stringify(hourly), JSON.stringify(daily), new Date()],
+    );
+  } catch (e) {
+    console.error('forecast: unavailable', e instanceof Error ? e.message : e);
+  }
+}
+
+const rain = (x: Period): string => (x.probabilityOfPrecipitation?.value ? `, ${x.probabilityOfPrecipitation.value}% chance of rain` : '');
+
+/** The forecast for the timeline: one line per day, and the hour each timed event starts. */
+export async function forecast(): Promise<{ daily: Map<string, string>; at: (when: Date) => string | null } | null> {
+  if (!(await place())?.weatherOn) return null;
+  await syncForecast();
+  const { rows } = await pool.query<{ hourly: Period[]; daily: Period[] }>('SELECT hourly, daily FROM weather_forecasts LIMIT 1');
+  const r = rows[0];
+  if (!r) return null;
+  const daily = new Map<string, string>();
+  for (const x of r.daily.filter((d) => d.isDaytime !== false)) {
+    const day = today(new Date(x.startTime));
+    if (!daily.has(day)) daily.set(day, `${x.shortForecast}, high ${x.temperature}°${x.temperatureUnit}${rain(x)}`);
+  }
+  return {
+    daily,
+    at: (when) => {
+      const h = r.hourly.find((x) => new Date(x.startTime) <= when && when < new Date(x.endTime));
+      return h ? `${h.temperature}°${h.temperatureUnit}, ${h.shortForecast.toLowerCase()}${rain(h)}` : null;
+    },
+  };
 }

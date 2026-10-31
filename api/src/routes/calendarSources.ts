@@ -14,7 +14,7 @@
 import { Router } from 'express';
 import type { CalendarSource, CalendarSourceKind, DateStr, FamilyTimeline, HouseholdMember } from '@myday/shared';
 import { asSystem, inHousehold, pool } from '../db.js';
-import { addDays, today } from '../lib/dates.js';
+import { addDays, localToInstant, today } from '../lib/dates.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { listMembers, self } from '../lib/members.js';
 import { rateLimiter } from '../lib/pin.js';
@@ -27,6 +27,7 @@ import { findConflicts } from '../lib/chief/conflicts.js';
 import { conflictOptions } from '../lib/chief/brief.js';
 import { runWatch } from '../lib/chief/watch.js';
 import { logEvent } from '../lib/events.js';
+import { forecast } from '../lib/chief/house.js';
 
 export const calendarSourcesRouter = Router();
 
@@ -155,13 +156,19 @@ calendarSourcesRouter.get('/api/calendar/timeline', async (req, res) => {
   const t = today();
   const label = (d: DateStr): string => (d === t ? 'today' : d === addDays(t, 1) ? 'tomorrow' : new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long' }));
   const conflicts = findConflicts(f.data, await conflictOptions(label)).flatMap((c) => (v.parent ? [{ key: c.key, kind: c.kind, date: c.date, text: c.text }] : c.kidText ? [{ key: c.key, kind: c.kind, date: c.date, text: c.kidText }] : []));
+  // JP4: the forecast on the timeline — a line per day, and the hour each timed event starts.
+  const wx = await forecast();
   const out: FamilyTimeline = {
     from,
     to,
     source: f.source,
     asOf: f.asOf,
     stale: f.stale,
-    items: f.data.map((e) => ({ id: e.eventId, date: e.date, time: e.time, endTime: e.endTime, title: e.title, location: e.busy ? '' : e.location, people: e.people, from: e.from, busy: e.busy, pickup: e.pickup, pickupBy: e.pickupBy })),
+    items: f.data.map((e) => ({
+      id: e.eventId, date: e.date, time: e.time, endTime: e.endTime, title: e.title, location: e.busy ? '' : e.location, people: e.people, from: e.from, busy: e.busy, pickup: e.pickup, pickupBy: e.pickupBy,
+      ...(wx ? { weather: e.time ? wx.at(localToInstant(e.date, e.time.slice(0, 5))) : null } : {}),
+    })),
+    ...(wx ? { weather: [...wx.daily].filter(([d]) => d >= from && d <= to).map(([date, text]) => ({ date: date as DateStr, text })) } : {}),
     conflicts,
   };
   res.json(out);

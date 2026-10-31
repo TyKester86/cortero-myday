@@ -34,6 +34,7 @@ import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
 import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
 import { holdWant } from '../routes/mind.js';
+import { seenBy } from './chief/location.js';
 import { HOUSE_ACTIONS, houseStatus, planCommand, requireParentHouse, runCommand, stormLines, stormPlan } from './chief/house.js';
 import { listAlerts, NOTHING_BLOCKED, requireParentShield, SHIELD_SOURCE } from './chief/shield.js';
 import { dossier, PEOPLE_SOURCE, personByName, requireParentPeople } from './chief/people.js';
@@ -803,6 +804,22 @@ export const HANA_TOOLS = [
     run: async (me, i) => runCommand(me, i.device, i.action, i.value),
   }),
   def({
+    name: 'where_is',
+    description:
+      'READ-ONLY. Where the people who SHARE their location with this person are — coarse ("home", "about 3 km from home") with when. ' +
+      'Someone who doesn’t share with them is simply not known; never guess where anyone is.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, additionalProperties: false },
+    summary: () => 'Check shared locations',
+    run: async (me) => {
+      const s = await seenBy(me);
+      const src = provenance({ source: SOURCE.location, asOf: new Date().toISOString(), stale: null });
+      return s.length ? `${s.map((x) => `${x.member}: ${x.where}${x.ago ? ` (${x.ago})` : ''}`).join('\n')}\nAnyone not listed doesn’t share their location with you.\n${src}` : `Nobody shares their location with you.\n${src}`;
+    },
+  }),
+  def({
     name: 'storm_plan',
     description: 'READ-ONLY. Storm mode: a severe weather alert for the family’s area today, who is out during it (calendar), pickups inside it, what’s open at the house, and shelter steps.',
     destructive: false,
@@ -1377,6 +1394,7 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   }
   if ((x = m.match(/^correct family memory #h(\d+): (.+)$/i))) return [{ name: 'correct_family_memory', input: { memory_id: Number(x[1]), fact: x[2] } }];
   if (/^how['’]?s the house\??$/i.test(m)) return [{ name: 'house_status', input: {} }];
+  if (/^where is everyone\??$/i.test(m)) return [{ name: 'where_is', input: {} }];
   if (/^storm\??$|^any storms?\??$/i.test(m)) return [{ name: 'storm_plan', input: {} }];
   if ((x = m.match(/^house (lock|close|turn_on|turn_off|unlock|open|disarm) (.+?)$/i))) return [{ name: 'house_control', input: { device: x[2], action: (x[1] ?? '').toLowerCase(), value: null } }];
   if ((x = m.match(/^house set (.+?) to (\d+)$/i))) return [{ name: 'house_control', input: { device: x[1], action: 'set_temperature', value: Number(x[2]) } }];
