@@ -3875,6 +3875,8 @@ export interface MessageItem {
   request: boolean;
   /** The shield flagged it (see the warning). */
   flagged: boolean;
+  /** The shield's warning about THIS message, if any. */
+  warning: string | null;
   at: string;
 }
 

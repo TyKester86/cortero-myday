@@ -88,11 +88,13 @@ export async function messageArrived(toUserId: number, fromUserId: number, dmId:
 
 /** Their messages, as Hana keeps them: who, when, her line — theirs alone. */
 export async function inboxFor(me: HouseholdMember): Promise<MessageItem[]> {
-  const { rows } = await pool.query<{ id: number; from_name: string; from_user_id: number | null; class: string; summary_enc: Buffer; key_id: string; request: boolean; flagged: boolean; received_at: Date }>(
-    'SELECT id, from_name, from_user_id, class, summary_enc, key_id, request, flagged, received_at FROM message_items WHERE member_id = $1 ORDER BY received_at DESC, id DESC LIMIT 30',
+  const { rows } = await pool.query<{ id: number; from_name: string; from_user_id: number | null; class: string; summary_enc: Buffer; key_id: string; request: boolean; flagged: boolean; received_at: Date; warning: string | null }>(
+    `SELECT i.id, i.from_name, i.from_user_id, i.class, i.summary_enc, i.key_id, i.request, i.flagged, i.received_at, s.text AS warning
+       FROM message_items i LEFT JOIN shield_alerts s ON s.ref = i.ext_ref
+      WHERE i.member_id = $1 ORDER BY i.received_at DESC, i.id DESC LIMIT 30`,
     [me.id],
   );
-  return rows.map((r) => ({ id: r.id, from: r.from_name, fromUserId: r.from_user_id, class: r.class, summary: openText(r.summary_enc, r.key_id), request: r.request, flagged: r.flagged, at: r.received_at.toISOString() }));
+  return rows.map((r) => ({ id: r.id, from: r.from_name, fromUserId: r.from_user_id, class: r.class, summary: openText(r.summary_enc, r.key_id), request: r.request, flagged: r.flagged, warning: r.warning, at: r.received_at.toISOString() }));
 }
 
 /** Who they may reply to through Hana: only someone who wrote to them (never a new recipient). */

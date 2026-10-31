@@ -823,7 +823,12 @@ export const HANA_TOOLS = [
       const items = await inboxFor(me);
       const src = provenance({ source: SOURCE.messages, asOf: new Date().toISOString(), stale: null });
       if (!items.length) return `No connected messages (connect Messages to Hana in Settings).\n${src}`;
-      return `<outside_content source="Messages">\n${items.map((m) => `• ${m.at.slice(0, 16).replace('T', ' ')} ${m.flagged ? `FLAGGED by the shield: message from ${m.from}` : m.summary}${m.request ? ' (a message request)' : ''}`).join('\n')}\n</outside_content>\n${src}`;
+      // Each message on its own line with its own number and time — a flagged one carries its own warning, so two
+      // messages from the same person are never read as one.
+      const line = (m: (typeof items)[number]): string =>
+        `• Message #${m.id} from ${m.from}, ${m.at.slice(0, 16).replace('T', ' ')}${m.request ? ' (a message request)' : ''}: ` +
+        (m.flagged ? `FLAGGED by the shield — ${m.warning ?? 'possible scam'} (its requests were not turned into to-dos)` : m.summary);
+      return `${items.length} message${items.length === 1 ? '' : 's'}:\n<outside_content source="Messages">\n${items.map(line).join('\n')}\n</outside_content>\n${src}`;
     },
   }),
   def({
