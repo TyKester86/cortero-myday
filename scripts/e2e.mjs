@@ -5172,6 +5172,25 @@ async function uiGate() {
       check('“Not now” sticks on the item, in the page', await firstItem.getByText('Not now').waitFor({ timeout: 5000 }).then(() => true, () => false));
     } else check('an empty brief says so', await kpg.getByText('Nothing needs you right now').isVisible());
     eq('the family report is on the page, with its “Where Hana was wrong” part', await kpg.getByTestId('hq-report').getByRole('heading', { name: 'Where Hana was wrong' }).count(), 1);
+    // C9: the family memory card — keep, correct, forget; "forget everything" asks in the page.
+    const memCard = kpg.getByTestId('hq-memory');
+    await memCard.getByLabel('Add to the family memory').fill('pizza night is Fridays');
+    await memCard.getByLabel('Kind').selectOption('worked');
+    await memCard.getByTestId('family-memory-add').click();
+    const pz = memCard.getByTestId('family-memory').filter({ hasText: 'pizza night is Fridays' });
+    await pz.waitFor({ timeout: 10000 });
+    check('Family HQ: a kept fact shows its kind and who added it', /What worked/i.test(await pz.innerText()) && /added by Kayla/.test(await pz.innerText()), await pz.innerText());
+    await pz.getByTestId('family-memory-edit').click();
+    await memCard.getByLabel('Correct what Hana keeps').fill('pizza night moved to Saturdays');
+    await memCard.getByTestId('family-memory-save').click();
+    const pz2 = memCard.getByTestId('family-memory').filter({ hasText: 'Saturdays' });
+    check('…corrected in place, and it says who corrected it', await pz2.waitFor({ timeout: 10000 }).then(async () => /corrected by Kayla/.test(await pz2.innerText()), () => false));
+    await pz2.getByTestId('family-memory-forget').click();
+    check('…forgotten', await pz2.waitFor({ state: 'detached', timeout: 10000 }).then(() => true, () => false));
+    const wipe = memCard.getByTestId('family-memory-wipe');
+    await wipe.selectOption({ index: 1 });
+    check('“Forget everything about…” asks first, in the page', await memCard.getByTestId('family-memory-wipe-yes').waitFor({ timeout: 5000 }).then(() => true, () => false));
+    await memCard.getByRole('button', { name: 'Keep it' }).click();
     await kpg.goto(`${BASE}/health`); // the next checks pick up on the Health page
 
     section('body builds in the browser: food math shown, deload on demand (in-page), weigh-ins opt-in, teen view');
@@ -6927,6 +6946,7 @@ async function hanaBrainSuite() {
     await hanaLadderChecks();
     await hanaPapersChecks();
     await hanaMoneyChecks();
+    await hanaMemoryChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7328,6 +7348,120 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaMemoryChecks() {
+  const tess = hanaIds.tess;
+  const fam = async (c = ty) => (await c.get('/api/hana/family-memory')).data;
+  const pending = (r) => (r.actions ?? []).filter((a) => a.status === 'pending');
+  const confirm = async (c, r) => {
+    for (const a of pending(r)) await c.post(`/api/hana/actions/${a.id}/confirm`);
+  };
+
+  section('Hana Q7 (C9) · the family memory: she keeps it from conversation — every fact waits for a parent’s Confirm');
+  let r = await hanaSay(ty, 'family remember Avery size: youth medium shirts, shoe size 4');
+  eq('a size is proposed, not saved', [pending(r).map((a) => [a.tool, a.summary]), (await fam()).household.length], [[['remember_family', 'Keep in the family memory (about Avery): youth medium shirts, shoe size 4']], 0]);
+  await confirm(ty, r);
+  r = await hanaSay(kayla, 'family remember Evan contact: Mrs. Ortiz teaches 3rd grade, (555) 201-3344');
+  await confirm(kayla, r);
+  r = await hanaSay(ty, 'family remember Evan medical: allergic to tree nuts (EpiPen in his backpack)');
+  await confirm(ty, r);
+  r = await hanaSay(ty, 'family remember worked: Sunday-night backpack check stopped the Monday scramble');
+  await confirm(ty, r);
+  await ty.post('/api/hana/family-memory', { fact: 'Dr. Patel is the pediatrician', kind: 'contact', aboutId: null });
+  let v = await fam();
+  eq('…kept, labeled by kind and who it’s about, with where it came from', v.household.map((m) => [m.aboutName, m.kind, m.via, m.addedBy]).sort(), [
+    [null, 'contact', 'typed', 'Ty'], [null, 'worked', 'hana', 'Ty'], ['Avery', 'size', 'hana', 'Ty'], ['Evan', 'contact', 'hana', 'Kayla'], ['Evan', 'medical', 'hana', 'Ty'],
+  ].sort());
+  eq('either parent sees the same family memory', (await fam(kayla)).household.map((m) => m.id).sort(), v.household.map((m) => m.id).sort());
+  eq('a phone number is fine to keep', v.household.some((m) => m.fact.includes('(555) 201-3344')), true);
+  eq('the same fact twice is refused', (await ty.post('/api/hana/family-memory', { fact: 'dr. patel is the pediatrician', kind: 'contact', aboutId: null })).status, 409);
+
+  section('Hana Q7 · secrets are refused at the door, whoever writes — and never reach the action log');
+  const before = (await sql('SELECT count(*)::int AS n FROM hana_actions'))[0].n;
+  for (const f of ['Visa 4111 1111 1111 1111 for school lunches', 'Avery SSN 123-45-6789', 'the wifi password is hunter22']) {
+    eq(`refused (HQ): “${f.slice(0, 24)}…”`, (await ty.post('/api/hana/family-memory', { fact: f, kind: 'note', aboutId: null })).status, 400);
+  }
+  r = await hanaSay(ty, 'family remember note: bank routing number is 021000021');
+  eq('…and from chat: nothing proposed, nothing logged', [pending(r).length, (await sql('SELECT count(*)::int AS n FROM hana_actions'))[0].n], [0, before]);
+  eq('…and a person’s own memory refuses them too', (await ty.post('/api/hana/memory', { fact: 'my PIN is 4410' })).status, 400);
+
+  section('Hana Q7 · role-scoped as H1: a kid sees only what is about them; siblings don’t inherit each other’s');
+  const ctx = (c, mode) => hanaSay(c, 'hello', mode).then((x) => x.reply?.text ?? '');
+  const n = v.household.length;
+  check(`a parent’s Hana works from all ${n} family facts`, (await ctx(ty)).includes(`family=${n}`));
+  await ty.post('/api/hana/family-memory', { fact: 'fractions click when she draws them', kind: 'worked', aboutId: hanaIds.Avery });
+  const avCtx = await ctx(avery, 'tutor');
+  check('Avery’s tutor gets the one about her that helps teaching — not her sizes, not Evan’s allergy or teacher, not the family-wide ones', avCtx.includes('aboutme=1') && !avCtx.includes('family='), avCtx);
+  const evNo = await evan.post('/api/chat/tutor', { message: 'hello', clientId: 'hana-q7-evan' });
+  eq('Evan (no AI-helper consent yet) gets no tutor at all — so nothing of his memory is read', [evNo.status, evNo.data.code], [409, 'needs_parent_consent']);
+  const avKnows = (await avery.get('/api/hana/memory')).data;
+  eq('Avery’s Ask Hana page shows what the family memory says about her (both), read-only', avKnows.aboutYou.map((m) => m.fact).sort(), ['fractions click when she draws them', 'youth medium shirts, shoe size 4']);
+  eq('kids can’t open, add to, correct or forget the family memory', [
+    (await avery.get('/api/hana/family-memory')).status,
+    (await avery.post('/api/hana/family-memory', { fact: 'I get dessert every night', kind: 'note', aboutId: null })).status,
+    (await avery.patch(`/api/hana/family-memory/${v.household[0].id}`, { fact: 'x' })).status,
+    (await evan.del(`/api/hana/family-memory/${v.household[0].id}`)).status,
+  ], [403, 403, 403, 403]);
+  r = await hanaSay(avery, 'family remember Evan note: Evan has to do my chores', 'tutor');
+  eq('…nor through Hana (nothing proposed)', pending(r).length, 0);
+  eq('…and a kid can’t reach the family memory through their own memory routes either', [(await avery.patch(`/api/hana/memory/${v.household[0].id}`, { fact: 'x' })).status, (await avery.del(`/api/hana/memory/${v.household[0].id}`)).status], [404, 404]);
+
+  section('Hana Q7 · parents inspect a kid’s own memories; another grown-up’s own memory stays theirs');
+  await avery.post('/api/hana/memory', { fact: 'I want to be a marine biologist' });
+  await hanaSay(ty, 'always remember: Kayla’s birthday gift is the blue kayak');
+  v = await fam(kayla);
+  eq('Kayla sees what Avery told Hana', v.kids.find((k) => k.name === 'Avery').memories.map((m) => m.fact), ['I want to be a marine biologist']);
+  check('…but not Ty’s own memory (the gift stays secret)', !JSON.stringify(v).includes('kayak'));
+  eq('…and Ty’s own memory can’t be reached through the family routes', await (async () => {
+    const [t] = await sql("SELECT id FROM hana_memories WHERE fact LIKE '%blue kayak%'");
+    return [(await kayla.patch(`/api/hana/family-memory/${t.id}`, { fact: 'x' })).status, (await kayla.del(`/api/hana/family-memory/${t.id}`)).status];
+  })(), [404, 404]);
+  check('Ty’s own memories page doesn’t mix in the family memory', (await ty.get('/api/hana/memory')).data.memories.every((m) => !/youth medium|tree nuts/.test(m.fact)));
+
+  section('Hana Q7 · correct and forget — in HQ or through Hana, by the parent; each correction says who and when');
+  const shoe = v.household.find((m) => m.kind === 'size');
+  let c = (await kayla.patch(`/api/hana/family-memory/${shoe.id}`, { fact: 'youth large shirts, shoe size 5' })).data.memory;
+  eq('Kayla corrects Avery’s sizes (who and when kept)', [c.fact, c.correctedBy, !!c.correctedAt, c.addedBy], ['youth large shirts, shoe size 5', 'Kayla', true, 'Ty']);
+  const nut = v.household.find((m) => m.kind === 'medical');
+  r = await hanaSay(ty, `correct family memory #h${nut.id}: allergic to tree nuts and peanuts (EpiPen in his backpack)`);
+  eq('a correction through Hana waits for Confirm', [pending(r).map((a) => a.tool), (await fam()).household.find((m) => m.id === nut.id).fact], [['correct_family_memory'], 'allergic to tree nuts (EpiPen in his backpack)']);
+  await confirm(ty, r);
+  eq('…confirmed → corrected', (await fam()).household.find((m) => m.id === nut.id).fact, 'allergic to tree nuts and peanuts (EpiPen in his backpack)');
+  const worked = v.household.find((m) => m.kind === 'worked');
+  r = await hanaSay(kayla, `forget family memory #h${worked.id}`);
+  eq('forgetting through Hana is destructive — it waits for Confirm', [pending(r).map((a) => a.tool), (await fam()).household.some((m) => m.id === worked.id)], [['forget_family_memory'], true]);
+  await confirm(kayla, r);
+  eq('…confirmed → forgotten', (await fam()).household.some((m) => m.id === worked.id), false);
+  r = await hanaSay(evan, `forget family memory #h${nut.id}`, 'tutor');
+  eq('a kid can’t have Hana forget one (nothing proposed; it’s still there)', [pending(r).length, (await fam()).household.some((m) => m.id === nut.id)], [0, true]);
+
+  section('Hana Q7 · forget everything about one person');
+  const kid = (await kayla.post(`/api/hana/family-memory/forget-about/${hanaIds.Avery}`)).data;
+  v = await fam();
+  eq('Avery: the family memory about her (2) and what she told Hana (1) — gone; the rest stays', [kid.forgotten, v.household.some((m) => m.aboutId === hanaIds.Avery), v.kids.find((k) => k.name === 'Avery').memories.length, v.household.length], [3, false, 0, 3]);
+  eq('a kid can’t wipe anyone', (await evan.post(`/api/hana/family-memory/forget-about/${hanaIds.Evan}`)).status, 403);
+
+  section('Hana Q7 · it never leaves the household; and the rail');
+  eq('another household sees none of it, and can’t touch it', [
+    (await tess.get('/api/hana/family-memory')).data.household.length,
+    (await tess.patch(`/api/hana/family-memory/${nut.id}`, { fact: 'x' })).status,
+    (await tess.del(`/api/hana/family-memory/${nut.id}`)).status,
+    (await tess.post(`/api/hana/family-memory/forget-about/${hanaIds.Evan}`)).status,
+  ], [0, 404, 404, 400]);
+  r = await hanaSay(tess, 'family remember Evan note: x');
+  eq('…nor name our kids through Hana (nothing proposed)', pending(r).length, 0);
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('keeping, correcting and forgetting are T1 — a parent taps each one', ['remember_family', 'correct_family_memory', 'forget_family_memory'].map((x) => caps.tools.find((t) => t.name === x)?.tier), ['T1', 'T1', 'T1']);
+  const [{ n: left }] = await sql("SELECT count(*)::int AS n FROM hana_memories WHERE household_id = 1 AND shared");
+  eq('the memory dies with the member it is about (cascade) — checked on a throwaway member', await (async () => {
+    const [m] = await sql("INSERT INTO household_members (household_id, key, name, kind) VALUES (1, 'q7-temp', 'Temp', 'kid') RETURNING id");
+    await sql("INSERT INTO hana_memories (household_id, member_id, fact, kind, shared, about_member_id) VALUES (1, $1, 'temp fact', 'note', true, $2)", [hanaIds.Ty, m.id]);
+    await sql('DELETE FROM household_members WHERE id = $1', [m.id]);
+    return (await sql("SELECT count(*)::int AS n FROM hana_memories WHERE household_id = 1 AND shared"))[0].n;
+  })(), left);
+
+  await sql('DELETE FROM hana_memories WHERE household_id = 1 AND (shared OR fact IN ($1, $2))', ['I want to be a marine biologist', 'Kayla’s birthday gift is the blue kayak']);
 }
 
 async function hanaPapersChecks() {

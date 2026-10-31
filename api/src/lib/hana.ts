@@ -34,6 +34,7 @@ import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
 import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
 import { holdWant } from '../routes/mind.js';
+import { aboutByName, addFamilyMemory, checkFact, correctMemory, editable, forgetMemory, MEMORY_KINDS, requireParent } from './chief/memory.js';
 
 interface ToolDef<S extends z.ZodType> {
   name: string;
@@ -378,11 +379,55 @@ export const HANA_TOOLS = [
     schema: z.object({ fact: z.string().min(1).max(300) }),
     json: { type: 'object', properties: { fact: { type: 'string' } }, required: ['fact'], additionalProperties: false },
     summary: (i) => `Remember: ${i.fact}`,
+    // Secrets are refused before anything is even proposed (they never reach the action log).
+    precheck: async (_me, i) => checkFact(i.fact),
     run: async (me, i) => {
-      const { rows } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM hana_memories WHERE member_id = $1', [me.id]);
+      checkFact(i.fact);
+      const { rows } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM hana_memories WHERE member_id = $1 AND NOT shared', [me.id]);
       if ((rows[0]?.n ?? 0) >= 100) throw new HttpError(409, 'I already remember 100 things — remove a few on the Ask Hana page first');
-      await pool.query('INSERT INTO hana_memories (member_id, fact) VALUES ($1, $2)', [me.id, i.fact]);
+      await pool.query("INSERT INTO hana_memories (member_id, fact, via) VALUES ($1, $2, 'hana')", [me.id, i.fact]);
       return `Got it — I'll remember that.`;
+    },
+  }),
+  // ---------- C9: the family memory — a parent confirms everything she keeps, corrects or forgets ----------
+  def({
+    name: 'remember_family',
+    description:
+      'Keep a fact in the FAMILY memory (grown-ups only): sizes, preferences, teachers and contacts, school facts, medical basics the family told you, ' +
+      'what worked last time. about = the member’s name, or null for the whole family. One short fact per call; never secrets (passwords, card, account or SSN numbers).',
+    destructive: false,
+    schema: z.object({ fact: z.string().min(1).max(300), kind: z.enum(MEMORY_KINDS), about: z.string().max(60).nullable() }),
+    json: {
+      type: 'object',
+      properties: { fact: { type: 'string' }, kind: { type: 'string', enum: [...MEMORY_KINDS] }, about: { type: ['string', 'null'], description: 'Member name, or null for the whole family' } },
+      required: ['fact', 'kind', 'about'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Keep in the family memory${i.about ? ` (about ${i.about})` : ''}: ${i.fact}`,
+    precheck: async (me, i) => {
+      requireParent(me);
+      checkFact(i.fact);
+      await aboutByName(i.about);
+    },
+    run: async (me, i) => {
+      await addFamilyMemory(me, i.fact, i.kind, await aboutByName(i.about), 'hana');
+      return `Kept in the family memory: “${i.fact}”.`;
+    },
+  }),
+  def({
+    name: 'correct_family_memory',
+    description: 'Correct one fact in the family memory (or a kid’s own memory), by its #h id, when a grown-up says it’s wrong or out of date. Grown-ups only.',
+    destructive: false,
+    schema: z.object({ memory_id: z.number().int(), fact: z.string().min(1).max(300) }),
+    json: { type: 'object', properties: { memory_id: { type: 'integer' }, fact: { type: 'string' } }, required: ['memory_id', 'fact'], additionalProperties: false },
+    summary: (i) => `Correct family memory #h${i.memory_id} to: ${i.fact}`,
+    precheck: async (me, i) => {
+      checkFact(i.fact);
+      await editable(me, i.memory_id);
+    },
+    run: async (me, i) => {
+      const { before } = await correctMemory(me, i.memory_id, { fact: i.fact });
+      return `Corrected: “${before}” → “${i.fact}”.`;
     },
   }),
   def({
@@ -1075,10 +1120,20 @@ export const HANA_TOOLS = [
     json: { type: 'object', properties: { memory_id: { type: 'integer' } }, required: ['memory_id'], additionalProperties: false },
     summary: (i) => `Forget memory #${i.memory_id}`,
     run: async (me, i) => {
-      const r = await pool.query<{ fact: string }>('DELETE FROM hana_memories WHERE id = $1 AND member_id = $2 RETURNING fact', [i.memory_id, me.id]);
+      const r = await pool.query<{ fact: string }>('DELETE FROM hana_memories WHERE id = $1 AND member_id = $2 AND NOT shared RETURNING fact', [i.memory_id, me.id]);
       if (!r.rows[0]) throw new HttpError(404, `There is no memory #${i.memory_id}`);
       return `Forgotten: “${r.rows[0].fact}”.`;
     },
+  }),
+  def({
+    name: 'forget_family_memory',
+    description: 'Forget one fact from the family memory (or a kid’s own memory), by its #h id. Grown-ups only.',
+    destructive: true,
+    schema: z.object({ memory_id: z.number().int() }),
+    json: { type: 'object', properties: { memory_id: { type: 'integer' } }, required: ['memory_id'], additionalProperties: false },
+    summary: (i) => `Forget family memory #h${i.memory_id}`,
+    precheck: async (me, i) => void (await editable(me, i.memory_id)),
+    run: async (me, i) => `Forgotten from the family memory: “${await forgetMemory(me, i.memory_id)}”.`,
   }),
 ] as const;
 
@@ -1155,6 +1210,11 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if ((x = m.match(/^health schedule(?: for (\w+))?/i))) return [{ name: 'health_schedule', input: { person: x[1] ?? null } }];
   if ((x = m.match(/^always remember:?\s+(.+)$/i))) return [{ name: 'remember', input: { fact: x[1] } }];
   if ((x = m.match(/^forget memory #?(\d+)/i))) return [{ name: 'forget', input: { memory_id: Number(x[1]) } }];
+  if ((x = m.match(/^family remember (?:(\w+) )?(size|preference|contact|school|medical|worked|note): (.+)$/i))) {
+    return [{ name: 'remember_family', input: { fact: x[3], kind: (x[2] ?? 'note').toLowerCase(), about: x[1] ?? null } }];
+  }
+  if ((x = m.match(/^correct family memory #h(\d+): (.+)$/i))) return [{ name: 'correct_family_memory', input: { memory_id: Number(x[1]), fact: x[2] } }];
+  if ((x = m.match(/^forget family memory #h(\d+)/i))) return [{ name: 'forget_family_memory', input: { memory_id: Number(x[1]) } }];
   if ((x = m.match(/^plan (.+?)(?: on (Mon|Tue|Wed|Thu|Fri|Sat|Sun))?$/i))) return [{ name: 'plan_meal', input: { meal: x[1], day: x[2] ? x[2].slice(0, 1).toUpperCase() + x[2].slice(1, 3).toLowerCase() : null } }];
   if ((x = m.match(/^give (\w+) the chore (.+?) on ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[ ,]+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)(?: for (\d+) points)?$/i))) {
     return [{ name: 'add_chore', input: { person: x[1], chore: x[2], days: (x[3] ?? '').split(/[ ,]+/).map((d) => d.slice(0, 1).toUpperCase() + d.slice(1, 3).toLowerCase()), points: Number(x[4] ?? 10) } }];

@@ -10,6 +10,8 @@ import { HttpError, idParam, str } from '../lib/http.js';
 import { self } from '../lib/members.js';
 import { CopyPolicyError, pushConfigured, sendTo } from '../lib/push.js';
 import { registerJob } from '../lib/schedulers.js';
+import { addFamilyMemory, checkFact, correctMemory, familyMemoryView, forgetAbout, forgetMemory, MEMORY_KINDS, sharedAbout } from '../lib/chief/memory.js';
+import type { FamilyMemoryKind } from '@myday/shared';
 
 export const assistantRouter = Router();
 
@@ -26,7 +28,7 @@ export interface HanaReminder {
 
 assistantRouter.get('/api/hana/memory', async (req, res) => {
   const me = self(req);
-  const { rows: mem } = await pool.query<{ id: number; fact: string; created_at: Date }>('SELECT id, fact, created_at FROM hana_memories WHERE member_id = $1 ORDER BY id', [me.id]);
+  const { rows: mem } = await pool.query<{ id: number; fact: string; created_at: Date }>('SELECT id, fact, created_at FROM hana_memories WHERE member_id = $1 AND NOT shared ORDER BY id', [me.id]);
   const { rows: rem } = await pool.query<{ id: number; text: string; remind_at: Date }>(
     'SELECT id, text, remind_at FROM hana_reminders WHERE member_id = $1 AND sent_at IS NULL ORDER BY remind_at',
     [me.id],
@@ -34,6 +36,8 @@ assistantRouter.get('/api/hana/memory', async (req, res) => {
   res.json({
     memories: mem.map((m): HanaMemory => ({ id: m.id, fact: m.fact, at: m.created_at.toISOString() })),
     reminders: rem.map((r): HanaReminder => ({ id: r.id, text: r.text, at: r.remind_at.toISOString() })),
+    // C9: what the household memory says about you (a parent keeps it; you can see it).
+    aboutYou: await sharedAbout(me.id),
   });
 });
 
@@ -41,7 +45,8 @@ assistantRouter.get('/api/hana/memory', async (req, res) => {
 assistantRouter.post('/api/hana/memory', async (req, res) => {
   const me = self(req);
   const fact = str((req.body as { fact?: unknown }).fact, 'fact', 300, true);
-  const { rows: n } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM hana_memories WHERE member_id = $1', [me.id]);
+  checkFact(fact);
+  const { rows: n } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM hana_memories WHERE member_id = $1 AND NOT shared', [me.id]);
   if ((n[0]?.n ?? 0) >= 200) throw new HttpError(409, 'Hana is holding a lot already — forget a few first');
   await pool.query('INSERT INTO hana_memories (member_id, fact) VALUES ($1, $2)', [me.id, fact]);
   res.status(201).json({ ok: true });
@@ -51,16 +56,58 @@ assistantRouter.post('/api/hana/memory', async (req, res) => {
 assistantRouter.patch('/api/hana/memory/:id', async (req, res) => {
   const me = self(req);
   const fact = str((req.body as { fact?: unknown }).fact, 'fact', 300, true);
-  const { rowCount } = await pool.query('UPDATE hana_memories SET fact = $3 WHERE id = $1 AND member_id = $2', [idParam(req.params.id), me.id, fact]);
+  checkFact(fact);
+  const { rowCount } = await pool.query('UPDATE hana_memories SET fact = $3, updated_at = now(), updated_by = $2 WHERE id = $1 AND member_id = $2 AND NOT shared', [idParam(req.params.id), me.id, fact]);
   if (!rowCount) throw new HttpError(404, 'Not found');
   res.json({ ok: true });
 });
 
 assistantRouter.delete('/api/hana/memory/:id', async (req, res) => {
   const me = self(req);
-  const { rowCount } = await pool.query('DELETE FROM hana_memories WHERE id = $1 AND member_id = $2', [idParam(req.params.id), me.id]);
+  const { rowCount } = await pool.query('DELETE FROM hana_memories WHERE id = $1 AND member_id = $2 AND NOT shared', [idParam(req.params.id), me.id]);
   if (!rowCount) throw new HttpError(404, 'Not found');
   res.json({ ok: true });
+});
+
+// ---------- C9: the family memory (parents inspect, correct and forget) ----------
+
+const kindOf = (v: unknown): FamilyMemoryKind | undefined => {
+  if (v === undefined) return undefined;
+  if (!MEMORY_KINDS.includes(v as FamilyMemoryKind)) throw new HttpError(400, 'Unknown kind of memory');
+  return v as FamilyMemoryKind;
+};
+const aboutOf = (v: unknown): number | null | undefined => {
+  if (v === undefined || v === null) return v;
+  if (!Number.isInteger(v)) throw new HttpError(400, 'aboutId must be a member id or null');
+  return v as number;
+};
+
+assistantRouter.get('/api/hana/family-memory', async (req, res) => {
+  const me = self(req);
+  if (me.kind !== 'adult') throw new HttpError(403, 'The family memory is for grown-ups to keep');
+  res.json(await familyMemoryView());
+});
+
+assistantRouter.post('/api/hana/family-memory', async (req, res) => {
+  const b = req.body as { fact?: unknown; kind?: unknown; aboutId?: unknown };
+  const fact = str(b.fact, 'fact', 300, true);
+  res.status(201).json({ memory: await addFamilyMemory(self(req), fact, kindOf(b.kind) ?? 'note', aboutOf(b.aboutId) ?? null, 'typed') });
+});
+
+assistantRouter.patch('/api/hana/family-memory/:id', async (req, res) => {
+  const b = req.body as { fact?: unknown; kind?: unknown; aboutId?: unknown };
+  const fact = b.fact === undefined ? undefined : str(b.fact, 'fact', 300, true);
+  res.json({ memory: (await correctMemory(self(req), idParam(req.params.id), { fact, kind: kindOf(b.kind), aboutId: aboutOf(b.aboutId) })).after });
+});
+
+assistantRouter.delete('/api/hana/family-memory/:id', async (req, res) => {
+  await forgetMemory(self(req), idParam(req.params.id));
+  res.json({ ok: true });
+});
+
+/** Forget everything about one person (the household memory about them, and a kid's own). */
+assistantRouter.post('/api/hana/family-memory/forget-about/:memberId', async (req, res) => {
+  res.json({ forgotten: await forgetAbout(self(req), idParam(req.params.memberId)) });
 });
 
 assistantRouter.delete('/api/hana/reminders/:id', async (req, res) => {

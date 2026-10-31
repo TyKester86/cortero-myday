@@ -692,6 +692,11 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .mem-tools { display: inline-flex; gap: 10px; flex: none; }
 .mem-edit { flex: 1; margin: 0; }
 .mem-edit input { flex: 1; min-width: 0; }
+.family-memory .rows li { gap: 8px; }
+.mem-kind { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-right: 4px; }
+.mem-wipe { margin-top: 10px; }
+.inline.wrap { flex-wrap: wrap; }
+.inline.wrap input { flex: 1 1 200px; min-width: 0; }
 /* Hana's replies: markdown rendered (never raw **). */
 .bubble.hana { white-space: normal; }
 .md > * { margin: 0; }

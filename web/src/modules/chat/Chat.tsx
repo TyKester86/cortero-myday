@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
-import type { ChatAttachment, ChatMessage, ChatMode, ChatSendResponse, ChatState, HanaAction } from '@myday/shared';
+import type { ChatAttachment, ChatMessage, ChatMode, ChatSendResponse, ChatState, FamilyMemory, HanaAction } from '@myday/shared';
 import { api, ApiFail, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import Markdown from '../../components/Markdown';
@@ -634,6 +634,8 @@ function Attachments({ list }: { list: ChatAttachment[] }) {
 interface Knows {
   memories: Array<{ id: number; fact: string; at: string }>;
   reminders: Array<{ id: number; text: string; at: string }>;
+  /** C9: what the family memory says about you — the parents keep it. */
+  aboutYou?: FamilyMemory[];
 }
 
 /** What Hana remembers about you and the reminders she'll send — yours to see, correct and delete. */
@@ -710,6 +712,19 @@ function HanaKnows({ refreshKey }: { refreshKey: number }) {
         </button>
       </form>
       {err && <p className="error small">{err}</p>}
+      {!!data.aboutYou?.length && (
+        <>
+          <h3 className="ing-head">The family memory, about you</h3>
+          <p className="muted small">The family’s grown-ups keep this so Hana gets things right for you. If something’s wrong, a grown-up can fix it in Family HQ.</p>
+          <ul className="plain rows">
+            {data.aboutYou.map((m) => (
+              <li key={m.id} data-testid="hana-about-you">
+                {m.fact}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       {data.reminders.length > 0 && (
         <>
           <h3 className="ing-head">Reminders coming up</h3>

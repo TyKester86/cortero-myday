@@ -7,6 +7,7 @@ import { CoachCard } from './Coach';
 import { useSession } from '../../session';
 import { HanaLog, HqDraft } from './Notes';
 import { LoopsCard } from './Loops';
+import { FamilyMemoryCard } from './FamilyMemory';
 
 const thisMonth = (): string => {
   const n = new Date();
@@ -314,6 +315,7 @@ export default function FamilyHQ() {
         </div>
       )}
       <LoopsCard />
+      <FamilyMemoryCard />
       <HanaLog />
       <HanaSettingsCard />
       <Report />

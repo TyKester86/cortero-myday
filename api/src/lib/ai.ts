@@ -229,6 +229,8 @@ class StubModel implements ChatModel {
       blocks.some((b) => b.type === 'document') ? `pdfs=${blocks.filter((b) => b.type === 'document').length}` : '',
       blocks.some((b) => b.type === 'text' && b.text.startsWith('Attached file')) ? 'textfile' : '',
       ((m) => (m ? `remembers=${(m.match(/#\d+/g) ?? []).length}` : ''))(system.match(/Things you remember about [^(]+\(memory ids\): ([^.]*)/)?.[1] ?? ''),
+      system.includes('The family memory (kept by the parents') ? `family=${(system.match(/#h\d+/g) ?? []).length}` : '',
+      system.includes('What the family memory says about') ? `aboutme=${(system.match(/#h\d+/g) ?? []).length}` : '',
     ].filter(Boolean);
     return `[stub reply] You said: "${last.slice(0, 80)}" (${facts.join(', ')})`;
   }

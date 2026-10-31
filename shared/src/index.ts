@@ -3629,3 +3629,38 @@ export interface FamilyTimeline {
   items: TimelineItem[];
   conflicts: Array<{ key: string; kind: 'overlap' | 'pickup' | 'travel' | 'full_day'; date: DateStr; text: string }>;
 }
+
+/** C9: what Hana keeps. A person's own memory, or the household memory (parents write it). */
+export type FamilyMemoryKind = 'note' | 'size' | 'preference' | 'contact' | 'school' | 'medical' | 'worked';
+export const FAMILY_MEMORY_KINDS: Array<{ kind: FamilyMemoryKind; label: string }> = [
+  { kind: 'size', label: 'Sizes' },
+  { kind: 'preference', label: 'Likes & preferences' },
+  { kind: 'contact', label: 'Teachers & contacts' },
+  { kind: 'school', label: 'School' },
+  { kind: 'medical', label: 'Medical basics' },
+  { kind: 'worked', label: 'What worked' },
+  { kind: 'note', label: 'Other' },
+];
+
+export interface FamilyMemory {
+  id: number;
+  fact: string;
+  kind: FamilyMemoryKind;
+  /** true = the household memory; false = one person's own. */
+  shared: boolean;
+  /** Who it's about (null = the whole family). A person's own memory is about them. */
+  aboutId: number | null;
+  aboutName: string | null;
+  addedBy: string | null;
+  /** 'hana' when it was kept from a conversation (a grown-up confirmed it), 'typed' when written in by hand. */
+  via: 'typed' | 'hana';
+  at: string;
+  correctedBy: string | null;
+  correctedAt: string | null;
+}
+
+/** Family HQ's memory view (parents): the household memory, plus each kid's own. Never another grown-up's own. */
+export interface FamilyMemoryView {
+  household: FamilyMemory[];
+  kids: Array<{ id: number; name: string; memories: FamilyMemory[] }>;
+}

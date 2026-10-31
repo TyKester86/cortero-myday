@@ -28,6 +28,7 @@ import { lectureMaterial } from './lectures.js';
 import { clinicianReply, crisisIn, crisisReply, escalateCrisis, symptomQuestion } from '../lib/chief/guard.js';
 import { screenText } from '../lib/screen.js';
 import { asOfLabel } from '../lib/chief/facts.js';
+import { memoryContext } from '../lib/chief/memory.js';
 
 export const chatRouter = Router();
 
@@ -108,7 +109,8 @@ async function dayContext(me: HouseholdMember, mode: ChatMode, stats: HanaStats 
   const t = today();
   const bits: string[] = [];
   // A kid's open homework from the Homework tab, soonest due first.
-  if (mode === 'tutor' && me.kind === 'kid') return homeworkLine(await openHomework(me));
+  // …and what the family memory says about them that helps the teaching (C9 — never a sibling's).
+  if (mode === 'tutor' && me.kind === 'kid') return [homeworkLine(await openHomework(me)), await memoryContext(me)].filter(Boolean).join('. ');
   const { rows: open } = await pool.query<{ id: number; task: string }>(
     'SELECT id, task FROM tasks WHERE member_id = $1 AND day = $2 AND NOT done ORDER BY id LIMIT 12',
     [me.id, t],
@@ -140,8 +142,11 @@ async function dayContext(me: HouseholdMember, mode: ChatMode, stats: HanaStats 
   for (const e of ev) for (const d of datesOf(e, t, addDays(t, 1))) cal.push(`${d === t ? 'today' : 'tomorrow'}${e.start_time ? ` ${e.start_time.slice(0, 5)}` : ''} ${e.title}`);
   if (cal.length) bits.push(`On the household calendar: ${cal.sort().join('; ')}`);
   // What they asked Hana to remember, and reminders still to come.
-  const { rows: mem } = await pool.query<{ id: number; fact: string }>('SELECT id, fact FROM hana_memories WHERE member_id = $1 ORDER BY id LIMIT 100', [me.id]);
+  const { rows: mem } = await pool.query<{ id: number; fact: string }>('SELECT id, fact FROM hana_memories WHERE member_id = $1 AND NOT shared ORDER BY id LIMIT 100', [me.id]);
   if (mem.length) bits.push(`Things you remember about ${me.name} (memory ids): ${mem.map((m) => `#${m.id} ${m.fact}`).join('; ')}`);
+  // C9: the household memory — all of it for a parent (kids get theirs in the tutor, above).
+  const family = await memoryContext(me);
+  if (family) bits.push(family);
   const { rows: rem } = await pool.query<{ text: string; remind_at: Date }>('SELECT text, remind_at FROM hana_reminders WHERE member_id = $1 AND sent_at IS NULL ORDER BY remind_at LIMIT 10', [me.id]);
   if (rem.length) bits.push(`Reminders you set for them: ${rem.map((r) => `${r.text} (${r.remind_at.toISOString()})`).join('; ')}`);
   return bits.join('. ');
@@ -206,6 +211,11 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     '("I’m vegetarian", "soccer is every Tuesday", "my boss is Dana", "we’re potty training Evan") — offer to keep it with remember, ' +
     'one short fact per call (it waits for their Confirm like everything else), and don’t offer something you already remember. Use what you remember naturally in later answers. ' +
     'Never save passwords, card or account numbers, or other secrets. They can see and edit everything you remember on the Ask Hana page. ' +
+    (me.kind === 'adult'
+      ? 'FAMILY MEMORY: facts the whole family relies on — sizes, likes, teachers, coaches and doctors, school facts, medical basics they tell you, what worked last time — ' +
+        'go in the family memory with remember_family (about the member, or the whole family); when they say one is wrong or out of date, correct_family_memory or forget_family_memory by its #h id. ' +
+        'Medical basics are kept as they were told, never interpreted. Use the family memory naturally; it is the parents’ to see and edit in Family HQ. '
+      : '') +
     'Times are the household’s local time. Nothing — deleting, clearing, adding or forgetting — ' +
     'happens until they tap Confirm, so never say it is done until it is.'
   );
