@@ -8,7 +8,7 @@ import { HanaFace } from '../../components/NavIcon';
 import { keyboardSync } from '../../components/useKeyboard';
 import { useSession } from '../../session';
 import { shrink } from '../health/ProgressPhotos';
-import { DraftCard } from '../hq/Notes';
+import { DraftCard, EmailDraftCard } from '../hq/Notes';
 
 const newClientId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
@@ -472,7 +472,14 @@ export default function Chat({ mode }: { mode: ChatMode }) {
           </div>
         ))}
         {data.pending.map((a) =>
-          a.tool === 'draft_note' && a.draft ? (
+          a.email ? (
+            <EmailDraftCard
+              key={a.id}
+              a={a}
+              onDecide={(verb) => void decide(a, verb)}
+              onSaved={(n) => setData({ ...data, pending: data.pending.map((x) => (x.id === n.id ? n : x)) })}
+            />
+          ) : a.tool === 'draft_note' && a.draft ? (
             <DraftCard
               key={a.id}
               a={a}

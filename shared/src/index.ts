@@ -1988,6 +1988,8 @@ export interface HanaAction {
   result: string;
   /** A drafted note (H6): who it's to and what it says, editable until it's confirmed. */
   draft?: { to: string; kind: HanaNoteKind; text: string } | null;
+  /** C3: a drafted email or invite — the exact recipients the approval sends to, and what it says. */
+  email?: { to: string[]; subject: string; body: string; invite: boolean } | null;
 }
 
 export type HanaNoteKind = 'note' | 'encouragement' | 'reminder';
@@ -2014,6 +2016,26 @@ export interface HanaLogEntry {
   decidedAt: string | null;
   edited: boolean;
   origin: 'chat' | 'watch' | 'coach' | 'voice';
+  /** C3: T1 = prepared for approval (a change to MyDay, or a draft); T2 = on approval, sent or filed outside MyDay. */
+  tier: 'T1' | 'T2';
+  /** Who a send went (or would go) to — exactly what was approved. */
+  recipients: string[];
+}
+
+/** C3 audit: what Hana suggested (T0) — the brief and watch items a parent was shown. */
+export interface HanaSuggestionEntry {
+  id: number;
+  at: string;
+  kind: string;
+  category: string;
+  text: string;
+  outcome: HanaItemOutcome | null;
+}
+
+/** What Hana can do, by tier — and the hard rails no tier overrides. */
+export interface HanaCapabilities {
+  tools: Array<{ name: string; tier: 'T0' | 'T1' | 'T2'; reads: boolean }>;
+  rails: string[];
 }
 
 export interface ChatTurnResult {

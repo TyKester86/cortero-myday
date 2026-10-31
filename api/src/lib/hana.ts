@@ -9,7 +9,7 @@
  */
 import type { BetaTool } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { z } from 'zod';
-import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type DateStr, type HanaAction, type HanaLogEntry, type HanaNote, type HanaNoteKind, type HouseholdMember, type Weekday } from '@myday/shared';
+import { CAL_REPEATS, ENERGIES, PRIORITIES, WEEKDAYS, type DateStr, type HanaAction, type HanaCapabilities, type HanaLogEntry, type HanaSuggestionEntry, type HanaNote, type HanaNoteKind, type HouseholdMember, type Weekday } from '@myday/shared';
 import { pool } from '../db.js';
 import { profileFor, plannedSession } from '../routes/health.js';
 import { datesOf } from './recur.js';
@@ -21,6 +21,7 @@ import { fillKrogerCart, sendToInstacart } from '../routes/grocers.js';
 import type { ToolKit } from './ai.js';
 import { addDays, localToInstant, today, weekdayToIso } from './dates.js';
 import { logEvent } from './events.js';
+import { mailOn, sendMail, type Mail } from './mail.js';
 import { HttpError } from './http.js';
 import { listMembers } from './members.js';
 import { hanaStats, statsLine } from './hanaStats.js';
@@ -78,6 +79,51 @@ async function addChore(i: { person: string; chore: string; days: readonly strin
   return `${who.name} now has “${i.chore}” on ${i.days.join(' ')} for ${i.points} points.`;
 }
 
+
+/** Tools whose approval sends or files something outside MyDay (T2). Everything else changes MyDay itself. */
+export const SENDS = new Set(['draft_email', 'draft_invite', 'send_groceries', 'run_errand']);
+
+/**
+ * T2: send exactly what the parent approved, to exactly the addresses on the draft, in their name
+ * (replies go to them). Never anyone else; nothing goes when sending isn't set up — it says so.
+ */
+async function sendApproved(me: HouseholdMember, to: string[], subject: string, body: string, attachments?: Mail['attachments']): Promise<string> {
+  if (me.kind !== 'adult') throw new HttpError(403, 'Only a grown-up sends');
+  if (!mailOn()) throw new HttpError(503, 'MyDay can’t send email yet (sending isn’t set up on this server) — nothing was sent. The draft stays in the log.');
+  const { rows } = await pool.query<{ email: string }>("SELECT email FROM users WHERE member_id = $1 AND email LIKE '%@%' ORDER BY id LIMIT 1", [me.id]);
+  const replyTo = rows[0]?.email;
+  const text = `${body}\n\n— ${me.name}${replyTo ? ` (${replyTo})` : ''}\nSent with MyDay at ${me.name}’s request.`;
+  const sent: string[] = [];
+  for (const addr of to) if (await sendMail({ to: addr, subject, text, replyTo, attachments })) sent.push(addr);
+  if (!sent.length) throw new HttpError(502, 'The email didn’t go out — nothing was sent. Try again in a bit.');
+  const when = new Date().toLocaleTimeString('en-US', { timeZone: config.tz, hour: 'numeric', minute: '2-digit' });
+  return sent.length === to.length ? `Sent to ${sent.join(', ')} at ${when}.` : `Sent to ${sent.join(', ')} at ${when}; ${to.filter((a) => !sent.includes(a)).join(', ')} didn’t go through.`;
+}
+
+/** An iCalendar invite (METHOD:REQUEST) in the household's time zone, organized by the parent. */
+function inviteIcs(me: HouseholdMember, i: { to: string[]; title: string; date: string; start: string; end: string; location: string; note: string }): string {
+  const esc = (t: string): string => t.replace(/\\/g, '\\\\').replace(/[,;]/g, (c) => `\\${c}`).replace(/\r?\n/g, '\\n');
+  const dt = (d: string, t: string): string => `${d.replace(/-/g, '')}T${t.replace(':', '')}00`;
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//MyDay//Hana//EN',
+    'METHOD:REQUEST',
+    'BEGIN:VEVENT',
+    `UID:hana-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@conquermyday.app`,
+    `DTSTAMP:${stamp}`,
+    `DTSTART;TZID=${config.tz}:${dt(i.date, i.start)}`,
+    `DTEND;TZID=${config.tz}:${dt(i.date, i.end)}`,
+    `SUMMARY:${esc(i.title)}`,
+    ...(i.location ? [`LOCATION:${esc(i.location)}`] : []),
+    ...(i.note ? [`DESCRIPTION:${esc(i.note)}`] : []),
+    `ORGANIZER;CN=${esc(me.name)}:mailto:noreply@conquermyday.app`,
+    ...i.to.map((a) => `ATTENDEE;RSVP=TRUE:mailto:${a}`),
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+}
 
 /** Who a draft note can go to: someone else in the household; a kid only gets the kinds the parents allow. */
 async function noteRecipient(me: HouseholdMember, name: string, kind: 'note' | 'encouragement' | 'reminder'): Promise<HouseholdMember> {
@@ -761,6 +807,61 @@ export const HANA_TOOLS = [
       return `Logged for the family report as one of this month’s gaps. Prepared instead: ${i.prepared ?? 'nothing yet'}.`;
     },
   }),
+  // ---------- C3 T1 → T2: an email or an invite, drafted for a parent; sent only on their approval ----------
+  def({
+    name: 'draft_email',
+    description:
+      'Draft an email from this grown-up (to a teacher, the school, a coach, the doctor’s office). It is sent ONLY after they approve it, ' +
+      'only to the addresses they see on the draft, with replies going to them. Never draft to someone they didn’t ask you to write to.',
+    destructive: false,
+    schema: z.object({ to: z.array(z.string().email().max(120)).min(1).max(5), subject: z.string().min(1).max(150), body: z.string().min(1).max(4000) }),
+    json: {
+      type: 'object',
+      properties: { to: { type: 'array', items: { type: 'string' } }, subject: { type: 'string' }, body: { type: 'string' } },
+      required: ['to', 'subject', 'body'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Email ${i.to.join(', ')}: “${i.subject}”`,
+    run: async (me, i) => sendApproved(me, i.to, i.subject, i.body),
+  }),
+  def({
+    name: 'draft_invite',
+    description:
+      'Draft a calendar invite from this grown-up (a parent-teacher meeting, a playdate, a carpool). Sent as an email with the invite attached, ' +
+      'ONLY after they approve it, only to the addresses on the draft. To hold the time on the family calendar too, also use add_calendar_event.',
+    destructive: false,
+    schema: z.object({
+      to: z.array(z.string().email().max(120)).min(1).max(5),
+      title: z.string().min(1).max(120),
+      date: z.string().regex(DATE),
+      start: z.string().regex(TIME),
+      end: z.string().regex(TIME),
+      location: z.string().max(120),
+      note: z.string().max(1000),
+    }),
+    json: {
+      type: 'object',
+      properties: {
+        to: { type: 'array', items: { type: 'string' } },
+        title: { type: 'string' },
+        date: { type: 'string' },
+        start: { type: 'string' },
+        end: { type: 'string' },
+        location: { type: 'string' },
+        note: { type: 'string' },
+      },
+      required: ['to', 'title', 'date', 'start', 'end', 'location', 'note'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Invite ${i.to.join(', ')} to “${i.title}” on ${i.date}, ${i.start}–${i.end}`,
+    precheck: async (_me, i) => {
+      if (i.end <= i.start) throw new HttpError(400, 'The invite has to end after it starts');
+    },
+    run: async (me, i) => {
+      const ics = inviteIcs(me, i);
+      return sendApproved(me, i.to, `Invitation: ${i.title} — ${i.date} ${i.start}`, `${i.note ? `${i.note}\n\n` : ''}${i.title}\n${i.date}, ${i.start}–${i.end}${i.location ? `\n${i.location}` : ''}`, [{ filename: 'invite.ics', content: ics, type: 'text/calendar; method=REQUEST' }]);
+    },
+  }),
   // ---------- C4: open loops ----------
   def({
     name: 'track_loop',
@@ -869,6 +970,12 @@ export const toAction = (r: ActionRow): HanaAction => ({
   status: r.status,
   result: r.result,
   draft: r.tool === 'draft_note' && r.input ? (r.input as unknown as HanaAction['draft']) : null,
+  email:
+    (r.tool === 'draft_email' || r.tool === 'draft_invite') && r.input
+      ? r.tool === 'draft_email'
+        ? { to: r.input.to as string[], subject: String(r.input.subject), body: String(r.input.body), invite: false }
+        : { to: r.input.to as string[], subject: `${String(r.input.title)} — ${String(r.input.date)} ${String(r.input.start)}–${String(r.input.end)}`, body: String(r.input.note ?? ''), invite: true }
+      : null,
 });
 
 export async function pendingActions(memberId: number): Promise<HanaAction[]> {
@@ -900,6 +1007,8 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   }
   if ((x = m.match(/^send (\w+) (?:an? )?(encouragement|reminder|note):\s*(.+)$/i))) return [{ name: 'draft_note', input: { to: x[1], kind: (x[2] ?? '').toLowerCase(), text: x[3] } }];
   if ((x = m.match(/^(?:can you |please )?call (?:the )?(.+?)\??$/i))) return [{ name: 'report_gap', input: { what: `Call the ${x[1]}`, tried: 'MyDay has no phone calling', category: 'connector', prepared: `The ${x[1]}’s question, ready for you to read out` } }];
+  if ((x = m.match(/^email ([^\s:]+@[^\s:]+(?:\s*,\s*[^\s:]+@[^\s:]+)*):\s*(.+?)\s*\|\s*([\s\S]+)$/i))) return [{ name: 'draft_email', input: { to: (x[1] ?? '').split(/\s*,\s*/), subject: x[2], body: x[3] } }];
+  if ((x = m.match(/^invite ([^\s]+@[^\s]+) to (.+?) on (\d{4}-\d{2}-\d{2}) from (\d{2}:\d{2}) to (\d{2}:\d{2})$/i))) return [{ name: 'draft_invite', input: { to: [x[1]], title: x[2], date: x[3], start: x[4], end: x[5], location: '', note: '' } }];
   if (/^what['’]?s on (?:the )?calendar/i.test(m)) return [{ name: 'get_calendar', input: { from: null, days: 7 } }];
   if ((x = m.match(/^(?:track:\s*)?(i|the \w+)(?:'ll|’ll| will) (.+?) by (\d{4}-\d{2}-\d{2})$/i))) return [{ name: 'track_loop', input: { what: x[2], owed_by: /^i$/i.test(x[1] ?? '') ? 'me' : x[1], due: x[3] } }];
   if (/^what(?:['’]s| is) still open/i.test(m)) return [{ name: 'open_loops', input: {} }];
@@ -1039,23 +1148,35 @@ export async function decideAction(me: HouseholdMember, id: number, confirm: boo
 }
 
 /** H6: change a drafted note's words before it goes (the proposer only, while it waits). */
-export async function editDraft(me: HouseholdMember, id: number, text: unknown): Promise<HanaAction> {
-  if (typeof text !== 'string' || !text.trim() || text.length > 500) throw new HttpError(400, 'A note is 1–500 characters');
+export async function editDraft(me: HouseholdMember, id: number, text: unknown, more: { to?: unknown; subject?: unknown } = {}): Promise<HanaAction> {
   const { rows } = await pool.query<ActionRow>(
-    "SELECT id, tool, summary, status, result, input FROM hana_actions WHERE id = $1 AND member_id = $2 AND tool = 'draft_note'",
+    "SELECT id, tool, summary, status, result, input FROM hana_actions WHERE id = $1 AND member_id = $2 AND tool IN ('draft_note', 'draft_email', 'draft_invite')",
     [id, me.id],
   );
   const a = rows[0];
   if (!a) throw new HttpError(404, 'Not found');
-  if (a.status !== 'pending') throw new HttpError(409, 'That note was already decided');
-  const tool = byName('draft_note');
-  if (!tool) throw new Error('draft_note missing');
-  const input = tool.schema.parse({ ...a.input, text: text.trim() });
+  if (a.status !== 'pending') throw new HttpError(409, 'That draft was already decided');
+  const tool = byName(a.tool);
+  if (!tool) throw new Error(`${a.tool} missing`);
+  let next: Record<string, unknown>;
+  if (a.tool === 'draft_note') {
+    if (typeof text !== 'string' || !text.trim() || text.length > 500) throw new HttpError(400, 'A note is 1–500 characters');
+    next = { ...a.input, text: text.trim() };
+  } else {
+    // An email's words, subject and recipients can all change — the approval then covers exactly the new ones.
+    next = { ...a.input };
+    if (text !== undefined) next[a.tool === 'draft_email' ? 'body' : 'note'] = typeof text === 'string' ? text.trim() : text;
+    if (more.subject !== undefined && a.tool === 'draft_email') next.subject = typeof more.subject === 'string' ? more.subject.trim() : more.subject;
+    if (more.to !== undefined) next.to = Array.isArray(more.to) ? more.to.map((x) => String(x).trim()).filter(Boolean) : more.to;
+  }
+  const parsed = tool.schema.safeParse(next);
+  if (!parsed.success) throw new HttpError(400, a.tool === 'draft_note' ? 'A note is 1–500 characters' : 'Check the addresses (1–5 real email addresses), subject and message');
+  const input = parsed.data;
   const { rows: out } = await pool.query<ActionRow>(
     "UPDATE hana_actions SET input = $3, summary = $4, edited = true WHERE id = $1 AND member_id = $2 AND status = 'pending' RETURNING id, tool, summary, status, result, input",
     [id, me.id, JSON.stringify(input), tool.summary(input)],
   );
-  if (!out[0]) throw new HttpError(409, 'That note was already decided');
+  if (!out[0]) throw new HttpError(409, 'That draft was already decided');
   return toAction(out[0]);
 }
 
@@ -1100,22 +1221,55 @@ export async function markNoteRead(me: HouseholdMember, id: number): Promise<voi
  * The parents' audit log: every note drafted for anyone in the family (both parents see those),
  * and everything Hana prepared for you yourself — with who decided, when, and whether it was edited.
  */
-export async function auditLog(me: HouseholdMember): Promise<HanaLogEntry[]> {
+export async function auditLog(me: HouseholdMember, before: number | null = null): Promise<HanaLogEntry[]> {
   if (me.kind !== 'adult') throw new HttpError(403, 'The log is for grown-ups');
+  // Forever inspectable: no age limit — older pages by id. Anything sent in the family's name (notes, emails,
+  // invites) shows for both parents; the rest of what Hana prepared, for the one it was prepared for.
   const { rows } = await pool.query<{
     id: number; created_at: Date; by: string | null; tool: string; summary: string; status: HanaAction['status'];
-    decider: string | null; decided_at: Date | null; edited: boolean; origin: HanaLogEntry['origin'];
+    decider: string | null; decided_at: Date | null; edited: boolean; origin: HanaLogEntry['origin']; input: Record<string, unknown>;
   }>(
-    `SELECT a.id, a.created_at, p.name AS by, a.tool, a.summary, a.status, d.name AS decider, a.decided_at, a.edited, a.origin
+    `SELECT a.id, a.created_at, p.name AS by, a.tool, a.summary, a.status, d.name AS decider, a.decided_at, a.edited, a.origin, a.input
        FROM hana_actions a
        LEFT JOIN household_members p ON p.id = a.member_id
        LEFT JOIN household_members d ON d.id = a.decided_by
-      WHERE (a.tool = 'draft_note' OR a.member_id = $1) AND a.created_at > now() - interval '60 days'
+      WHERE (a.tool IN ('draft_note', 'draft_email', 'draft_invite') OR a.member_id = $1) AND ($2::int IS NULL OR a.id < $2)
       ORDER BY a.id DESC LIMIT 100`,
-    [me.id],
+    [me.id, before],
   );
   return rows.map((r) => ({
     id: r.id, at: r.created_at.toISOString(), proposedBy: r.by, tool: r.tool, summary: r.summary, status: r.status,
     decidedBy: r.decider, decidedAt: r.decided_at?.toISOString() ?? null, edited: r.edited, origin: r.origin,
+    tier: SENDS.has(r.tool) ? 'T2' : 'T1',
+    recipients: Array.isArray(r.input?.to) ? (r.input.to as string[]) : typeof r.input?.to === 'string' && r.tool === 'draft_note' ? [String(r.input.to)] : [],
   }));
+}
+
+/** T0 in the audit: what Hana suggested to this parent (watch, escalations, nudges, couldn'ts), with what they did. */
+export async function suggestionLog(me: HouseholdMember, before: number | null = null): Promise<HanaSuggestionEntry[]> {
+  if (me.kind !== 'adult') throw new HttpError(403, 'The log is for grown-ups');
+  const { rows } = await pool.query<{ id: number; created_at: Date; surface: string; category: string; text: string; outcome: HanaSuggestionEntry['outcome'] }>(
+    `SELECT id, created_at, surface, category, text, outcome FROM hana_items
+      WHERE member_id = $1 AND surface IN ('watch', 'escalation', 'nudge', 'couldnt', 'crisis') AND ($2::int IS NULL OR id < $2)
+      ORDER BY id DESC LIMIT 100`,
+    [me.id, before],
+  );
+  return rows.map((r) => ({ id: r.id, at: r.created_at.toISOString(), kind: r.surface, category: r.category, text: r.text, outcome: r.outcome }));
+}
+
+/** What Hana can do, by tier, and the rails that hold whatever the tier. */
+export function capabilities(): HanaCapabilities {
+  return {
+    tools: hanaToolDefs().map((t) => {
+      const d = byName(t.name);
+      return { name: t.name, tier: d?.readOnly ? 'T0' : SENDS.has(t.name) ? 'T2' : 'T1', reads: !!d?.readOnly };
+    }),
+    rails: [
+      'She never moves money.',
+      'She never signs anything.',
+      'She never deletes mail or calendar events.',
+      'She never sends to anyone a grown-up didn’t approve on that draft.',
+      'Everything that changes MyDay or leaves it waits for a grown-up’s OK, and is in this log.',
+    ],
+  };
 }

@@ -6922,6 +6922,7 @@ async function hanaBrainSuite() {
     await hanaRailChecks();
     await hanaCalendarChecks();
     await hanaLoopChecks();
+    await hanaLadderChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7167,6 +7168,62 @@ async function hanaCoachChecks() {
   const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
   eq('report: nudges set aside are counted (parents tune categories down from this)', [rep.nudges.dismissed, rep.nudges.byCategory.find((c) => c.category === 'homework')?.dismissed], [1, 1]);
   await startServer(hanaNow());
+}
+
+async function hanaLadderChecks() {
+  const tess = hanaIds.tess;
+  const raw = (c, message) => c.post('/api/chat/companion', { message, clientId: `t2-${Math.random().toString(36).slice(2, 12)}` });
+  const outbox = async () => (await anon.get(`/api/dev/outbox?token=${DEV_TOKEN}`)).data.mail;
+  const [{ email: tyEmail }] = await sql("SELECT email FROM users WHERE member_id = $1 AND email LIKE '%@%' ORDER BY id LIMIT 1", [hanaIds.Ty]);
+
+  section('Hana C3 · T1 → T2: an email drafted for a parent, sent only on approval, only to who they approved');
+  const box0 = (await outbox()).length;
+  let r = (await raw(ty, 'email ms.park@lincoln.example: Avery’s lab report | Hi Ms. Park, Avery will hand in the lab report on Friday. Thank you!')).data;
+  const d = r.actions[0];
+  eq('drafted, not sent: the exact recipient, subject and words on the card', [d.tool, d.status, d.email], ['draft_email', 'pending', { to: ['ms.park@lincoln.example'], subject: 'Avery’s lab report', body: 'Hi Ms. Park, Avery will hand in the lab report on Friday. Thank you!', invite: false }]);
+  eq('…nothing went out', (await outbox()).length, box0);
+  eq('only Ty can approve or change it (Kayla 404, Avery 403/404, Test house 404)', [(await kayla.post(`/api/hana/actions/${d.id}/confirm`)).status, (await avery.post(`/api/hana/actions/${d.id}/confirm`)).status, (await tess.patch(`/api/hana/actions/${d.id}`, { text: 'x' })).status, (await kayla.patch(`/api/hana/actions/${d.id}`, { to: ['evil@bad.example'] })).status], [404, 403, 404, 404]);
+  eq('a bad address, or more than 5, is refused', [(await ty.patch(`/api/hana/actions/${d.id}`, { to: ['not-an-email'] })).status, (await ty.patch(`/api/hana/actions/${d.id}`, { to: ['a@x.example', 'b@x.example', 'c@x.example', 'd@x.example', 'e@x.example', 'f@x.example'] })).status], [400, 400]);
+  const ed = (await ty.patch(`/api/hana/actions/${d.id}`, { to: ['ms.park@lincoln.example', 'counselor@lincoln.example'], text: 'Hi Ms. Park, Avery will hand in the lab report on Friday — thank you for the extra day!' })).data.action;
+  eq('Ty adds the counselor and edits the words → the card shows exactly that', [ed.status, ed.email.to, ed.summary], ['pending', ['ms.park@lincoln.example', 'counselor@lincoln.example'], 'Email ms.park@lincoln.example, counselor@lincoln.example: “Avery’s lab report”']);
+  const sent = (await ty.post(`/api/hana/actions/${d.id}/confirm`)).data.action;
+  check('Send → sent, and Hana says to whom', sent.status === 'done' && /^Sent to ms\.park@lincoln\.example, counselor@lincoln\.example at /.test(sent.result), sent.result);
+  const mail = (await outbox()).slice(box0);
+  eq('exactly the two approved addresses got it — nobody else', mail.map((m) => m.to).sort(), ['counselor@lincoln.example', 'ms.park@lincoln.example']);
+  check('…in Ty’s name: his words, his signature, replies to him', mail.every((m) => m.subject === 'Avery’s lab report' && m.text.startsWith('Hi Ms. Park, Avery will hand in the lab report on Friday — thank you for the extra day!') && m.text.includes('— Ty') && /Sent with MyDay at Ty’s request/.test(m.text) && m.replyTo === tyEmail), JSON.stringify(mail[0]));
+  eq('sending twice → 409 (and nothing more goes out)', [(await ty.post(`/api/hana/actions/${d.id}/confirm`)).status, (await outbox()).length - box0], [409, 2]);
+  r = (await raw(ty, 'email coach@soccer.example: Practice | We can’t make Thursday.')).data;
+  await ty.post(`/api/hana/actions/${r.actions[0].id}/cancel`);
+  eq('Discard → nothing sent', (await outbox()).length - box0, 2);
+
+  section('Hana C3 · an invite: drafted, approved, sent with the calendar file — to the approved address only');
+  r = (await raw(ty, 'invite coach@soccer.example to Carpool planning on 2026-11-06 from 18:00 to 18:30')).data;
+  const inv = r.actions[0];
+  eq('a drafted invite waits, with who it’s to', [inv.tool, inv.status, inv.email.to, inv.email.invite], ['draft_invite', 'pending', ['coach@soccer.example'], true]);
+  await ty.post(`/api/hana/actions/${inv.id}/confirm`);
+  const im = (await outbox()).slice(box0 + 2);
+  const ics = im[0]?.attachments?.[0]?.content ?? '';
+  eq('sent to the coach alone, with the invite attached', [im.map((m) => m.to), im[0]?.attachments?.[0]?.filename], [['coach@soccer.example'], 'invite.ics']);
+  check('…a real invite in household time, the coach as the only guest', /METHOD:REQUEST/.test(ics) && /DTSTART;TZID=America\/Chicago:20261106T180000/.test(ics) && /DTEND;TZID=America\/Chicago:20261106T183000/.test(ics) && (ics.match(/ATTENDEE/g) ?? []).length === 1 && /ATTENDEE;RSVP=TRUE:mailto:coach@soccer\.example/.test(ics), ics);
+  r = (await raw(ty, 'invite coach@soccer.example to Backwards on 2026-11-06 from 18:30 to 18:00')).data;
+  eq('an invite that ends before it starts isn’t even drafted', [r.actions.length, /end after it starts/.test(r.reply.text)], [0, true]);
+
+  section('Hana C3 · the hard rails, and the audit log');
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('no tool moves money, signs, or deletes mail or events', caps.tools.filter((t) => /pay|transfer|money_move|move_money|wire|sign|delete_event|remove_event|delete_mail|delete_email|archive_mail/i.test(t.name) && !/^money_summary$/.test(t.name)).map((t) => t.name), []);
+  eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'run_errand', 'send_groceries'], 'T0', 'T1']);
+  eq('…and the rails are stated', caps.rails.length, 5);
+  eq('kids can’t see it', (await avery.get('/api/hana/capabilities')).status, 403);
+  const kLog = (await kayla.get('/api/hana/log')).data.log;
+  const row = kLog.find((l) => l.id === d.id);
+  eq('Kayla’s log shows Ty’s send: T2, approved by Ty, edited, to exactly whom', [row?.tier, row?.status, row?.decidedBy, row?.edited, row?.recipients], ['T2', 'done', 'Ty', true, ['ms.park@lincoln.example', 'counselor@lincoln.example']]);
+  eq('…and the discarded one, as discarded', kLog.some((l) => l.tool === 'draft_email' && l.status === 'cancelled' && l.decidedBy === 'Ty'), true);
+  eq('another household’s log has none of it', (await tess.get('/api/hana/log')).data.log.some((l) => l.tool === 'draft_email'), false);
+  const [old] = await sql("INSERT INTO hana_actions (household_id, member_id, tool, input, summary, status, created_at) VALUES (1, $1, 'add_task', '{}', 'An old one, from long ago', 'done', now() - interval '400 days') RETURNING id", [hanaIds.Ty]);
+  eq('forever inspectable: a 400-day-old action is still in the log (older pages)', (await ty.get(`/api/hana/log?before=${old.id + 1}`)).data.log.some((l) => l.id === old.id), true);
+  const sug = (await ty.get('/api/hana/log?suggestions=1')).data.suggestions;
+  eq('what she suggested (T0) is in the log too — and only ours', [sug.length > 0, sug.every((s) => typeof s.text === 'string'), ((await tess.get('/api/hana/log?suggestions=1')).data.suggestions ?? []).some((s) => sug.some((x) => x.id === s.id))], [true, true, false]);
+  eq('nothing in C3 widens a child’s reach: kids still have no companion, no drafts, no log', [(await avery.post('/api/chat/companion', { message: 'email a@b.example: hi | hi' })).status, (await avery.get('/api/hana/log')).status], [403, 403]);
 }
 
 async function hanaLoopChecks() {

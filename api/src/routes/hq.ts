@@ -36,7 +36,7 @@ import { sendMail } from '../lib/mail.js';
 import { listMembers } from '../lib/members.js';
 import { coachFor, coachTarget, dismissNudge, refreshEscalations, setStep } from '../lib/chief/coach.js';
 import { runWatch, saveSettings, settingsOf } from '../lib/chief/watch.js';
-import { auditLog, draftFromEscalation, editDraft, markNoteRead, notesFor } from '../lib/hana.js';
+import { auditLog, capabilities, draftFromEscalation, editDraft, markNoteRead, notesFor, suggestionLog } from '../lib/hana.js';
 import { closeLoop, loopsFor, openLoop, reopenLoop, shareLoop } from '../lib/chief/loops.js';
 import { logEvent } from '../lib/events.js';
 import { rateLimiter } from '../lib/pin.js';
@@ -161,7 +161,8 @@ hqRouter.put('/api/hana/settings', async (req, res) => {
 });
 
 hqRouter.patch('/api/hana/actions/:id', async (req, res) => {
-  res.json({ action: await editDraft(self(req), idParam(req.params.id), (req.body as { text?: unknown }).text) });
+  const b = req.body as { text?: unknown; to?: unknown; subject?: unknown };
+  res.json({ action: await editDraft(self(req), idParam(req.params.id), b.text, { to: b.to, subject: b.subject }) });
 });
 
 hqRouter.post('/api/hana/alerts/:id/draft', async (req, res) => {
@@ -178,7 +179,14 @@ hqRouter.post('/api/hana/notes/:id/read', async (req, res) => {
 });
 
 hqRouter.get('/api/hana/log', async (req, res) => {
-  res.json({ log: await auditLog(self(req)) });
+  const before = typeof req.query.before === 'string' && /^\d+$/.test(req.query.before) ? Number(req.query.before) : null;
+  const me = self(req);
+  res.json({ log: await auditLog(me, before), suggestions: req.query.suggestions === '1' ? await suggestionLog(me, before) : undefined });
+});
+
+hqRouter.get('/api/hana/capabilities', async (req, res) => {
+  requireParent(viewerOf(self(req)), 'What Hana can do');
+  res.json(capabilities());
 });
 
 hqRouter.get('/api/hana/loops', async (req, res) => {
