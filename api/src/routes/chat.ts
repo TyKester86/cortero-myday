@@ -211,15 +211,17 @@ async function systemPrompt(me: HouseholdMember, mode: ChatMode, ctx: string): P
     '("I’m vegetarian", "soccer is every Tuesday", "my boss is Dana", "we’re potty training Evan") — offer to keep it with remember, ' +
     'one short fact per call (it waits for their Confirm like everything else), and don’t offer something you already remember. Use what you remember naturally in later answers. ' +
     'Never save passwords, card or account numbers, or other secrets. They can see and edit everything you remember on the Ask Hana page. ' +
-    (me.kind === 'adult'
-      ? 'FAMILY MEMORY: facts the whole family relies on — sizes, likes, teachers, coaches and doctors, school facts, medical basics they tell you, what worked last time — ' +
-        'go in the family memory with remember_family (about the member, or the whole family); when they say one is wrong or out of date, correct_family_memory or forget_family_memory by its #h id. ' +
-        'Medical basics are kept as they were told, never interpreted. Use the family memory naturally; it is the parents’ to see and edit in Family HQ. '
-      : '') +
+    (me.kind === 'adult' ? FAMILY_MEMORY_RULE : '') +
     'Times are the household’s local time. Nothing — deleting, clearing, adding or forgetting — ' +
     'happens until they tap Confirm, so never say it is done until it is.'
   );
 }
+
+/** C9 (grown-ups): what goes in the family memory, and correcting or forgetting it by its #h id. */
+export const FAMILY_MEMORY_RULE =
+  'FAMILY MEMORY: facts the whole family relies on — sizes, likes, teachers, coaches and doctors, school facts, medical basics they tell you, what worked last time — ' +
+  'go in the family memory with remember_family (about the member, or the whole family); when they say one is wrong or out of date, correct_family_memory or forget_family_memory by its #h id. ' +
+  'Medical basics are kept as they were told, never interpreted. Use the family memory naturally; it is the parents’ to see and edit in Family HQ. ';
 
 /**
  * Q6, the Financial Mind (grown-ups): professor mode — full rigor, the household's own numbers, the
