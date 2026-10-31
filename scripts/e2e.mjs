@@ -103,6 +103,19 @@ const storeServer = createHttp(async (req, res) => {
 });
 await new Promise((r) => storeServer.listen(0, '127.0.0.1', r));
 const STORE = `http://127.0.0.1:${storeServer.address().port}`;
+// C2: calendars the family's life runs on, served as private iCal feeds (what Google / Outlook / a school publish).
+const icsFeeds = new Map();
+const icsServer = createHttp((req, res) => {
+  const body = icsFeeds.get(new URL(req.url, 'http://x').pathname);
+  if (body === undefined) { res.writeHead(404); return res.end('nope'); }
+  res.writeHead(200, { 'Content-Type': body.startsWith('BEGIN:VCALENDAR') ? 'text/calendar' : 'text/html' });
+  res.end(body);
+});
+await new Promise((r) => icsServer.listen(0, '127.0.0.1', r));
+const ICS = `http://127.0.0.1:${icsServer.address().port}`;
+const vcal = (...events) => ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//e2e//EN', ...events, 'END:VCALENDAR'].join('\r\n');
+const vevent = (lines) => ['BEGIN:VEVENT', ...lines, 'END:VEVENT'].join('\r\n');
+
 const phishServer = createHttp(async (req, res) => {
   if (req.method === 'POST') shop.phished.push(await formBody(req));
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -6907,6 +6920,7 @@ async function hanaBrainSuite() {
     await hanaCoachChecks();
     await hanaWatchChecks();
     await hanaRailChecks();
+    await hanaCalendarChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7034,7 +7048,7 @@ async function hanaBriefChecks() {
     'Evan piano lesson (4:00 PM–4:45 PM): nobody is on the pickup yet — someone needs to take it today.',
   ]);
   const decide = briefSection(mb, 'Needs a decision');
-  check('conflict in plain words: Kayla can’t drive soccer and be at the dentist', decide.includes('Monday has Avery soccer practice (3:30 PM–5:00 PM) and Kayla dentist (4:30 PM–5:30 PM) at the same time — Kayla can’t be at both. Someone has to pick.'), JSON.stringify(decide));
+  check('conflict in plain words: Kayla can’t drive soccer and be at the dentist', decide.includes('Kayla is on the 5:00 PM pickup from Avery soccer practice Monday, but is at Kayla dentist until 5:30 PM. Someone else may need to drive.'), JSON.stringify(decide));
   check('conflict in plain words: two family things at once', decide.includes('Monday has Family game night (6:00 PM–8:00 PM) and Anniversary dinner (7:00 PM–9:00 PM) at the same time. Someone has to pick.'), JSON.stringify(decide));
   eq('homework due today & tomorrow (exact)', briefSection(mb, 'Homework due today & tomorrow'), ['Evan: Fractions worksheet (Math) — due tomorrow']);
   const billLines = briefSection(mb, 'Bills due this week');
@@ -7154,6 +7168,103 @@ async function hanaCoachChecks() {
   await startServer(hanaNow());
 }
 
+async function hanaCalendarChecks() {
+  const tess = hanaIds.tess;
+  // Ty's Google calendar, in New York time (an hour ahead of the household), with repeats and exceptions.
+  icsFeeds.set('/ty-google.ics', vcal(
+    vevent(['UID:board@g', 'DTSTART;TZID=America/New_York:20261102T164500', 'DTEND;TZID=America/New_York:20261102T174500', 'SUMMARY:Board meeting', 'LOCATION:Ardmore office']),
+    vevent(['UID:lunch@g', 'DTSTART:20261102T190000Z', 'DTEND:20261102T200000Z', 'SUMMARY:Lunch with Sam', 'LOCATION:Downtown']),
+    vevent(['UID:review@g', 'DTSTART:20261102T201000Z', 'DTEND:20261102T210000Z', 'SUMMARY:Design review', 'LOCATION:Uptown studio']),
+    vevent(['UID:standup@g', 'DTSTART;TZID=America/New_York:20261102T083000', 'DTEND;TZID=America/New_York:20261102T084500', 'RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=6', 'EXDATE;TZID=America/New_York:20261104T083000', 'SUMMARY:Standup']),
+    vevent(['UID:standup@g', 'RECURRENCE-ID;TZID=America/New_York:20261109T083000', 'DTSTART;TZID=America/New_York:20261109T100000', 'DTEND;TZID=America/New_York:20261109T101500', 'SUMMARY:Standup (moved)']),
+    vevent(['UID:gone@g', 'DTSTART:20261103T150000Z', 'DTEND:20261103T160000Z', 'SUMMARY:Cancelled thing', 'STATUS:CANCELLED']),
+    vevent(['UID:conf@g', 'DTSTART;VALUE=DATE:20261105', 'DTEND;VALUE=DATE:20261107', 'SUMMARY:Sales conference']),
+    vevent(['UID:alarm@g', 'DTSTART:20261110T150000Z', 'DURATION:PT30M', 'SUMMARY:Call the bank\\, again', 'BEGIN:VALARM', 'TRIGGER:-PT10M', 'SUMMARY:not an event', 'END:VALARM']),
+  ));
+  // Kayla's Outlook calendar, with the Windows zone name Outlook sends.
+  icsFeeds.set('/kayla-outlook.ics', vcal(vevent(['UID:client@o', 'DTSTART;TZID=Central Standard Time:20261102T163000', 'DTEND;TZID=Central Standard Time:20261102T173000', 'SUMMARY:Client call'])));
+  icsFeeds.set('/avery-school.ics', vcal(
+    vevent(['UID:band@s', 'DTSTART;TZID=America/Chicago:20261102T180000', 'DTEND;TZID=America/Chicago:20261102T193000', 'SUMMARY:Band concert', 'LOCATION:School auditorium']),
+    vevent(['UID:math@s', 'DTSTART;TZID=America/Chicago:20261102T071500', 'DTEND;TZID=America/Chicago:20261102T075000', 'SUMMARY:Math club', 'LOCATION:Room 12']),
+    vevent(['UID:early@s', 'DTSTART;VALUE=DATE:20261103', 'SUMMARY:Early release']),
+  ));
+  icsFeeds.set('/not-a-calendar', '<html>hello</html>');
+  const tyId = hanaIds.Ty;
+
+  section('Hana C2 · connecting calendars: read-only, each person their own, a parent adds a kid’s school calendar');
+  eq('kids can’t connect anything', (await avery.post('/api/calendar/sources', { kind: 'school', url: `${ICS}/avery-school.ics` })).status, 403);
+  eq('Kayla can’t connect Ty’s calendar for him', (await kayla.post('/api/calendar/sources', { kind: 'google', url: `${ICS}/ty-google.ics`, member: 'ty' })).status, 403);
+  let r = await ty.post('/api/calendar/sources', { kind: 'google', url: `${ICS}/not-a-calendar` });
+  eq('a link that isn’t a calendar is refused (and not kept)', [r.status, /isn’t a calendar/.test(r.data.error ?? ''), (await sql('SELECT COUNT(*)::int AS n FROM calendar_sources'))[0].n], [400, true, 0]);
+  r = await ty.post('/api/calendar/sources', { kind: 'google', url: `${ICS}/ty-google.ics` });
+  eq('Ty connects his Google calendar → read at once', [r.status, r.data.sync.error, r.data.sync.events > 0], [201, null, true]);
+  const tySrc = r.data.sources.find((s) => s.member === 'Ty');
+  eq('…shown as “Ty’s Google calendar”, busy-only to the family by default, the address never sent back', [tySrc.label, tySrc.visibility, JSON.stringify(r.data).includes('ty-google.ics')], ['Google calendar', 'busy', false]);
+  eq('…sealed at rest (the private address isn’t in the database in the clear)', (await sql("SELECT COUNT(*)::int AS n FROM calendar_sources WHERE position(convert_to('ty-google', 'UTF8') in url_enc) > 0"))[0].n, 0);
+  eq('Kayla connects her Outlook calendar', (await kayla.post('/api/calendar/sources', { kind: 'outlook', url: `${ICS}/kayla-outlook.ics`, label: 'Work' })).status, 201);
+  r = await kayla.post('/api/calendar/sources', { kind: 'school', url: `${ICS}/avery-school.ics`, member: 'avery' });
+  eq('a parent adds Avery’s school calendar (shown with details)', [r.status, r.data.sources.find((s) => s.member === 'Avery')?.visibility], [201, 'details']);
+  const ev = async (id) => sql("SELECT starts_on::text AS d, to_char(start_time, 'HH24:MI') AS s, to_char(end_time, 'HH24:MI') AS e, title FROM calendar_source_events WHERE source_id = $1 ORDER BY starts_on, start_time NULLS FIRST, title", [id]);
+  const tyEv = await ev(tySrc.id);
+  const has = (d, s, e, title) => tyEv.some((x) => x.d === d && x.s === s && x.e === e && x.title === title);
+  eq('New York times land in household (Chicago) time; UTC too', [has('2026-11-02', '15:45', '16:45', 'Board meeting'), has('2026-11-02', '13:00', '14:00', 'Lunch with Sam')], [true, true]);
+  eq('a weekly repeat, minus the skipped Wednesday, with one moved occurrence', tyEv.filter((x) => x.title.startsWith('Standup')).map((x) => `${x.d} ${x.s} ${x.title}`), ['2026-11-02 07:30 Standup', '2026-11-09 09:00 Standup (moved)', '2026-11-11 07:30 Standup', '2026-11-16 07:30 Standup', '2026-11-18 07:30 Standup']);
+  eq('cancelled events don’t appear; a two-day all-day event is both days; reminders aren’t events; escapes read', [tyEv.some((x) => x.title === 'Cancelled thing'), tyEv.filter((x) => x.title === 'Sales conference').map((x) => [x.d, x.s]), tyEv.some((x) => x.title === 'not an event'), has('2026-11-10', '09:00', '09:30', 'Call the bank, again')], [false, [['2026-11-05', null], ['2026-11-06', null]], false, true]);
+  eq('Outlook’s “Central Standard Time” is understood', (await sql("SELECT to_char(e.start_time, 'HH24:MI') AS s FROM calendar_source_events e JOIN calendar_sources s ON s.id = e.source_id WHERE e.title = 'Client call'"))[0]?.s, '16:30');
+
+  section('Hana C2 · one family timeline: a view, each source labeled, private calendars stay private');
+  const tlTy = (await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data;
+  const item = (tl, title) => tl.items.find((i) => i.title === title);
+  eq('Ty sees his own events by name, labeled with where they came from', [item(tlTy, 'Board meeting')?.from, item(tlTy, 'Board meeting')?.location, item(tlTy, 'Avery soccer practice')?.from], ['Ty’s Google calendar', 'Ardmore office', 'MyDay calendar']);
+  eq('…and Kayla’s work calendar only as Busy (no title, no place)', [tlTy.items.some((i) => i.title === 'Client call'), tlTy.items.filter((i) => i.from === 'Kayla’s Work' && i.busy && i.title === 'Busy' && i.location === '').length], [false, 1]);
+  const tlK = (await kayla.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data;
+  eq('Kayla sees Ty’s as Busy, her own by name', [tlK.items.some((i) => i.title === 'Board meeting'), item(tlK, 'Client call')?.from], [false, 'Kayla’s Work']);
+  const tlA = (await avery.get(`/api/calendar/timeline?from=${HANA_DAY}&to=2026-11-03`)).data;
+  eq('Avery sees her school calendar, and none of her parents’ calendars', [item(tlA, 'Band concert')?.from, item(tlA, 'Early release')?.time, tlA.items.some((i) => i.from.startsWith('Ty’s') || i.from.startsWith('Kayla’s'))], ['Avery’s school calendar', null, false]);
+  eq('Evan sees no one’s connected calendars', (await evan.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.items.filter((i) => i.id < 0).length, 0);
+  eq('another household sees none of it (sources, timeline)', [(await tess.get('/api/calendar/sources')).data.sources.length, (await tess.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.items.filter((i) => i.id < 0).length], [0, 0]);
+  eq('…nor can it read, sync or disconnect ours (404 ×2)', [(await tess.post(`/api/calendar/sources/${tySrc.id}/sync`)).status, (await tess.del(`/api/calendar/sources/${tySrc.id}`)).status], [404, 404]);
+  eq('Kayla can’t disconnect or re-share Ty’s', [(await kayla.del(`/api/calendar/sources/${tySrc.id}`)).status, (await kayla.patch(`/api/calendar/sources/${tySrc.id}`, { visibility: 'details' })).status], [404, 404]);
+  eq('nothing was written into MyDay’s own calendar', (await sql("SELECT COUNT(*)::int AS n FROM calendar_events WHERE title IN ('Board meeting', 'Client call', 'Band concert')"))[0].n, 0);
+
+  section('Hana C2 · the conflict engine on the real timeline');
+  const kinds = (tl) => tl.conflicts.map((c) => c.kind);
+  const cText = (tl, kind) => tl.conflicts.filter((c) => c.kind === kind).map((c) => c.text);
+  check('pickup: Kayla is on the 5:00 soccer pickup but is on a call until 5:30', cText(tlK, 'pickup').some((t) => /Kayla is on the 5:00 PM pickup from Avery soccer practice today, but is at (Client call|Kayla dentist) until 5:30 PM/.test(t)), JSON.stringify(tlK.conflicts));
+  check('…to Ty it names her calendar, not her meeting', cText(tlTy, 'pickup').some((t) => /but is at something on Kayla’s calendar until 5:30 PM/.test(t)) && !JSON.stringify(tlTy.conflicts).includes('Client call'), JSON.stringify(tlTy.conflicts));
+  check('travel: 10 minutes from lunch Downtown to the review Uptown — blocks that don’t touch', cText(tlTy, 'travel').some((t) => /Ty has 10 minutes to get from Lunch with Sam at Downtown to Design review at Uptown studio today/.test(t)), JSON.stringify(cText(tlTy, 'travel')));
+  check('…and to Kayla, without Ty’s titles or places', cText(tlK, 'travel').some((t) => /Ty has 10 minutes to get from something on Ty’s calendar to something on Ty’s calendar today/.test(t)) && !/Downtown|Uptown|Lunch/.test(JSON.stringify(tlK.conflicts)), JSON.stringify(cText(tlK, 'travel')));
+  eq('the same place back to back is fine; a gap past the travel time is fine', tlTy.conflicts.filter((c) => c.kind === 'travel' && /Standup|Board/.test(c.text)).length, 0);
+  await ty.put('/api/hana/settings', { kidDayLimit: 2 });
+  const tlFull = (await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data;
+  check('a parent sets “full” at 2 → Avery’s Monday (math club, soccer, band) is a lot', cText(tlFull, 'full_day').some((t) => /is a lot for Avery: \d+ things \(Math club, /.test(t)), JSON.stringify(cText(tlFull, 'full_day')));
+  eq('…and Avery isn’t told her day is too full (that’s for the grown-ups)', (await avery.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.conflicts.some((c) => c.kind === 'full_day'), false);
+  await ty.put('/api/hana/settings', { kidDayLimit: 4, travelMinutes: 5 });
+  eq('a parent sets travel time to 5 minutes → the 10-minute hop is fine', (await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.conflicts.filter((c) => c.kind === 'travel').length, 0);
+  await ty.put('/api/hana/settings', { travelMinutes: 20 });
+  eq('settings: bad travel time / full-day limit → 400', [(await ty.put('/api/hana/settings', { travelMinutes: 500 })).status, (await ty.put('/api/hana/settings', { kidDayLimit: 1 })).status], [400, 400]);
+  const brief = (await ty.get('/api/hana/brief?kind=morning')).data;
+  const needs = brief.sections.find((s) => s.title === 'Needs a decision')?.items.map((i) => i.text) ?? [];
+  check('the morning brief carries them, in plain words, with the timeline as the source', needs.some((t) => /pickup from Avery soccer practice/.test(t)) && needs.some((t) => /10 minutes to get from/.test(t)) && brief.sections.find((s) => s.title === 'Needs a decision').items.every((i) => i.source === 'MyDay calendar + connected calendars'), JSON.stringify(needs));
+  await ty.put('/api/hana/settings', { muted: [] });
+  const watch = (await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 15)}`)).data;
+  const wItems = await sql("SELECT text FROM hana_items WHERE surface = 'watch' AND category = 'conflict' AND member_id = $1 AND (item_key LIKE 'pickup:%' OR item_key LIKE 'travel:%')", [tyId]);
+  check('the watch finds them too (once each)', wItems.some((w) => /pickup from Avery soccer practice/.test(w.text)) && wItems.some((w) => /10 minutes to get/.test(w.text)), JSON.stringify(watch));
+  await sql("UPDATE calendar_sources SET last_synced_at = now() - interval '5 hours' WHERE id = $1", [tySrc.id]);
+  check('a calendar not read for hours is said plainly', /Ty’s Google calendar hasn’t been read recently/.test((await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.stale ?? ''));
+  eq('Read now → fresh again', [(await ty.post(`/api/calendar/sources/${tySrc.id}/sync`)).status, (await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.stale], [200, null]);
+  eq('Ty shows details → Kayla sees the titles', [(await ty.patch(`/api/calendar/sources/${tySrc.id}`, { visibility: 'details' })).status, (await kayla.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.items.some((i) => i.title === 'Board meeting')], [200, true]);
+  icsFeeds.delete('/kayla-outlook.ics');
+  const kSrc = (await kayla.get('/api/calendar/sources')).data.sources.find((s) => s.member === 'Kayla');
+  const bad = (await kayla.post(`/api/calendar/sources/${kSrc.id}/sync`)).data;
+  eq('a calendar that stops answering keeps its last read and says why', [bad.sync.error, bad.sources.find((s) => s.id === kSrc.id).events], ['The calendar said no — the link may have been reset. Copy a fresh private link.', 1]);
+
+  // Leave the household as the later suites expect it.
+  for (const s of (await ty.get('/api/calendar/sources')).data.sources) await (s.member === 'Ty' ? ty : kayla).del(`/api/calendar/sources/${s.id}`);
+  eq('disconnecting takes their events off the timeline', [(await sql('SELECT COUNT(*)::int AS n FROM calendar_source_events'))[0].n, (await ty.get(`/api/calendar/timeline?from=${HANA_DAY}&to=${HANA_DAY}`)).data.items.filter((i) => i.id < 0).length], [0, 0]);
+  await sql("DELETE FROM hana_items WHERE surface = 'watch' AND (item_key LIKE 'pickup:%:%:%' OR item_key LIKE 'travel:%' OR item_key LIKE 'fullday:%')");
+}
+
 async function hanaRailChecks() {
   const tess = hanaIds.tess;
   const raw = (c, message) => c.post('/api/chat/companion', { message, clientId: `rail-${Math.random().toString(36).slice(2, 12)}` });
@@ -7261,7 +7372,7 @@ async function hanaWatchChecks() {
   const watchItems = async (memberId) => sql("SELECT category, item_key, text, pushed_at FROM hana_items WHERE surface = 'watch' AND member_id = $1 ORDER BY id", [memberId]);
 
   section('Hana H5 · settings: parent-set, both parents are admins, school-night quiet hours by default');
-  eq('defaults: quiet 9 PM–7 AM on school nights (Sun–Thu), $200 low-balance mark, bills 3 days ahead', (await ty.get('/api/hana/settings')).data, { quietStart: '21:00', quietEnd: '07:00', quietDays: [7, 1, 2, 3, 4], pausedUntil: null, muted: [], lowBalance: 200, billLeadDays: 3, kidNoteKinds: ['encouragement', 'reminder'] });
+  eq('defaults: quiet 9 PM–7 AM on school nights (Sun–Thu), $200 low-balance mark, bills 3 days ahead', (await ty.get('/api/hana/settings')).data, { quietStart: '21:00', quietEnd: '07:00', quietDays: [7, 1, 2, 3, 4], pausedUntil: null, muted: [], lowBalance: 200, billLeadDays: 3, kidNoteKinds: ['encouragement', 'reminder'], travelMinutes: 20, kidDayLimit: 4 });
   eq('kids can’t see or change them (403 ×2), nor run the watch', [(await evan.get('/api/hana/settings')).status, (await avery.put('/api/hana/settings', { muted: ['pickup'] })).status, (await evan.post('/api/hana/run-watch')).status], [403, 403, 403]);
   eq('a bad setting → 400', [(await ty.put('/api/hana/settings', { quietStart: '9pm' })).status, (await ty.put('/api/hana/settings', { muted: ['everything'] })).status], [400, 400]);
 
@@ -7271,7 +7382,7 @@ async function hanaWatchChecks() {
   const tyWatch = (await watchItems(hanaIds.Ty)).map((w) => w.text);
   check('same-day: nobody on Evan’s piano pickup today', tyWatch.includes('Nobody is on the pickup for Evan piano lesson at 4:00 PM today.'), JSON.stringify(tyWatch));
   check('tomorrow: nobody on Avery’s orthodontist pickup yet', tyWatch.includes('Nobody is on the pickup for Avery orthodontist tomorrow at 3:00 PM yet.'), JSON.stringify(tyWatch));
-  check('a conflict, in plain words', tyWatch.includes('Today has Avery soccer practice (3:30 PM) and Kayla dentist (4:30 PM) at the same time — Kayla can’t be at both. Someone has to pick.'), JSON.stringify(tyWatch));
+  check('a conflict, in plain words', tyWatch.includes('Kayla is on the 5:00 PM pickup from Avery soccer practice today, but is at Kayla dentist until 5:30 PM. Someone else may need to drive.'), JSON.stringify(tyWatch));
   check('each one went out by push', (await watchItems(hanaIds.Ty)).every((w) => w.pushed_at !== null));
   eq('Evan’s at-risk homework note went out too (once)', (await sql("SELECT count(*)::int AS n FROM hana_items WHERE surface = 'escalation' AND member_id = $1 AND pushed_at IS NOT NULL", [hanaIds.Ty]))[0].n, 1);
   eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
@@ -7374,7 +7485,7 @@ try {
   await stopServer();
   alertHook.close();
   // The errand fake store + look-alike site; their open keep-alive sockets would keep a passing run from exiting.
-  for (const s of [storeServer, phishServer, rssServer, registry]) {
+  for (const s of [storeServer, phishServer, rssServer, registry, icsServer]) {
     s.closeAllConnections();
     s.close();
   }

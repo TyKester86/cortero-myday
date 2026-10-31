@@ -23,7 +23,8 @@ import { logEvent } from '../events.js';
 import { HttpError } from '../http.js';
 import { listMembers } from '../members.js';
 import { CopyPolicyError, sendTo } from '../push.js';
-import { conflictsOn } from './brief.js';
+import { conflictOptions } from './brief.js';
+import { findConflicts } from './conflicts.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
@@ -41,6 +42,8 @@ const DEFAULTS: HanaSettings = {
   lowBalance: 200,
   billLeadDays: 3,
   kidNoteKinds: ['encouragement', 'reminder'],
+  travelMinutes: 20,
+  kidDayLimit: 4,
 };
 const KID_KINDS = ['encouragement', 'reminder'] as const;
 
@@ -53,10 +56,12 @@ interface SettingsRow {
   low_balance: string;
   bill_lead_days: number;
   kid_note_kinds: string[];
+  travel_minutes: number;
+  kid_day_limit: number;
 }
 
 export async function settingsOf(): Promise<HanaSettings> {
-  const { rows } = await pool.query<SettingsRow>('SELECT quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, kid_note_kinds FROM hana_settings LIMIT 1');
+  const { rows } = await pool.query<SettingsRow>('SELECT quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, kid_note_kinds, travel_minutes, kid_day_limit FROM hana_settings LIMIT 1');
   const r = rows[0];
   if (!r) return { ...DEFAULTS };
   return {
@@ -68,6 +73,8 @@ export async function settingsOf(): Promise<HanaSettings> {
     lowBalance: Number(r.low_balance),
     billLeadDays: r.bill_lead_days,
     kidNoteKinds: KID_KINDS.filter((k) => r.kid_note_kinds.includes(k)),
+    travelMinutes: r.travel_minutes,
+    kidDayLimit: r.kid_day_limit,
   };
 }
 
@@ -108,18 +115,29 @@ export async function saveSettings(v: Viewer, b: Record<string, unknown>): Promi
     if (!Array.isArray(b.kidNoteKinds) || b.kidNoteKinds.some((k) => !(KID_KINDS as readonly unknown[]).includes(k))) throw new HttpError(400, 'Notes to kids can be encouragement or reminders');
     next.kidNoteKinds = KID_KINDS.filter((k) => (b.kidNoteKinds as unknown[]).includes(k));
   }
+  if (b.travelMinutes !== undefined) {
+    const n = Number(b.travelMinutes);
+    if (!Number.isInteger(n) || n < 0 || n > 120) throw new HttpError(400, 'Travel time is 0–120 minutes');
+    next.travelMinutes = n;
+  }
+  if (b.kidDayLimit !== undefined) {
+    const n = Number(b.kidDayLimit);
+    if (!Number.isInteger(n) || n < 2 || n > 12) throw new HttpError(400, 'A full day is 2–12 things');
+    next.kidDayLimit = n;
+  }
   if (b.pauseHours !== undefined) {
     const h = Number(b.pauseHours);
     if (!Number.isFinite(h) || h < 0 || h > 24 * 14) throw new HttpError(400, 'Quiet her for up to 14 days');
     next.pausedUntil = h === 0 ? null : new Date(Date.now() + h * 3_600_000).toISOString();
   }
   await pool.query(
-    `INSERT INTO hana_settings (quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, kid_note_kinds, updated_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+    `INSERT INTO hana_settings (quiet_start, quiet_end, quiet_days, paused_until, muted, low_balance, bill_lead_days, kid_note_kinds, travel_minutes, kid_day_limit, updated_by, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, $11, $9, now())
      ON CONFLICT (household_id) DO UPDATE SET quiet_start = EXCLUDED.quiet_start, quiet_end = EXCLUDED.quiet_end, quiet_days = EXCLUDED.quiet_days,
        paused_until = EXCLUDED.paused_until, muted = EXCLUDED.muted, low_balance = EXCLUDED.low_balance,
-       bill_lead_days = EXCLUDED.bill_lead_days, kid_note_kinds = EXCLUDED.kid_note_kinds, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-    [next.quietStart, next.quietEnd, next.quietDays, next.pausedUntil, next.muted, next.lowBalance, next.billLeadDays, next.kidNoteKinds, v.me.id],
+       bill_lead_days = EXCLUDED.bill_lead_days, kid_note_kinds = EXCLUDED.kid_note_kinds,
+       travel_minutes = EXCLUDED.travel_minutes, kid_day_limit = EXCLUDED.kid_day_limit, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [next.quietStart, next.quietEnd, next.quietDays, next.pausedUntil, next.muted, next.lowBalance, next.billLeadDays, next.kidNoteKinds, v.me.id, next.travelMinutes, next.kidDayLimit],
   );
   return next;
 }
@@ -196,12 +214,13 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
         asOf: sched.asOf,
       });
     }
-    for (const { a, b, who } of conflictsOn(day)) {
+    for (const c of findConflicts(day, await conflictOptions((x) => (x === t ? 'today' : 'tomorrow')))) {
       findings.push({
-        key: `conflict:${a.eventId}:${b.eventId}:${d}`,
+        key: c.key,
         category: 'conflict',
-        text: `${d === t ? 'Today' : 'Tomorrow'} has ${a.title} (${clock(a.time)}) and ${b.title} (${clock(b.time)}) at the same time${who.length ? ` — ${who.join(' and ')} can’t be at both` : ''}. Someone has to pick.`,
-        sameDay: false,
+        text: c.text,
+        // A pickup nobody can make today is a same-day logistics failure (it gets through quiet hours).
+        sameDay: d === t && c.kind === 'pickup',
         subjectId: null,
         source: sched.source,
         asOf: sched.asOf,

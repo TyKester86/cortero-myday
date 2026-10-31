@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { CAL_REPEATS, type CalendarEvent, type CalendarEventFields, type CalendarFeedLink, type CalendarOccurrence, type CalendarResponse, type CalRepeat } from '@myday/shared';
+import { CAL_REPEATS, type CalendarEvent, type CalendarEventFields, type CalendarFeedLink, type CalendarOccurrence, type CalendarResponse, type CalRepeat, type FamilyTimeline } from '@myday/shared';
+import { ConnectedCalendars } from './ConnectedCalendars';
 import { api, useLoad } from '../../api';
 import { useConfirm } from '../../components/Confirm';
 import { day } from '../../dates';
@@ -59,6 +60,8 @@ export default function Calendar() {
   const [from, setFrom] = useState(isoToday());
   const to = plusDays(from, 60);
   const { data, error, reload } = useLoad<CalendarResponse>(`/api/calendar?from=${from}&to=${to}`);
+  // C2: the connected calendars' side of the same window (the timeline is a view; MyDay's events stay editable here).
+  const { data: tl, reload: reloadTl } = useLoad<FamilyTimeline>(`/api/calendar/timeline?from=${from}&to=${plusDays(from, 31)}`);
   const [who, setWho] = useState<number | null>(null);
   const [editing, setEditing] = useState<{ id: number | null; f: CalendarEventFields } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -70,6 +73,11 @@ export default function Calendar() {
   const shown = data.occurrences.filter((o) => who === null || o.people.length === 0 || o.people.some((p) => p.id === who));
   const byDay = new Map<string, CalendarOccurrence[]>();
   for (const o of shown) byDay.set(o.date, [...(byDay.get(o.date) ?? []), o]);
+  const whoName = who === null ? null : (members.find((m) => m.id === who)?.name ?? null);
+  const outside = (tl?.items ?? []).filter((i) => i.id < 0 && (whoName === null || i.people.includes(whoName)));
+  const outsideByDay = new Map<string, typeof outside>();
+  for (const i of outside) outsideByDay.set(i.date, [...(outsideByDay.get(i.date) ?? []), i]);
+  const days = [...new Set([...byDay.keys(), ...outsideByDay.keys()])].sort();
 
   const edit = (o: CalendarOccurrence): void => {
     const e = data.events.find((x) => x.id === o.eventId);
@@ -93,6 +101,22 @@ export default function Calendar() {
         <p className="muted" role="status">
           {msg}
         </p>
+      )}
+      {tl && tl.conflicts.length > 0 && (
+        <div className="card cal-conflicts" data-testid="cal-conflicts" role="status">
+          <b>Worth a look</b>
+          <ul>
+            {tl.conflicts.map((c) => (
+              <li key={c.key} data-testid={`cal-conflict-${c.kind}`}>
+                {c.text}
+              </li>
+            ))}
+          </ul>
+          <small className="muted">
+            From {tl.source}
+            {tl.stale ? ` · ${tl.stale}` : ''}
+          </small>
+        </div>
       )}
       {data.canEdit && !editing && (
         <button className="btn" data-testid="add-event" onClick={() => setEditing({ id: null, f: blank(isoToday()) })}>
@@ -129,11 +153,23 @@ export default function Calendar() {
       )}
 
       <div data-testid="agenda">
-        {byDay.size === 0 && <p className="muted">Nothing on the calendar for the next two months{who === null ? '' : ' for them'}.</p>}
-        {[...byDay.entries()].map(([d, list]) => (
+        {days.length === 0 && <p className="muted">Nothing on the calendar for the next two months{who === null ? '' : ' for them'}.</p>}
+        {days.map((d) => (
           <div key={d} className="cal-day">
             <h2 className={d === isoToday() ? 'cal-date today' : 'cal-date'}>{day(d)}</h2>
-            {list.map((o) => (
+            {(outsideByDay.get(d) ?? []).map((i) => (
+              <div key={`c${i.id}`} className="card cal-event connected" data-testid="cal-connected">
+                <span className="cal-time">{i.time ? `${clock(i.time)}${i.endTime ? ` – ${clock(i.endTime)}` : ''}` : 'All day'}</span>
+                <span className="cal-body">
+                  <b>{i.title}</b>
+                  <small className="muted">
+                    {i.from}
+                    {i.location && ` · ${i.location}`}
+                  </small>
+                </span>
+              </div>
+            ))}
+            {(byDay.get(d) ?? []).map((o) => (
               <button
                 key={`${o.eventId}-${d}`}
                 className="card cal-event"
@@ -166,6 +202,7 @@ export default function Calendar() {
           Later →
         </button>
       </div>
+      <ConnectedCalendars onChange={reloadTl} />
       {isAdult && data.feed && <Subscribe active={data.feed.active} onChange={reload} />}
     </section>
   );

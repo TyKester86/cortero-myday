@@ -32,6 +32,10 @@ export interface ScheduleItem {
   adultsOnly: boolean;
   pickup: boolean;
   pickupBy: string | null;
+  /** Where it comes from: MyDay's own calendar, or someone's connected calendar (labeled, never merged). */
+  from: string;
+  /** Someone's connected calendar shared as busy-only: the time is real, the title isn't shown. */
+  busy: boolean;
 }
 
 /** The calendar between two days. A child gets only events for them (or for everyone), never grown-ups-only ones. */
@@ -40,22 +44,76 @@ export async function scheduleFor(v: Viewer, from: DateStr, to: DateStr): Promis
   const occ = await occurrences(from, to, !v.parent, members);
   const mine = v.parent ? occ : occ.filter((o) => !o.adultsOnly && (!o.people.length || o.people.some((p) => p.id === v.me.id)));
   const { rows } = await pool.query<{ at: Date | null }>('SELECT max(updated_at) AS at FROM calendar_events');
+  const items: ScheduleItem[] = mine.map((o) => ({
+    eventId: o.eventId,
+    date: o.date,
+    time: o.startTime,
+    endTime: o.endTime,
+    title: o.title,
+    location: o.location,
+    people: o.people.map((p) => p.name),
+    adultsOnly: o.adultsOnly,
+    pickup: o.pickup,
+    pickupBy: o.pickupBy?.name ?? null,
+    from: SOURCE.calendar,
+    busy: false,
+  }));
+  // C2: connected calendars. A parent sees everyone's (others' busy-only ones as "Busy"); a child only their own.
+  const conn = await connectedFor(v, from, to, members);
+  if (!conn.sources.length) return fact(items, SOURCE.calendar, rows[0]?.at ?? new Date());
+  items.push(...conn.items);
+  items.sort((a, b) => a.date.localeCompare(b.date) || (a.time ?? '').localeCompare(b.time ?? '') || a.eventId - b.eventId);
+  const oldest = conn.sources.reduce<Date | null>((o, s) => (!s.synced ? o : !o || s.synced < o ? s.synced : o), null);
+  const behind = conn.sources.filter((s) => s.error || !s.synced || Date.now() - s.synced.getTime() > 3 * 3_600_000);
   return fact(
-    mine.map((o) => ({
-      eventId: o.eventId,
-      date: o.date,
-      time: o.startTime,
-      endTime: o.endTime,
-      title: o.title,
-      location: o.location,
-      people: o.people.map((p) => p.name),
-      adultsOnly: o.adultsOnly,
-      pickup: o.pickup,
-      pickupBy: o.pickupBy?.name ?? null,
-    })),
-    SOURCE.calendar,
-    rows[0]?.at ?? new Date(),
+    items,
+    SOURCE.timeline,
+    oldest ?? rows[0]?.at ?? new Date(),
+    behind.length ? `${behind.map((s) => s.label).join(', ')} ${behind.length === 1 ? 'hasn’t' : 'haven’t'} been read recently — times there may have changed` : null,
   );
+}
+
+async function connectedFor(
+  v: Viewer,
+  from: DateStr,
+  to: DateStr,
+  members: HouseholdMember[],
+): Promise<{ items: ScheduleItem[]; sources: Array<{ label: string; synced: Date | null; error: string | null }> }> {
+  const { rows: src } = await pool.query<{ id: number; member_id: number; label: string; visibility: 'busy' | 'details'; last_synced_at: Date | null; last_error: string | null }>(
+    'SELECT id, member_id, label, visibility, last_synced_at, last_error FROM calendar_sources' + (v.parent ? '' : ' WHERE member_id = $1'),
+    v.parent ? [] : [v.me.id],
+  );
+  if (!src.length) return { items: [], sources: [] };
+  const byId = new Map(members.map((m) => [m.id, m]));
+  const bySrc = new Map(src.map((s) => [s.id, s]));
+  const { rows } = await pool.query<{ id: number; source_id: number; starts_on: DateStr; start_time: string | null; end_time: string | null; title: string; location: string }>(
+    `SELECT id, source_id, starts_on::text AS starts_on, to_char(start_time, 'HH24:MI') AS start_time, to_char(end_time, 'HH24:MI') AS end_time, title, location
+       FROM calendar_source_events WHERE source_id = ANY($1::int[]) AND starts_on BETWEEN $2 AND $3`,
+    [src.map((s) => s.id), from, to],
+  );
+  const items = rows.flatMap((r): ScheduleItem[] => {
+    const s = bySrc.get(r.source_id);
+    const owner = s ? byId.get(s.member_id) : undefined;
+    if (!s || !owner) return [];
+    const busy = s.visibility === 'busy' && owner.id !== v.me.id;
+    return [
+      {
+        eventId: -r.id,
+        date: r.starts_on,
+        time: r.start_time,
+        endTime: r.end_time,
+        title: busy ? 'Busy' : r.title,
+        location: r.location,
+        people: [owner.name],
+        adultsOnly: false,
+        pickup: false,
+        pickupBy: null,
+        from: `${owner.name}’s ${s.label}`,
+        busy,
+      },
+    ];
+  });
+  return { items, sources: src.map((s) => ({ label: `${byId.get(s.member_id)?.name ?? 'Someone'}’s ${s.label}`, synced: s.last_synced_at, error: s.last_error })) };
 }
 
 /* ---------- homework ---------- */

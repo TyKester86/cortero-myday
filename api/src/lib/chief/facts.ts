@@ -8,6 +8,7 @@ import { config } from '../../config.js';
 
 export const SOURCE = {
   calendar: 'MyDay calendar',
+  timeline: 'MyDay calendar + connected calendars',
   homework: 'Homework list',
   chores: 'Chores & points',
   bills: 'Bills (your list)',

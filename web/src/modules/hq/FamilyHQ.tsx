@@ -224,6 +224,16 @@ function HanaSettingsCard() {
           </select>
         </label>
       </div>
+      <div className="row">
+        <label>
+          Time to get between two places{' '}
+          <input type="number" min={0} max={120} step={5} value={f.travelMinutes} onChange={(e) => setDraft({ ...f, travelMinutes: Number(e.target.value) })} data-testid="hq-travel" /> min
+        </label>
+        <label>
+          A kid’s day is full past{' '}
+          <input type="number" min={2} max={12} value={f.kidDayLimit} onChange={(e) => setDraft({ ...f, kidDayLimit: Number(e.target.value) })} data-testid="hq-kid-day" /> things
+        </label>
+      </div>
       <fieldset className="row">
         <legend className="small">Notes you send the kids can be</legend>
         {(['encouragement', 'reminder'] as const).map((k) => (
@@ -240,7 +250,7 @@ function HanaSettingsCard() {
       </fieldset>
       <div className="row">
         {draft && (
-          <button type="button" className="btn small" onClick={() => void save({ quietStart: f.quietStart, quietEnd: f.quietEnd, quietDays: f.quietDays, muted: f.muted, lowBalance: f.lowBalance, billLeadDays: f.billLeadDays, kidNoteKinds: f.kidNoteKinds })} data-testid="hq-settings-save">
+          <button type="button" className="btn small" onClick={() => void save({ quietStart: f.quietStart, quietEnd: f.quietEnd, quietDays: f.quietDays, muted: f.muted, lowBalance: f.lowBalance, billLeadDays: f.billLeadDays, kidNoteKinds: f.kidNoteKinds, travelMinutes: f.travelMinutes, kidDayLimit: f.kidDayLimit })} data-testid="hq-settings-save">
             Save
           </button>
         )}

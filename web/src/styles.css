@@ -750,3 +750,10 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .voice-state { align-self: center; white-space: nowrap; }
 .hana-trail { margin: 0.35rem 0 0; padding-left: 1.1rem; font-size: 0.82rem; color: var(--muted, #6b7280); }
 .hana-trail li + li { margin-top: 0.15rem; }
+
+/* C2: connected calendars on the agenda, conflicts on top */
+.cal-event.connected { border-style: dashed; cursor: default; }
+.cal-conflicts ul { margin: 0.35rem 0; padding-left: 1.1rem; display: grid; gap: 0.3rem; }
+.cal-sources { list-style: none; padding: 0; margin: 0.4rem 0; display: grid; gap: 0.5rem; }
+.cal-sources li { display: grid; gap: 0.2rem; }
+.cal-source-form { display: grid; gap: 0.5rem; }

@@ -3289,4 +3289,53 @@ export interface HanaSettings {
   billLeadDays: number;
   /** What a grown-up's note to a child may be (never a plain note). */
   kidNoteKinds: Array<'encouragement' | 'reminder'>;
+  /** C2: minutes to get between two different places (until live traffic is connected). */
+  travelMinutes: number;
+  /** C2: a child's day is over-full past this many timed things. */
+  kidDayLimit: number;
+}
+
+/* ---------- C2: connected calendars + the family timeline ---------- */
+
+export type CalendarSourceKind = 'google' | 'outlook' | 'apple' | 'school' | 'other';
+
+/** Someone's outside calendar, read-only. The private address is never sent back — only a hint. */
+export interface CalendarSource {
+  id: number;
+  member: string;
+  memberKey: string;
+  kind: CalendarSourceKind;
+  label: string;
+  hint: string;
+  /** busy: the rest of the family sees only "Busy" at those times. */
+  visibility: 'busy' | 'details';
+  lastSyncedAt: string | null;
+  error: string | null;
+  events: number;
+}
+
+export interface TimelineItem {
+  /** Positive: a MyDay event; negative: a connected calendar's. */
+  id: number;
+  date: DateStr;
+  time: string | null;
+  endTime: string | null;
+  title: string;
+  location: string;
+  people: string[];
+  /** "MyDay calendar" or "Ty’s Google calendar" — sources stay labeled. */
+  from: string;
+  busy: boolean;
+  pickup: boolean;
+  pickupBy: string | null;
+}
+
+export interface FamilyTimeline {
+  from: DateStr;
+  to: DateStr;
+  source: string;
+  asOf: string;
+  stale: string | null;
+  items: TimelineItem[];
+  conflicts: Array<{ key: string; kind: 'overlap' | 'pickup' | 'travel' | 'full_day'; date: DateStr; text: string }>;
 }

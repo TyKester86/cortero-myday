@@ -82,6 +82,7 @@ export type EventName =
   | 'hana_watch_sent'
   | 'hana_report'
   | 'hana_couldnt'
+  | 'calendar_connected'
   | 'hana_voice'
   | 'hana_note_read'
   | 'feed_api_refresh_reuse';

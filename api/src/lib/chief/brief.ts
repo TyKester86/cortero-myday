@@ -19,6 +19,7 @@ import { logEvent } from '../events.js';
 import { listMembers } from '../members.js';
 import { SOURCE, type Fact, type SourceName } from './facts.js';
 import { billsDue, choresFor, homeworkFor, scheduleFor, type ScheduleItem } from './tools.js';
+import { findConflicts, type ConflictOptions } from './conflicts.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -43,29 +44,14 @@ const mins = (t: string): number => {
   return h * 60 + m;
 };
 
-/** Two timed events that overlap and share someone (an event for everyone shares with all). */
-export function conflictsOn(events: ScheduleItem[]): Array<{ a: ScheduleItem; b: ScheduleItem; who: string[] }> {
-  const timed = events.filter((e) => e.time);
-  const out: Array<{ a: ScheduleItem; b: ScheduleItem; who: string[] }> = [];
-  for (let i = 0; i < timed.length; i++)
-    for (let j = i + 1; j < timed.length; j++) {
-      const a = timed[i] as ScheduleItem;
-      const b = timed[j] as ScheduleItem;
-      if (a.date !== b.date) continue;
-      const aEnd = a.endTime ? mins(a.endTime) : mins(a.time as string) + 60;
-      const bEnd = b.endTime ? mins(b.endTime) : mins(b.time as string) + 60;
-      if (!(mins(a.time as string) < bEnd && mins(b.time as string) < aEnd)) continue;
-      // Shared people, or a pickup driver who is also needed at the other one.
-      const pa = new Set([...a.people, ...(a.pickupBy ? [a.pickupBy] : [])]);
-      const pb = new Set([...b.people, ...(b.pickupBy ? [b.pickupBy] : [])]);
-      const everyone = !a.people.length || !b.people.length;
-      const who = [...pa].filter((p) => pb.has(p));
-      if (who.length || (everyone && a.title !== b.title)) out.push({ a, b, who });
-    }
-  return out;
+/** The conflict engine's household settings, and who the children are. */
+export async function conflictOptions(dayLabel: (d: DateStr) => string): Promise<ConflictOptions> {
+  const { rows } = await pool.query<{ travel: number; limit: number }>('SELECT travel_minutes AS travel, kid_day_limit AS limit FROM hana_settings LIMIT 1');
+  const kids = (await listMembers()).filter((m) => m.kind === 'kid').map((m) => m.name);
+  return { travelMinutes: rows[0]?.travel ?? 20, kidDayLimit: rows[0]?.limit ?? 4, kids, dayLabel };
 }
 
-function scheduleDrafts(v: Viewer, f: Fact<ScheduleItem[]>, d: DateStr, label: string): { schedule: Draft[]; pickups: Draft[]; conflicts: Draft[] } {
+function scheduleDrafts(v: Viewer, f: Fact<ScheduleItem[]>, d: DateStr, label: string, opts: ConflictOptions): { schedule: Draft[]; pickups: Draft[]; conflicts: Draft[] } {
   const events = f.data.filter((e) => e.date === d);
   const base = { source: f.source, asOf: f.asOf, check: f.stale };
   const schedule: Draft[] = [];
@@ -106,16 +92,16 @@ function scheduleDrafts(v: Viewer, f: Fact<ScheduleItem[]>, d: DateStr, label: s
       subjectId: null,
       headsUp: !e.pickupBy,
     }));
-  const conflicts: Draft[] = conflictsOn(events).map(({ a, b, who }) => ({
-    ...base,
-    key: `conflict:${a.eventId}:${b.eventId}:${d}`,
-    category: 'conflict' as const,
-    text: v.parent
-      ? `${dayName(d)} has ${a.title} (${span(a)}) and ${b.title} (${span(b)}) at the same time${who.length ? ` — ${who.join(' and ')} can’t be at both` : ''}. Someone has to pick.`
-      : `${a.title} and ${b.title} overlap ${label} — a grown-up will help you sort it out.`,
-    subjectId: null,
-    headsUp: true,
-  }));
+  const conflicts: Draft[] = findConflicts(events, opts)
+    .filter((c) => v.parent || c.kidText)
+    .map((c) => ({
+      ...base,
+      key: c.key,
+      category: 'conflict' as const,
+      text: v.parent ? c.text : (c.kidText as string),
+      subjectId: null,
+      headsUp: true,
+    }));
   return { schedule, pickups, conflicts };
 }
 
@@ -233,7 +219,7 @@ export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
   const sections: Array<{ title: string; drafts: Draft[] }> = [];
   if (kind === 'morning') {
     const cal = await scheduleFor(v, t, t);
-    const s = scheduleDrafts(v, cal, t, 'today');
+    const s = scheduleDrafts(v, cal, t, 'today', await conflictOptions(dayName));
     sections.push({ title: v.parent ? 'Today, person by person' : 'Your day', drafts: s.schedule });
     sections.push({ title: v.parent ? 'Pickups & handoffs' : 'Rides', drafts: s.pickups });
     sections.push({ title: v.parent ? 'Needs a decision' : 'Heads up', drafts: s.conflicts });
@@ -243,7 +229,7 @@ export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
   } else if (kind === 'evening') {
     const tm = addDays(t, 1);
     const cal = await scheduleFor(v, tm, tm);
-    const s = scheduleDrafts(v, cal, tm, 'tomorrow');
+    const s = scheduleDrafts(v, cal, tm, 'tomorrow', await conflictOptions(dayName));
     const unowned = s.pickups.filter((p) => p.headsUp);
     sections.push({ title: v.parent ? 'Nobody’s on these yet' : 'Rides to sort out', drafts: v.parent ? [...unowned, ...s.conflicts] : unowned });
     sections.push({ title: 'Tomorrow', drafts: [...s.schedule, ...s.pickups.filter((p) => !p.headsUp)] });
