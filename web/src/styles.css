@@ -757,3 +757,8 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .cal-sources { list-style: none; padding: 0; margin: 0.4rem 0; display: grid; gap: 0.5rem; }
 .cal-sources li { display: grid; gap: 0.2rem; }
 .cal-source-form { display: grid; gap: 0.5rem; }
+
+/* C4: loops about to break stand out; C1: noise is quiet */
+.loop { display: grid; gap: 0.2rem; }
+.loop.past, .loop.today { border-left: 3px solid var(--accent); padding-left: 0.5rem; }
+.pill.mail-noise { opacity: 0.6; }

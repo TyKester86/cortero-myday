@@ -9,6 +9,7 @@ import { addDays, today } from '../dates.js';
 import { logEvent } from '../events.js';
 import { scheduleFor } from './tools.js';
 import { requireParent, type Viewer } from './scope.js';
+import { loopLedger } from './loops.js';
 
 export type FamilyReport = HanaFamilyReport;
 
@@ -75,6 +76,7 @@ export async function familyReport(v: Viewer, month: string): Promise<FamilyRepo
     wrong: wrong.map((w) => ({ date: w.shown_on, surface: w.surface, text: w.text, source: w.source })),
     gaps: gaps.map((g) => ({ date: g.shown_on, category: g.category, text: g.text })),
     tasteMisses: taste.map((t) => ({ date: t.shown_on, text: t.text })),
+    loops: await loopLedger(v, month),
   };
 }
 
@@ -92,6 +94,9 @@ export function reportEmail(r: FamilyReport, publicUrl: string): { subject: stri
     ...(r.wins.length ? ['What went well:', ...r.wins.map((w) => `  • ${w}`), ''] : []),
     'Where Hana was wrong:',
     ...(r.wrong.length ? r.wrong.map((w) => `  • ${w.date}: ${w.text}`) : ['  • Nothing marked wrong.']),
+    '',
+    `Open loops: ${r.loops.opened} opened, ${r.loops.closedOnTime} closed on time, ${r.loops.broken.length} broken`,
+    ...r.loops.broken.map((b) => `  • ${b.what} (due ${b.due}) — ${b.cost}`),
     '',
     'What Hana couldn’t do:',
     ...(r.gaps.length ? r.gaps.map((g) => `  • ${g.date}: ${g.text}`) : ['  • Nothing this month.']),

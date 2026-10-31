@@ -29,6 +29,7 @@ import { provenance, SOURCE } from './chief/facts.js';
 import { crisisIn, escalateCrisis } from './chief/guard.js';
 import { viewerOf } from './chief/scope.js';
 import { balances, billsDue, choresFor, feedInbox, healthFor, homeworkFor, scheduleFor } from './chief/tools.js';
+import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 
 interface ToolDef<S extends z.ZodType> {
   name: string;
@@ -760,6 +761,40 @@ export const HANA_TOOLS = [
       return `Logged for the family report as one of this month’s gaps. Prepared instead: ${i.prepared ?? 'nothing yet'}.`;
     },
   }),
+  // ---------- C4: open loops ----------
+  def({
+    name: 'track_loop',
+    description:
+      'Track a commitment as an open loop — something someone owes by a date ("I’ll bring the check Thursday", "the school will send the form Friday"). ' +
+      'owed_by: "me", a household member’s name, or anyone else ("the school"). It is private to this grown-up unless they share it. Waits for their Confirm like every change.',
+    destructive: false,
+    schema: z.object({ what: z.string().min(1).max(200), owed_by: z.string().min(1).max(80), due: z.string().regex(DATE).nullable() }),
+    json: {
+      type: 'object',
+      properties: { what: { type: 'string' }, owed_by: { type: 'string' }, due: { type: ['string', 'null'] } },
+      required: ['what', 'owed_by', 'due'],
+      additionalProperties: false,
+    },
+    summary: (i) => `Track: ${i.what} — ${/^(me|i)$/i.test(i.owed_by) ? 'you' : i.owed_by}${i.due ? `, by ${i.due}` : ''}`,
+    run: async (me, i) => {
+      const l = await openLoop(me, { what: i.what, owedBy: i.owed_by, due: i.due as DateStr | null, source: 'chat', private: true });
+      return l ? `Tracking it (only you can see it until you share it on Family HQ): ${l.what}${l.due ? `, due ${l.due}` : ''}.` : 'Already tracking that.';
+    },
+  }),
+  def({
+    name: 'open_loops',
+    description: 'The open loops this person can see — commitments not yet closed, about-to-break first, with who owes each, by when, and where it came from.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, additionalProperties: false },
+    summary: () => 'Look at the open loops',
+    run: async (me) => {
+      const loops = await loopsFor(viewerOf(me));
+      if (!loops.length) return 'No open loops.';
+      return `${provenance({ source: SOURCE.loops, asOf: new Date().toISOString(), stale: null })}\n${loops.map((l) => `- ${loopLine(l, false)} (${l.sourceLabel}${l.private ? ', private' : ''})`).join('\n')}`;
+    },
+  }),
   // ---------- destructive: proposed, then confirmed in the chat ----------
   def({
     name: 'delete_task',
@@ -866,6 +901,8 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
   if ((x = m.match(/^send (\w+) (?:an? )?(encouragement|reminder|note):\s*(.+)$/i))) return [{ name: 'draft_note', input: { to: x[1], kind: (x[2] ?? '').toLowerCase(), text: x[3] } }];
   if ((x = m.match(/^(?:can you |please )?call (?:the )?(.+?)\??$/i))) return [{ name: 'report_gap', input: { what: `Call the ${x[1]}`, tried: 'MyDay has no phone calling', category: 'connector', prepared: `The ${x[1]}’s question, ready for you to read out` } }];
   if (/^what['’]?s on (?:the )?calendar/i.test(m)) return [{ name: 'get_calendar', input: { from: null, days: 7 } }];
+  if ((x = m.match(/^(?:track:\s*)?(i|the \w+)(?:'ll|’ll| will) (.+?) by (\d{4}-\d{2}-\d{2})$/i))) return [{ name: 'track_loop', input: { what: x[2], owed_by: /^i$/i.test(x[1] ?? '') ? 'me' : x[1], due: x[3] } }];
+  if (/^what(?:['’]s| is) still open/i.test(m)) return [{ name: 'open_loops', input: {} }];
   if ((x = m.match(/^what['’]?s (?:the family|our) schedule(?: on (\d{4}-\d{2}-\d{2}))?(?: for (\d+) days?)?/i))) return [{ name: 'family_schedule', input: { from: x[1] ?? null, days: Number(x[2] ?? 1) } }];
   if ((x = m.match(/^what homework is due(?: for (\w+))?/i))) return [{ name: 'homework_status', input: { person: x[1] ?? null } }];
   if ((x = m.match(/^chores and points(?: for (\w+))?/i))) return [{ name: 'chores_and_points', input: { person: x[1] ?? null } }];

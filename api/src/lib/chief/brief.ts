@@ -20,6 +20,8 @@ import { listMembers } from '../members.js';
 import { SOURCE, type Fact, type SourceName } from './facts.js';
 import { billsDue, choresFor, homeworkFor, scheduleFor, type ScheduleItem } from './tools.js';
 import { findConflicts, type ConflictOptions } from './conflicts.js';
+import { loopLine, loopsFor } from './loops.js';
+import { openText } from '../seal.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -214,23 +216,59 @@ async function logItems(v: Viewer, kind: BriefKind, drafts: Draft[]): Promise<Br
 }
 
 /** The brief for this person: built from the tools, logged, returned. */
+/** C4: loops about to break (past their date, today, tomorrow) — the brief leads with these. */
+async function loopDrafts(v: Viewer, within: Array<'past' | 'today' | 'tomorrow'>): Promise<Draft[]> {
+  const loops = (await loopsFor(v)).filter((l) => l.breaking && within.includes(l.breaking) && (v.parent || l.mine));
+  return loops.map((l) => ({
+    key: `loop:${l.id}`,
+    category: 'loop' as const,
+    text: loopLine(l, !v.parent),
+    subjectId: null,
+    source: SOURCE.loops,
+    asOf: new Date().toISOString(),
+    check: l.source === 'email' ? 'Read from forwarded mail' : null,
+    headsUp: true,
+  }));
+}
+
+/** C1: the last day's mail, triaged — school, medical, money and logistics first; never the noise. Parents only. */
+async function mailDrafts(): Promise<Draft[]> {
+  const { rows } = await pool.query<{ id: number; class: string; summary_enc: Buffer; key_id: string; received_at: Date }>(
+    "SELECT id, class, summary_enc, key_id, received_at FROM inbox_emails WHERE summary_enc IS NOT NULL AND class <> 'noise' AND received_at > $1 ORDER BY array_position(ARRAY['school','medical','money','logistics','people'], class), received_at DESC LIMIT 6",
+    [new Date(Date.now() - 86_400_000)],
+  );
+  return rows.map((r) => ({
+    key: `mail:${r.id}`,
+    category: 'mail' as const,
+    text: `${r.class.charAt(0).toUpperCase()}${r.class.slice(1)} — ${openText(r.summary_enc, r.key_id)}`,
+    subjectId: null,
+    source: SOURCE.inbox,
+    asOf: r.received_at.toISOString(),
+    check: null,
+    headsUp: r.class !== 'people',
+  }));
+}
+
 export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
   const t = today();
   const sections: Array<{ title: string; drafts: Draft[] }> = [];
   if (kind === 'morning') {
     const cal = await scheduleFor(v, t, t);
     const s = scheduleDrafts(v, cal, t, 'today', await conflictOptions(dayName));
+    sections.push({ title: v.parent ? 'About to break' : 'Things you said you’d do', drafts: await loopDrafts(v, ['past', 'today', 'tomorrow']) });
     sections.push({ title: v.parent ? 'Today, person by person' : 'Your day', drafts: s.schedule });
     sections.push({ title: v.parent ? 'Pickups & handoffs' : 'Rides', drafts: s.pickups });
     sections.push({ title: v.parent ? 'Needs a decision' : 'Heads up', drafts: s.conflicts });
     sections.push({ title: v.parent ? 'Homework due today & tomorrow' : 'Homework', drafts: await homeworkDrafts(v, t, addDays(t, 1)) });
     if (v.parent) sections.push({ title: 'Bills due this week', drafts: await billDrafts(v) });
+    if (v.parent) sections.push({ title: 'From the inbox', drafts: await mailDrafts() });
     sections.push({ title: v.parent ? 'Chores & points' : 'Chores & points', drafts: await choreDrafts(v, t) });
   } else if (kind === 'evening') {
     const tm = addDays(t, 1);
     const cal = await scheduleFor(v, tm, tm);
     const s = scheduleDrafts(v, cal, tm, 'tomorrow', await conflictOptions(dayName));
     const unowned = s.pickups.filter((p) => p.headsUp);
+    sections.push({ title: v.parent ? 'Loops due tomorrow' : 'Due tomorrow from you', drafts: await loopDrafts(v, ['tomorrow']) });
     sections.push({ title: v.parent ? 'Nobody’s on these yet' : 'Rides to sort out', drafts: v.parent ? [...unowned, ...s.conflicts] : unowned });
     sections.push({ title: 'Tomorrow', drafts: [...s.schedule, ...s.pickups.filter((p) => !p.headsUp)] });
     sections.push({ title: 'Due tomorrow', drafts: await homeworkDrafts(v, tm, tm) });

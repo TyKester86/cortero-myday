@@ -3195,7 +3195,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3240,6 +3240,8 @@ export interface HanaFamilyReport {
   gaps: Array<{ date: DateStr; category: string; text: string }>;
   /** Suggestions that missed the family's taste (set aside or marked wrong). */
   tasteMisses: Array<{ date: DateStr; text: string }>;
+  /** C4: the month's loop ledger. */
+  loops: HanaLoopLedger;
 }
 
 /** One homework plan: start-by, ONE next action, progress (0 not started … 3 ready to hand in). */
@@ -3271,7 +3273,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3293,6 +3295,41 @@ export interface HanaSettings {
   travelMinutes: number;
   /** C2: a child's day is over-full past this many timed things. */
   kidDayLimit: number;
+}
+
+/* ---------- C4: open loops ---------- */
+
+/** A commitment being tracked: what, who owes it, by when, where it came from. Closes only on evidence. */
+export interface HanaLoop {
+  id: number;
+  what: string;
+  /** A household member's name, or anyone else ("the school"). */
+  owedBy: string;
+  owedByUs: boolean;
+  /** The viewer owes it. */
+  mine: boolean;
+  about: string | null;
+  due: DateStr | null;
+  source: 'chat' | 'manual' | 'calendar' | 'email';
+  sourceLabel: string;
+  /** Opened from a grown-up's own chat: theirs until shared. */
+  private: boolean;
+  open: boolean;
+  /** About to break: past its date, today, or tomorrow. */
+  breaking: 'past' | 'today' | 'tomorrow' | null;
+  daysPast: number;
+  openedAt: string;
+  closedAt: string | null;
+  closedBy: string | null;
+  /** How it closed: "Marked done by Ty", "A reply from school.example arrived …". */
+  evidence: string | null;
+}
+
+export interface HanaLoopLedger {
+  opened: number;
+  closedOnTime: number;
+  /** Closed after its date, or still open past it — with what the break cost, as a fact. */
+  broken: Array<{ what: string; due: DateStr; cost: string }>;
 }
 
 /* ---------- C2: connected calendars + the family timeline ---------- */

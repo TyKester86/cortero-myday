@@ -25,13 +25,14 @@ import { listMembers } from '../members.js';
 import { CopyPolicyError, sendTo } from '../push.js';
 import { conflictOptions } from './brief.js';
 import { findConflicts } from './conflicts.js';
+import { detectCalendarLoops, loopLine, loopsFor } from './loops.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
 import { requireParent, viewerOf, type Viewer } from './scope.js';
 import { balances, billsDue, scheduleFor, type ScheduleItem } from './tools.js';
 
-export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework'];
+export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops'];
 
 const DEFAULTS: HanaSettings = {
   quietStart: '21:00',
@@ -247,6 +248,12 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
         });
       }
     }
+  }
+
+  // C4: calendar commitments become loops; a loop due today is worth a heads-up (once — past ones age in the brief).
+  await detectCalendarLoops(v);
+  for (const l of (await loopsFor(v)).filter((x) => x.breaking === 'today' && !x.private)) {
+    findings.push({ key: `loop:${l.id}`, category: 'loops', text: loopLine(l, false), sameDay: false, subjectId: null, source: SOURCE.loops, asOf: new Date().toISOString() });
   }
 
   // Crisis signals in the content she reads (calendar and homework text): never alone, never silently.

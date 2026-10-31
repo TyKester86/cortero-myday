@@ -16,6 +16,8 @@ interface InboxEmail {
   preview: string;
   at: string;
   items: InboxItem[];
+  class: 'school' | 'medical' | 'money' | 'logistics' | 'people' | 'noise' | null;
+  summary: string | null;
 }
 interface InboxResponse {
   address: string | null;
@@ -80,8 +82,18 @@ export default function Inbox() {
         <div key={m.id} className="card" data-testid="inbox-email">
           <div className="row">
             <b className="grow">{m.subject}</b>
+            {m.class && (
+              <span className={`pill mail-${m.class}`} data-testid="inbox-class">
+                {m.class === 'noise' ? 'Probably noise' : m.class.charAt(0).toUpperCase() + m.class.slice(1)}
+              </span>
+            )}
             <small className="muted">{when(m.at)}</small>
           </div>
+          {m.summary && (
+            <p className="small" data-testid="inbox-summary">
+              <b>Hana:</b> {m.summary}
+            </p>
+          )}
           <small className="muted">From {m.from || 'unknown'}</small>
           <p className="small" style={{ whiteSpace: 'pre-wrap' }}>
             {m.preview}

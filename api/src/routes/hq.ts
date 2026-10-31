@@ -18,6 +18,7 @@
  *     GET /api/hana/notes, POST /api/hana/notes/:id/read — notes delivered to you, in the app.
  *     GET /api/hana/log — parents: what Hana prepared, who approved or discarded it, when.
  * H7 Stage 1: POST /api/hana/voice — push-to-talk audio in, the words heard out (nothing sent).
+ * C4: GET/POST /api/hana/loops, POST /api/hana/loops/:id/(close|reopen|share) — open loops.
  */
 import express, { Router, type Request } from 'express';
 import type { DateStr } from '@myday/shared';
@@ -36,6 +37,7 @@ import { listMembers } from '../lib/members.js';
 import { coachFor, coachTarget, dismissNudge, refreshEscalations, setStep } from '../lib/chief/coach.js';
 import { runWatch, saveSettings, settingsOf } from '../lib/chief/watch.js';
 import { auditLog, draftFromEscalation, editDraft, markNoteRead, notesFor } from '../lib/hana.js';
+import { closeLoop, loopsFor, openLoop, reopenLoop, shareLoop } from '../lib/chief/loops.js';
 import { logEvent } from '../lib/events.js';
 import { rateLimiter } from '../lib/pin.js';
 import { transcriber } from '../lib/transcribe.js';
@@ -178,6 +180,30 @@ hqRouter.post('/api/hana/notes/:id/read', async (req, res) => {
 hqRouter.get('/api/hana/log', async (req, res) => {
   res.json({ log: await auditLog(self(req)) });
 });
+
+hqRouter.get('/api/hana/loops', async (req, res) => {
+  const v = viewerOf(self(req));
+  res.json({ loops: await loopsFor(v, req.query.closed === '1' ? { closedSince: addDays(today(), -30) } : {}) });
+});
+
+hqRouter.post('/api/hana/loops', async (req, res) => {
+  const v = viewerOf(self(req));
+  requireParent(v, 'Adding a loop');
+  const b = req.body as { what?: unknown; owedBy?: unknown; about?: unknown; due?: unknown; private?: unknown };
+  if (typeof b.what !== 'string' || typeof b.owedBy !== 'string' || !b.owedBy.trim()) throw new HttpError(400, 'Say what it is and who owes it');
+  const due = typeof b.due === 'string' && DATE.test(b.due) ? (b.due as DateStr) : null;
+  const loop = await openLoop(v.me, { what: b.what, owedBy: b.owedBy, about: typeof b.about === 'string' ? b.about : null, due, source: 'manual', private: b.private === true });
+  res.status(201).json({ loop });
+});
+
+for (const verb of ['close', 'reopen', 'share'] as const) {
+  hqRouter.post(`/api/hana/loops/:id/${verb}`, async (req, res) => {
+    const v = viewerOf(self(req));
+    const id = idParam(req.params.id);
+    const b = req.body as { note?: unknown; shared?: unknown };
+    res.json({ loop: verb === 'close' ? await closeLoop(v, id, b.note) : verb === 'reopen' ? await reopenLoop(v, id) : await shareLoop(v, id, b.shared !== false) });
+  });
+}
 
 // H7 Stage 1: only when someone holds the mic button (never always-listening); up to ~60 seconds.
 const VOICE_MAX = 3 * 1024 * 1024;

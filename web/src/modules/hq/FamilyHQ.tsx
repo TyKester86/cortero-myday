@@ -6,6 +6,7 @@ import { HanaBriefCard } from './HanaBrief';
 import { CoachCard } from './Coach';
 import { useSession } from '../../session';
 import { HanaLog, HqDraft } from './Notes';
+import { LoopsCard } from './Loops';
 
 const thisMonth = (): string => {
   const n = new Date();
@@ -122,6 +123,19 @@ function Report() {
           ) : (
             <p className="muted">Nothing marked wrong this month. Tap “That’s wrong” on anything she gets wrong — it shows up here.</p>
           )}
+          <h3>Open loops</h3>
+          <p data-testid="hq-loop-ledger">
+            {data.loops.opened} opened · {data.loops.closedOnTime} closed on time · {data.loops.broken.length} broken
+          </p>
+          {data.loops.broken.length > 0 && (
+            <ul>
+              {data.loops.broken.map((b, i) => (
+                <li key={i}>
+                  {b.what} (due {b.due}) — {b.cost}
+                </li>
+              ))}
+            </ul>
+          )}
           <h3>What Hana couldn’t do</h3>
           {data.gaps.length ? (
             <ul data-testid="hq-gaps">
@@ -161,7 +175,7 @@ const NIGHTS = [
   [5, 'Fri'],
   [6, 'Sat'],
 ] as const;
-const CATEGORY_LABEL: Record<HanaWatchCategory, string> = { pickup: 'Pickups nobody is on', conflict: 'Schedule conflicts', bills: 'Bills while money is low', homework: 'Homework at risk' };
+const CATEGORY_LABEL: Record<HanaWatchCategory, string> = { pickup: 'Pickups nobody is on', conflict: 'Schedule conflicts', bills: 'Bills while money is low', homework: 'Homework at risk', loops: 'Loops due today' };
 
 /** Either parent can tune her down, change the thresholds, or quiet her. */
 function HanaSettingsCard() {
@@ -284,6 +298,7 @@ export default function FamilyHQ() {
           ))}
         </div>
       )}
+      <LoopsCard />
       <HanaLog />
       <HanaSettingsCard />
       <Report />

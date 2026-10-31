@@ -20,6 +20,8 @@ import { listMembers, requireAdult } from '../lib/members.js';
 import { rateLimiter } from '../lib/pin.js';
 import { pushConfigured, sendTo } from '../lib/push.js';
 import { currentKeyId, openText, sealText } from '../lib/seal.js';
+import { triageEmail, type MailClass } from '../lib/extract.js';
+import { closeOnReply, openLoop } from '../lib/chief/loops.js';
 
 export const inboxRouter = Router();
 /** The inbound-email webhook: public (the shared secret is in the URL), outside /api. */
@@ -43,6 +45,9 @@ export interface InboxEmail {
   preview: string;
   at: string;
   items: InboxItem[];
+  /** C1 triage: the household class and Hana's one-line summary (null for mail from before triage). */
+  class: MailClass | null;
+  summary: string | null;
 }
 export interface InboxResponse {
   address: string | null;
@@ -58,8 +63,8 @@ async function currentAddress(): Promise<string | null> {
 }
 
 async function inbox(): Promise<InboxResponse> {
-  const { rows } = await pool.query<{ id: number; from_addr: string; subject_enc: Buffer; body_enc: Buffer; key_id: string; received_at: Date }>(
-    'SELECT id, from_addr, subject_enc, body_enc, key_id, received_at FROM inbox_emails ORDER BY received_at DESC, id DESC LIMIT 50',
+  const { rows } = await pool.query<{ id: number; from_addr: string; subject_enc: Buffer; body_enc: Buffer; key_id: string; received_at: Date; class: MailClass | null; summary_enc: Buffer | null }>(
+    'SELECT id, from_addr, subject_enc, body_enc, key_id, received_at, class, summary_enc FROM inbox_emails ORDER BY received_at DESC, id DESC LIMIT 50',
   );
   const ids = rows.map((r) => r.id);
   const { rows: items } = await pool.query<InboxItem & { email_id: number }>(
@@ -76,6 +81,8 @@ async function inbox(): Promise<InboxResponse> {
       preview: openText(r.body_enc, r.key_id).slice(0, 240),
       at: r.received_at.toISOString(),
       items: items.filter((i) => i.email_id === r.id).map(({ id, kind, summary, status }) => ({ id, kind, summary, status })),
+      class: r.class,
+      summary: r.summary_enc ? openText(r.summary_enc, r.key_id) : null,
     })),
   };
 }
@@ -167,16 +174,27 @@ inboundRouter.post('/inbound/email', express.json({ limit: '2mb' }), async (req,
     return;
   }
   const n = await inHousehold(hh, async () => {
-    const { rows: cnt } = await pool.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM inbox_emails WHERE received_at > now() - interval '1 day'");
+    const { rows: cnt } = await pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM inbox_emails WHERE received_at > $1', [new Date(Date.now() - 86_400_000)]);
     if ((cnt[0]?.n ?? 0) >= MAX_PER_DAY) return -1;
     const keyId = currentKeyId();
-    const { rows } = await pool.query<{ id: number }>('INSERT INTO inbox_emails (from_addr, subject_enc, body_enc, key_id) VALUES ($1, $2, $3, $4) RETURNING id', [
+    const { rows } = await pool.query<{ id: number }>('INSERT INTO inbox_emails (from_addr, subject_enc, body_enc, key_id, received_at) VALUES ($1, $2, $3, $4, $5) RETURNING id', [
       mail.from,
       sealText(mail.subject || '(no subject)', keyId),
       sealText(mail.text, keyId),
       keyId,
+      new Date(),
     ]);
     const emailId = rows[0]?.id ?? 0;
+    // C1: triage (mail is data, never instructions), then what it commits us to becomes open loops (C4).
+    const tri = await triageEmail(mail, today());
+    await pool.query('UPDATE inbox_emails SET class = $2, summary_enc = $3 WHERE id = $1', [emailId, tri.class, sealText(tri.summary, keyId)]);
+    // A reply from someone who owed us something is the evidence that closes it (before this mail's own promises open).
+    await closeOnReply(mail.from, new Date());
+    const domain = mail.from.match(/@([\w.-]+)/)?.[1]?.toLowerCase() ?? 'unknown';
+    const sender = mail.from.match(/^\s*"?([^"<]+?)"?\s*</)?.[1]?.trim() || domain;
+    for (const [k, c] of tri.commitments.entries()) {
+      await openLoop(null, { what: c.what, owedBy: c.owedBy === 'us' ? 'the family' : sender, due: c.due, source: 'email', sourceRef: `mail:${domain}:${c.owedBy}:${emailId}:${k}` });
+    }
     const items = await suggestFromEmail(mail, today());
     for (const s of items) await pool.query('INSERT INTO inbox_items (email_id, kind, data, summary) VALUES ($1, $2, $3, $4)', [emailId, s.kind, JSON.stringify(s.data), s.summary]);
     if (items.length && pushConfigured()) {

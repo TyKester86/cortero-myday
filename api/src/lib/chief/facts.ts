@@ -16,6 +16,8 @@ export const SOURCE = {
   feed: 'The Feed (outside content)',
   health: 'Workout plan & habits',
   family: 'Household members',
+  loops: 'Open loops',
+  inbox: 'Forwarded mail',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 
