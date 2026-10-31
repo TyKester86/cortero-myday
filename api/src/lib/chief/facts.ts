@@ -20,6 +20,7 @@ export const SOURCE = {
   inbox: 'Forwarded mail',
   papers: 'Papers & the vault',
   money: 'Linked bank + your bills, debts and funds',
+  care: 'Your medications, care schedule & calendar',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 

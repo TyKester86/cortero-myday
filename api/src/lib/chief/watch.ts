@@ -28,13 +28,14 @@ import { findConflicts } from './conflicts.js';
 import { detectCalendarLoops, loopLine, loopsFor } from './loops.js';
 import { expiryBucket, expiryLine, listVault } from './papers.js';
 import { moneyWatch } from './money.js';
+import { healthWatch } from './healthops.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
 import { requireParent, viewerOf, type Viewer } from './scope.js';
 import { balances, billsDue, scheduleFor, type ScheduleItem } from './tools.js';
 
-export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry', 'money'];
+export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry', 'money', 'health'];
 
 const DEFAULTS: HanaSettings = {
   quietStart: '21:00',
@@ -268,6 +269,9 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
 
   // Q6: the money watch — payments and a predicted overdraft as loops (fix prepared), utilization, capture checks, the 24-hour list.
   findings.push(...(await moneyWatch(parents)));
+
+  // Q8: health logistics — a refill running low and recurring care coming due are loops; each said once.
+  findings.push(...(await healthWatch(parents)));
 
   // Crisis signals in the content she reads (calendar and homework text): never alone, never silently.
   await crisisScan(members, sched.data);

@@ -5191,6 +5191,17 @@ async function uiGate() {
     await wipe.selectOption({ index: 1 });
     check('“Forget everything about…” asks first, in the page', await memCard.getByTestId('family-memory-wipe-yes').waitFor({ timeout: 5000 }).then(() => true, () => false));
     await memCard.getByRole('button', { name: 'Keep it' }).click();
+    // C7: the health logistics card — a medication with its supply says how long it lasts.
+    const careCard = kpg.getByTestId('hq-care');
+    await careCard.getByLabel('Whose medication').selectOption({ index: 1 });
+    await careCard.getByLabel('Medication name').fill('UI test drops');
+    await careCard.getByLabel('Supply on hand').fill('20');
+    await careCard.getByLabel('How many a day').fill('2');
+    await careCard.getByTestId('med-add').click();
+    const drops = careCard.getByTestId('med').filter({ hasText: 'UI test drops' });
+    check('Family HQ: a medication with its supply shows how long it lasts', await drops.waitFor({ timeout: 10000 }).then(async () => /About 10 days left/.test(await drops.innerText()), () => false));
+    await drops.getByRole('button', { name: 'Remove' }).click();
+    check('…and is removed', await drops.waitFor({ state: 'detached', timeout: 10000 }).then(() => true, () => false));
     await kpg.goto(`${BASE}/health`); // the next checks pick up on the Health page
 
     section('body builds in the browser: food math shown, deload on demand (in-page), weigh-ins opt-in, teen view');
@@ -6947,6 +6958,7 @@ async function hanaBrainSuite() {
     await hanaPapersChecks();
     await hanaMoneyChecks();
     await hanaMemoryChecks();
+    await hanaHealthChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7348,6 +7360,125 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaHealthChecks() {
+  const tess = hanaIds.tess;
+  const RAIL = 'Here’s what your records show; a clinician is the right call for anything medical.';
+  const pending = (r) => (r.actions ?? []).filter((a) => a.status === 'pending');
+  const confirm = async (c, r) => {
+    for (const a of pending(r)) await c.post(`/api/hana/actions/${a.id}/confirm`);
+  };
+  const healthLoops = async (c = ty) => (await c.get('/api/hana/loops')).data.loops.filter((l) => l.source === 'health');
+
+  section('Hana Q8 (C7) · medications are the grown-ups’ — as the family entered them, never read into');
+  eq('kids can’t add or see medications or the care schedule', [
+    (await avery.post('/api/health/medications', { memberId: hanaIds.Avery, name: 'x' })).status,
+    (await avery.post('/api/health/care', { memberId: hanaIds.Avery, what: 'x', everyMonths: 6 })).status,
+    ((d) => [d.medications.length, d.care.length])((await avery.get('/api/health/logistics')).data),
+  ], [403, 403, [0, 0]]);
+  await ty.post('/api/health/medications', { memberId: hanaIds.Evan, name: 'Albuterol inhaler', dose: '2 puffs', schedule: 'as in his asthma plan' });
+  await ty.post('/api/health/medications', { memberId: hanaIds.Evan, name: 'Cetirizine', dose: '5 mg', schedule: 'once at bedtime', perDay: 1, supply: 10, supplyOn: '2026-10-29', refillsLeft: 2, pharmacy: 'CVS on Main' });
+  let meds = (await kayla.post('/api/health/medications', { memberId: hanaIds.Kayla, name: 'Levothyroxine', dose: '50 mcg', schedule: 'mornings', perDay: 1, supply: 3, refillsLeft: 0, prescriber: 'Dr. Kim' })).data.medications;
+  const med = (name) => meds.find((m) => m.name === name);
+  eq('no supply entered → she says so and doesn’t guess', [med('Albuterol inhaler').status, med('Albuterol inhaler').low], ['Add the supply on hand and how many a day, and she’ll watch for the refill.', false]);
+  eq('…with the supply: what’s left today and the day it runs out (10 from Oct 29, 1 a day)', (({ left, runsOut, daysLeft, low, status }) => [left, runsOut, daysLeft, low, status])(med('Cetirizine')), [6, '2026-11-08', 6, true, 'About 6 days left (runs out about Sun, Nov 8). 2 refills left.']);
+  eq('dose and schedule are kept exactly as written', [med('Cetirizine').dose, med('Cetirizine').schedule], ['5 mg', 'once at bedtime']);
+
+  section('Hana Q8 · a prescription running low is a loop (C4), days early — not a surprise');
+  let loops = await healthLoops();
+  eq('two refill loops, due two days before the supply ends (or today), owed by the family', loops.map((l) => [l.what, l.due]).sort(), [
+    ['Ask Dr. Kim for a new prescription for Kayla’s Levothyroxine — no refills left, about 3 days of supply', '2026-11-03'],
+    ['Refill Evan’s Cetirizine — about 6 days left (runs out about Sun, Nov 8); CVS on Main', '2026-11-06'],
+  ].sort());
+  eq('…kids see none of the family’s medication loops', (await healthLoops(avery)).length, 0);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 15)}`);
+  const said = await sql("SELECT item_key, text FROM hana_items WHERE surface = 'watch' AND category = 'health' ORDER BY item_key");
+  check('the watch says each low supply once, to the parents', said.some((x) => /^Refill Evan’s Cetirizine/.test(x.text)) && said.some((x) => /Levothyroxine/.test(x.text)), JSON.stringify(said));
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 16)}`);
+  eq('…once, not every pass', (await sql("SELECT count(*)::int AS n FROM hana_items WHERE surface = 'watch' AND category = 'health'"))[0].n, said.length);
+
+  section('Hana Q8 · a logged refill is the evidence that closes it — through Hana, with a Confirm');
+  let r = await hanaSay(ty, 'log refill Evan’s Cetirizine 30');
+  eq('a refill through Hana waits for Confirm', [pending(r).map((a) => a.tool), (await healthLoops()).length], [['log_refill'], 2]);
+  await confirm(ty, r);
+  meds = (await ty.get('/api/health/logistics')).data.medications;
+  eq('…confirmed: 6 left + 30 = 36 days, one fewer refill', [med('Cetirizine').left, med('Cetirizine').runsOut, med('Cetirizine').refillsLeft, med('Cetirizine').low], [36, '2026-12-08', 1, false]);
+  const closed = (await ty.get('/api/hana/loops?closed=1')).data.loops.find((l) => /^Refill Evan’s Cetirizine/.test(l.what));
+  eq('…and the loop closed on that evidence', [closed?.open, closed?.evidence], [false, 'A refill of 30 was logged by Ty on Mon, Nov 2']);
+  eq('kids can’t log a refill', (await avery.post(`/api/health/medications/${med('Cetirizine').id}/refill`, { amount: 5 })).status, 403);
+
+  section('Hana Q8 · recurring care: due and unbooked is a loop; a booked visit closes it');
+  let care = (await ty.post('/api/health/care', { memberId: hanaIds.Avery, what: 'dental cleaning', everyMonths: 6, lastOn: '2026-05-20' })).data.care;
+  care = (await ty.post('/api/health/care', { memberId: hanaIds.Evan, what: 'yearly physical', everyMonths: 12, lastOn: '2025-11-10' })).data.care;
+  eq('the next one is worked out from the last (6 and 12 months on)', care.map((c) => [c.member, c.dueOn, c.booked]).sort(), [['Avery', '2026-11-20', null], ['Evan', '2026-11-10', null]]);
+  loops = await healthLoops();
+  check('booking each is a loop with the rhythm shown', loops.some((l) => l.what === 'Book Avery’s dental cleaning — due by Fri, Nov 20 (every 6 months; last Wed, May 20)' && l.due === '2026-11-20') && loops.some((l) => /^Book Evan’s yearly physical — due by Tue, Nov 10/.test(l.what)), JSON.stringify(loops.map((l) => l.what)));
+  const dent = (await ty.post('/api/calendar/events', { title: 'Avery dentist cleaning', startsOn: '2026-11-04', startTime: '15:30', location: 'Main St Dental', people: [hanaIds.Avery] })).data;
+  care = (await ty.get('/api/health/logistics')).data.care;
+  eq('the appointment on the calendar counts as booked', care.find((c) => c.member === 'Avery').status, 'Booked: Avery dentist cleaning on Wed, Nov 4.');
+  const dl = (await ty.get('/api/hana/loops?closed=1')).data.loops.find((l) => /^Book Avery’s dental cleaning/.test(l.what));
+  eq('…and its loop closed on that evidence', [dl?.open, dl?.evidence], [false, 'Booked: Avery dentist cleaning on Wed, Nov 4']);
+  check('a visit that doesn’t match isn’t guessed as booked (Evan’s check-up ≠ his physical)', care.find((c) => c.member === 'Evan').booked === null);
+
+  section('Hana Q8 · questions for the visit — a kid adds their own, never a sibling’s');
+  const peds = (await sql("SELECT id FROM calendar_events WHERE household_id = 1 AND title = 'Evan pediatrician check-up'"))[0].id;
+  const avKey = `${dent.id}:2026-11-04`;
+  const pedKey = `${peds}:2026-11-06`;
+  eq('a parent adds a question to Evan’s check-up', (await ty.post(`/api/health/visits/${encodeURIComponent(pedKey)}/questions`, { question: 'Should we bring the school asthma form?' })).status, 201);
+  eq('Avery adds a question for her own visit', (await avery.post(`/api/health/visits/${encodeURIComponent(avKey)}/questions`, { question: 'Can I get the purple bands?' })).status, 201);
+  eq('…but not to Evan’s', (await avery.post(`/api/health/visits/${encodeURIComponent(pedKey)}/questions`, { question: 'x', member: 'Evan' })).status, 404);
+  r = await hanaSay(ty, 'ask the doctor for Evan: Is the cetirizine still the right dose as he grows?');
+  eq('a question through Hana waits for Confirm', [pending(r).map((a) => a.summary), (await sql("SELECT count(*)::int AS n FROM visit_questions WHERE question LIKE 'Is the cetirizine%'"))[0].n], [['Add to Evan’s next appointment: “Is the cetirizine still the right dose as he grows?”'], 0]);
+  await confirm(ty, r);
+  const [hq] = await sql("SELECT on_date::text AS d FROM visit_questions WHERE question LIKE 'Is the cetirizine%'");
+  check('…confirmed, it lands in the pack for Evan’s next appointment on the calendar', !!hq && (await ty.get(`/api/health/prep?date=${hq.d}`)).data.packs.some((p) => p.member === 'Evan' && p.questions.some((q) => /cetirizine/.test(q.question))), JSON.stringify(hq));
+
+  section('Hana Q8 · the prep pack: the visit, the records the family entered, the questions — per person, role-scoped');
+  await ty.post('/api/hana/family-memory', { fact: 'allergic to tree nuts (EpiPen in his backpack)', kind: 'medical', aboutId: hanaIds.Evan });
+  let pk = (await ty.get('/api/health/prep?date=2026-11-06')).data.packs;
+  eq('Evan’s pack (a parent): the visit, the question, both medications as entered, the family memory’s medical basics, the rail', [
+    pk.length, pk[0].member, pk[0].time.slice(0, 5), pk[0].questions.some((q) => q.question === 'Should we bring the school asthma form?'), pk[0].medications.map((m) => [m.name, m.dose, m.schedule]).sort(),
+    pk[0].records.some((x) => x.what === 'allergic to tree nuts (EpiPen in his backpack)' && x.from === 'Family memory'), pk[0].rail,
+  ], [1, 'Evan', '09:30', true, [['Albuterol inhaler', '2 puffs', 'as in his asthma plan'], ['Cetirizine', '5 mg', 'once at bedtime']], true, RAIL]);
+  pk = (await avery.get('/api/health/prep?date=2026-11-04')).data.packs;
+  eq('Avery’s own pack: her visit and her question — no medication or records lists on a kid’s surface', [pk.length, pk[0].questions.map((q) => q.question), pk[0].medications, pk[0].records, pk[0].rail], [1, ['Can I get the purple bands?'], [], [], RAIL]);
+  eq('…and none of Evan’s', (await avery.get('/api/health/prep?date=2026-11-06')).data.packs.length, 0);
+
+  section('Hana Q8 · assembled the night before, in the evening brief');
+  // Tomorrow (Tue Nov 3) the calendar has Avery's orthodontist at 3:00 PM.
+  const eve = (await ty.get('/api/hana/brief?kind=evening')).data.sections.find((s) => s.title === 'Visits tomorrow — prep packs')?.items.map((i) => i.text) ?? [];
+  check('a parent’s evening brief carries tomorrow’s packs (Avery’s orthodontist among them)', eve.includes('Prep for Avery’s orthodontist at 15:00: no questions listed yet.') && eve.every((x) => x.startsWith('Prep for ')), JSON.stringify(eve));
+  const aEve = (await avery.get('/api/hana/brief?kind=evening')).data.sections.find((s) => s.title === 'Your appointment tomorrow')?.items.map((i) => i.text) ?? [];
+  check('…Avery’s carries hers, and only hers', aEve.includes('Prep for Avery’s orthodontist at 15:00: no questions listed yet.') && aEve.every((x) => x.startsWith('Prep for Avery’s')), JSON.stringify(aEve));
+  const said2 = (await hanaSay(ty, 'prep pack for 2026-11-06')).reply?.text ?? '';
+  check('Hana relays the pack from her tool, with the clinician line — organization, not interpretation', said2.includes('Evan: Evan pediatrician check-up on 2026-11-06 at 09:30') && said2.includes('Should we bring the school asthma form?') && said2.includes('Cetirizine 5 mg, once at bedtime') && said2.includes(RAIL), said2);
+
+  section('Hana Q8 · follow-ups are loops; the H8 rail is unchanged');
+  const fu = (await ty.post('/api/health/follow-ups', { memberId: hanaIds.Evan, what: 'book the 6-week recheck with Dr. Patel', due: '2026-12-14' })).data.loop;
+  eq('a follow-up the clinician asked for is a loop, dated', [fu?.what, fu?.due, fu?.source], ['Follow-up for Evan: book the 6-week recheck with Dr. Patel', '2026-12-14', 'health']);
+  const sym = (await hanaSay(ty, 'my son has had a fever and a rash since yesterday, what is it?')).reply?.text ?? '';
+  check('a symptom question still gets the records and “a clinician is the right call” — no model, no reading', sym.includes('A clinician is the right call.') && !sym.includes('[stub reply]'), sym);
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('the prep pack is read-only; questions and refills wait for a tap', ['health_prep', 'add_visit_question', 'log_refill'].map((x) => caps.tools.find((t) => t.name === x)?.tier), ['T0', 'T1', 'T1']);
+
+  section('Hana Q8 · it never leaves the household');
+  eq('another household sees none of it and can’t touch it', [
+    ((d) => [d.medications.length, d.care.length, d.visits.length])((await tess.get('/api/health/logistics')).data),
+    (await tess.post(`/api/health/medications/${med('Cetirizine').id}/refill`, { amount: 5 })).status,
+    (await tess.get('/api/health/prep?date=2026-11-06')).data.packs.length,
+    (await tess.post(`/api/health/visits/${encodeURIComponent(avKey)}/questions`, { question: 'x' })).status,
+  ], [[0, 0, 0], 404, 0, 404]);
+  eq('stopping a medication closes its loop on that evidence', await (async () => {
+    await kayla.del(`/api/health/medications/${med('Levothyroxine').id}`);
+    return (await ty.get('/api/hana/loops?closed=1')).data.loops.find((l) => /Levothyroxine/.test(l.what))?.evidence;
+  })(), 'Stopped tracking this medication');
+
+  for (const t of ['visit_questions', 'care_schedule', 'medications']) await sql(`DELETE FROM ${t}`);
+  await sql('DELETE FROM calendar_events WHERE id = $1', [dent.id]);
+  await sql("DELETE FROM open_loops WHERE source = 'health'");
+  await sql("DELETE FROM hana_items WHERE category = 'health'");
+  await sql("DELETE FROM hana_memories WHERE household_id = 1 AND shared");
 }
 
 async function hanaMemoryChecks() {
@@ -7922,7 +8053,7 @@ async function hanaWatchChecks() {
   eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
   eq('a second pass pushes nothing new (no loops)', (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data.pushed, 0);
   check('the watch alerts show on Family HQ', (await ty.get('/api/hana/alerts')).data.alerts.some((a) => a.kind === 'watch' && a.text.includes('Evan piano lesson')));
-  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money since Q6)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money'].includes(r.category)));
+  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money and health since Q6/Q8)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health'].includes(r.category)));
 
   section('Hana H5 · quiet hours: held on a school night, except a same-day logistics failure');
   await ty.post('/api/calendar/events', { title: 'Evan swim', startsOn: '2026-11-03', startTime: '16:00', endTime: '17:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });

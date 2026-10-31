@@ -34,6 +34,7 @@ import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
 import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
 import { holdWant } from '../routes/mind.js';
+import { addQuestion, CLINICIAN_LINE, logRefill, medByName, nextVisitFor, prepPacks, requireParentHealth } from './chief/healthops.js';
 import { aboutByName, addFamilyMemory, checkFact, correctMemory, editable, forgetMemory, MEMORY_KINDS, requireParent } from './chief/memory.js';
 
 interface ToolDef<S extends z.ZodType> {
@@ -758,6 +759,64 @@ export const HANA_TOOLS = [
     },
   }),
 
+  // ---------- C7: health logistics — organization only, never interpretation ----------
+  def({
+    name: 'health_prep',
+    description:
+      'READ-ONLY. The prep pack for a day’s appointments (default tomorrow), per person: the visit, the questions the family listed, medications as entered with their supply, ' +
+      'and records to bring (insurance card, medical papers, medical basics from the family memory). Organization only — relay it, never interpret it.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({ date: z.string().regex(DATE).nullable() }),
+    json: { type: 'object', properties: { date: { type: ['string', 'null'] } }, required: ['date'], additionalProperties: false },
+    summary: (i) => `Read the prep pack${i.date ? ` for ${i.date}` : ' for tomorrow'}`,
+    run: async (me, i) => {
+      const d = (i.date ?? addDays(today(), 1)) as DateStr;
+      const packs = await prepPacks(viewerOf(me), d);
+      const src = provenance({ source: SOURCE.care, asOf: new Date().toISOString(), stale: null });
+      if (!packs.length) return `No appointments on the calendar for ${d}.\n${src}`;
+      const lines = packs.map((p) =>
+        [
+          `${p.member}: ${p.title} on ${p.date}${p.time ? ` at ${p.time.slice(0, 5)}` : ''}${p.location ? `, ${p.location}` : ''}`,
+          p.questions.length ? `  Questions: ${p.questions.map((q) => q.question).join(' | ')}` : '  Questions: none listed yet',
+          ...(p.medications.length ? [`  Medications (as entered): ${p.medications.map((m) => `${m.name}${m.dose ? ` ${m.dose}` : ''}${m.schedule ? `, ${m.schedule}` : ''} — ${m.status}`).join(' | ')}`] : []),
+          ...(p.records.length ? [`  Bring/mention: ${p.records.map((r) => `${r.what} [${r.from}]`).join(' | ')}`] : []),
+        ].join('\n'),
+      );
+      return `${lines.join('\n')}\n${CLINICIAN_LINE}\n${src}`;
+    },
+  }),
+  def({
+    name: 'add_visit_question',
+    description: 'Add a question the family wants to ask at someone’s next appointment on the calendar (it goes in the prep pack). Write their question as they said it.',
+    destructive: false,
+    schema: z.object({ person: z.string().min(1).max(60), question: z.string().min(1).max(300) }),
+    json: { type: 'object', properties: { person: { type: 'string' }, question: { type: 'string' } }, required: ['person', 'question'], additionalProperties: false },
+    summary: (i) => `Add to ${i.person}’s next appointment: “${i.question}”`,
+    precheck: async (me, i) => void (await nextVisitFor(me, i.person)),
+    run: async (me, i) => {
+      const v = await nextVisitFor(me, i.person);
+      await addQuestion(me, v.key, i.person, i.question);
+      return `Added to the prep pack for ${v.title} on ${v.date}: “${i.question}”.`;
+    },
+  }),
+  def({
+    name: 'log_refill',
+    description: 'Log that a prescription was refilled (grown-ups): which medication, and how many came home. This closes its refill loop.',
+    destructive: false,
+    schema: z.object({ medication: z.string().min(1).max(120), amount: z.number().positive().max(10_000) }),
+    json: { type: 'object', properties: { medication: { type: 'string', description: 'e.g. "Evan’s albuterol"' }, amount: { type: 'number' } }, required: ['medication', 'amount'], additionalProperties: false },
+    summary: (i) => `Log a refill: ${i.medication} (${i.amount})`,
+    precheck: async (me, i) => {
+      requireParentHealth(me);
+      await medByName(i.medication);
+    },
+    run: async (me, i) => {
+      const m = await logRefill(me, (await medByName(i.medication)).id, i.amount);
+      return `Logged. ${m.member}’s ${m.name}: ${m.status}`;
+    },
+  }),
+
   // ---------- H2: the family board, read-only, every answer with its source and as-of ----------
   def({
     name: 'family_schedule',
@@ -1214,6 +1273,9 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
     return [{ name: 'remember_family', input: { fact: x[3], kind: (x[2] ?? 'note').toLowerCase(), about: x[1] ?? null } }];
   }
   if ((x = m.match(/^correct family memory #h(\d+): (.+)$/i))) return [{ name: 'correct_family_memory', input: { memory_id: Number(x[1]), fact: x[2] } }];
+  if ((x = m.match(/^prep pack(?: for (\d{4}-\d{2}-\d{2}))?$/i))) return [{ name: 'health_prep', input: { date: x[1] ?? null } }];
+  if ((x = m.match(/^ask the doctor for (\w+): (.+)$/i))) return [{ name: 'add_visit_question', input: { person: x[1], question: x[2] } }];
+  if ((x = m.match(/^log refill (.+?) (\d+)$/i))) return [{ name: 'log_refill', input: { medication: x[1], amount: Number(x[2]) } }];
   if ((x = m.match(/^forget family memory #h(\d+)/i))) return [{ name: 'forget_family_memory', input: { memory_id: Number(x[1]) } }];
   if ((x = m.match(/^plan (.+?)(?: on (Mon|Tue|Wed|Thu|Fri|Sat|Sun))?$/i))) return [{ name: 'plan_meal', input: { meal: x[1], day: x[2] ? x[2].slice(0, 1).toUpperCase() + x[2].slice(1, 3).toLowerCase() : null } }];
   if ((x = m.match(/^give (\w+) the chore (.+?) on ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[ ,]+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)(?: for (\d+) points)?$/i))) {

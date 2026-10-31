@@ -24,6 +24,7 @@ import { loopLine, loopsFor } from './loops.js';
 import { openText } from '../seal.js';
 import { expiryLine, listVault } from './papers.js';
 import { moneyBrief } from './money.js';
+import { packLine, prepPacks } from './healthops.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -288,6 +289,11 @@ export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
     sections.push({ title: v.parent ? 'Nobody’s on these yet' : 'Rides to sort out', drafts: v.parent ? [...unowned, ...s.conflicts] : unowned });
     sections.push({ title: 'Tomorrow', drafts: [...s.schedule, ...s.pickups.filter((p) => !p.headsUp)] });
     sections.push({ title: 'Due tomorrow', drafts: await homeworkDrafts(v, tm, tm) });
+    // C7: the prep pack for tomorrow's visits, assembled tonight (a kid's: their own visit).
+    sections.push({
+      title: v.parent ? 'Visits tomorrow — prep packs' : 'Your appointment tomorrow',
+      drafts: (await prepPacks(v, tm)).map((p) => ({ key: `prep:${p.visitKey}:${p.memberId ?? 0}`, category: 'health' as const, text: packLine(p), subjectId: p.memberId, source: SOURCE.care, asOf: p.asOf, check: null, headsUp: false })),
+    });
   } else {
     sections.push({ title: v.parent ? 'What changed in the family this week' : 'Your week', drafts: await changeDrafts(v) });
     const nextWeek = await scheduleFor(v, addDays(t, 1), addDays(t, 7));

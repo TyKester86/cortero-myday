@@ -3403,7 +3403,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3483,7 +3483,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3563,7 +3563,7 @@ export interface HanaLoop {
   mine: boolean;
   about: string | null;
   due: DateStr | null;
-  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document' | 'money';
+  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document' | 'money' | 'health';
   sourceLabel: string;
   /** Opened from a grown-up's own chat: theirs until shared. */
   private: boolean;
@@ -3663,4 +3663,73 @@ export interface FamilyMemory {
 export interface FamilyMemoryView {
   household: FamilyMemory[];
   kids: Array<{ id: number; name: string; memories: FamilyMemory[] }>;
+}
+
+/* ---------- C7: health logistics (organization only — never interpretation) ---------- */
+
+export interface Medication {
+  id: number;
+  memberId: number;
+  member: string;
+  /** Name, dose and schedule exactly as the family wrote them. */
+  name: string;
+  dose: string;
+  schedule: string;
+  perDay: number | null;
+  supply: number | null;
+  supplyOn: DateStr | null;
+  refillsLeft: number | null;
+  pharmacy: string;
+  prescriber: string;
+  active: boolean;
+  /** From the supply the family entered: what's left today and the day it runs out (null = not enough data to watch). */
+  left: number | null;
+  runsOut: DateStr | null;
+  daysLeft: number | null;
+  low: boolean;
+  status: string;
+}
+
+export interface CareItem {
+  id: number;
+  memberId: number;
+  member: string;
+  what: string;
+  everyMonths: number;
+  lastOn: DateStr | null;
+  dueOn: DateStr | null;
+  /** A matching appointment already on the calendar. */
+  booked: { date: DateStr; title: string } | null;
+  status: string;
+}
+
+export interface VisitQuestion {
+  id: number;
+  question: string;
+  addedBy: string | null;
+}
+
+/** The prep pack for one person's visit, assembled the night before. */
+export interface PrepPack {
+  visitKey: string;
+  date: DateStr;
+  time: string | null;
+  title: string;
+  location: string;
+  member: string;
+  memberId: number | null;
+  questions: VisitQuestion[];
+  /** Grown-ups only (a kid's pack carries the visit and their questions). */
+  medications: Array<{ name: string; dose: string; schedule: string; status: string }>;
+  records: Array<{ what: string; from: string }>;
+  /** H8, every time. */
+  rail: string;
+  source: string;
+  asOf: string;
+}
+
+export interface HealthLogistics {
+  medications: Medication[];
+  care: CareItem[];
+  visits: PrepPack[];
 }

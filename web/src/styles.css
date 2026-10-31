@@ -697,6 +697,9 @@ html.kb-open .app:not(.sidebar) .chat-app { height: var(--vv-h, 100dvh); }
 .mem-wipe { margin-top: 10px; }
 .inline.wrap { flex-wrap: wrap; }
 .inline.wrap input { flex: 1 1 200px; min-width: 0; }
+.care-logistics .med.low b { color: var(--hy-terra, inherit); }
+.prep-pack { display: block; }
+.prep-pack ul { margin: 4px 0; }
 /* Hana's replies: markdown rendered (never raw **). */
 .bubble.hana { white-space: normal; }
 .md > * { margin: 0; }

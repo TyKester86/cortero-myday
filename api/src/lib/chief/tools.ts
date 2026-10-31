@@ -282,7 +282,7 @@ export interface HealthDay {
   appointments: Array<{ date: DateStr; time: string | null; title: string }>;
 }
 
-const APPT = /\b(doctor|dr\.?|dentist|dental|clinic|appointment|appt|pediatric\w*|therap\w*|orthodont\w*|check-?up|vaccin\w*|physical|optometr\w*|eye exam|pharmacy|refill)\b/i;
+export const APPT = /\b(doctor|dr\.?|dentist|dental|clinic|appointment|appt|pediatric\w*|therap\w*|orthodont\w*|check-?up|vaccin\w*|physical|optometr\w*|eye exam|pharmacy|refill)\b/i;
 
 export async function healthFor(v: Viewer, who?: string | null): Promise<Fact<HealthDay[]>> {
   const people = await scopedMember(v, who);
