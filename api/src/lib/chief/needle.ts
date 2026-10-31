@@ -11,6 +11,7 @@ import { scheduleFor } from './tools.js';
 import { requireParent, type Viewer } from './scope.js';
 import { loopLedger } from './loops.js';
 import { moneyPhysical, usd } from '../money/mind.js';
+import { standingReport } from './standing.js';
 
 export type FamilyReport = HanaFamilyReport;
 
@@ -79,6 +80,7 @@ export async function familyReport(v: Viewer, month: string): Promise<FamilyRepo
     tasteMisses: taste.map((t) => ({ date: t.shown_on, text: t.text })),
     loops: await loopLedger(v, month),
     money: await moneyPhysical(),
+    standing: await standingReport(new Date(`${start}T00:00:00Z`), new Date(`${next}T00:00:00Z`)),
   };
 }
 
@@ -112,6 +114,7 @@ export function reportEmail(r: FamilyReport, publicUrl: string): { subject: stri
           ...(r.money.moves.length ? ['  The highest-value moves:', ...r.money.moves.map((x, i) => `    ${i + 1}. ${x.text}`)] : []),
         ]
       : []),
+    ...(r.standing.length ? ['', 'Done under your standing OK:', ...r.standing.map((x) => `  • ${x.at.slice(0, 10)}: ${x.summary} — ${x.result}`)] : []),
     '',
     `The full report: ${publicUrl}/hq`,
   ];

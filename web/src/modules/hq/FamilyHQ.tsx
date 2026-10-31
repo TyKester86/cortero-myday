@@ -11,6 +11,7 @@ import { FamilyMemoryCard } from './FamilyMemory';
 import { CareLogisticsCard } from './CareLogistics';
 import { PeopleCard, ShieldCard } from './ShieldPeople';
 import { HouseCard } from './House';
+import { StandingCard } from './Standing';
 
 const thisMonth = (): string => {
   const n = new Date();
@@ -323,6 +324,7 @@ export default function FamilyHQ() {
       <CareLogisticsCard />
       <PeopleCard />
       <FamilyMemoryCard />
+      <StandingCard />
       <HanaLog />
       <HanaSettingsCard />
       <Report />

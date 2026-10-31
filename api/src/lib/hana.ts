@@ -35,6 +35,7 @@ import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } fro
 import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
 import { holdWant } from '../routes/mind.js';
 import { seenBy } from './chief/location.js';
+import { CLASSES as STANDING_CLASSES, covers, logExercise } from './chief/standing.js';
 import { inboxFor, replyTarget, requireAdultMsg, userIdOf } from './chief/messaging.js';
 import { sendDm } from '../routes/social.js';
 import { HOUSE_ACTIONS, houseStatus, planCommand, requireParentHouse, runCommand, stormLines, stormPlan } from './chief/house.js';
@@ -1520,6 +1521,24 @@ export function hanaKit(me: HouseholdMember, taken: HanaAction[], onStep: (step:
       // H6 rail: everything that changes MyDay is a proposal until a grown-up confirms it.
       if (!tool.readOnly || tool.destructive) {
         if (tool.precheck) await tool.precheck(me, parsed.data);
+        // Q10 (T3): a parent's standing grant covers this exact action — it runs now, logged as T3.
+        const cls = held ? null : await covers(name, parsed.data as Record<string, unknown>, me);
+        if (cls) {
+          let res: string;
+          let st: 'done' | 'failed' = 'done';
+          try {
+            res = await tool.run(me, parsed.data);
+          } catch (e) {
+            st = 'failed';
+            res = e instanceof HttpError ? e.message : 'That action failed';
+          }
+          const id = await logExercise(me.id, name, parsed.data as Record<string, unknown>, cls, summary, st, res);
+          const { rows: done } = await pool.query<ActionRow>('SELECT id, tool, summary, status, result, input FROM hana_actions WHERE id = $1', [id]);
+          if (done[0]) taken.push(toAction(done[0]));
+          await logEvent('hana_action', { tool: name, status: st, tier: 'T3' }, me.id);
+          const label = STANDING_CLASSES.find((c) => c.key === cls)?.label ?? cls;
+          return st === 'done' ? `Done under the family’s standing OK (“${label}”): ${res} Say so if it should be undone.` : `Tried under the standing OK (“${label}”) and it failed: ${res}`;
+        }
         const { rows } = await pool.query<ActionRow>(
           'INSERT INTO hana_actions (member_id, tool, input, summary, origin) VALUES ($1, $2, $3, $4, $5) RETURNING id, tool, summary, status, result, input',
           [me.id, name, JSON.stringify(parsed.data), summary, origin],
@@ -1763,7 +1782,7 @@ export async function auditLog(me: HouseholdMember, before: number | null = null
   return rows.map((r) => ({
     id: r.id, at: r.created_at.toISOString(), proposedBy: r.by, tool: r.tool, summary: r.summary, status: r.status,
     decidedBy: r.decider, decidedAt: r.decided_at?.toISOString() ?? null, edited: r.edited, origin: r.origin,
-    tier: SENDS.has(r.tool) ? 'T2' : 'T1',
+    tier: r.origin === 'standing' ? 'T3' : SENDS.has(r.tool) ? 'T2' : 'T1',
     recipients: Array.isArray(r.input?.to) ? (r.input.to as string[]) : typeof r.input?.to === 'string' && r.tool === 'draft_note' ? [String(r.input.to)] : [],
   }));
 }
@@ -1795,6 +1814,7 @@ export function capabilities(): HanaCapabilities {
       'Everything that changes MyDay or leaves it waits for a grown-up’s OK, and is in this log.',
       'She starts a conversation only for a named reason you granted (or safety, or telling a kid what changed about them), inside quiet hours — everything else waits for the brief.',
       'She never listens on her own: every voice conversation starts with someone pressing to talk.',
+      'Standing authority (T3) covers only the named classes a parent granted — each earned by this family’s own record, revocable at once, every use logged. Moving or spending money is never one.',
     ],
   };
 }

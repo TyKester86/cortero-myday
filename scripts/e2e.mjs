@@ -7049,6 +7049,7 @@ async function hanaBrainSuite() {
     await hanaLocationChecks();
     await hanaMessagingChecks();
     await hanaInitiativeChecks();
+    await hanaStandingChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7450,6 +7451,76 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaStandingChecks() {
+  const tess = hanaIds.tess;
+  const cls = async (c = ty) => Object.fromEntries((await c.get('/api/hana/standing')).data.classes.map((x) => [x.key, x]));
+  const pending = (r) => (r.actions ?? []).filter((a) => a.status === 'pending');
+  // A clean slate for the record this suite earns (earlier suites' approvals don't count here).
+  await sql("DELETE FROM hana_actions WHERE household_id = 1 AND tool IN ('add_grocery_items', 'house_control')");
+
+  section('Hana Q10 (C3 T3) · standing authority is earned per class, by this family’s own record');
+  let c = await cls();
+  eq('two named classes; neither grantable on no record; it says exactly what’s missing', [Object.keys(c).sort(), c.groceries_to_list.record.eligible, c.groceries_to_list.record.missing], [['groceries_to_list', 'lock_up_at_night'], false, ['10 more approved as she drafted them']]);
+  const no = await ty.post('/api/hana/standing/groceries_to_list/grant');
+  eq('a grant before it’s earned is refused, with the reason', [no.status, no.data.error], [409, 'Not yet — “Add groceries to the shared list when a grown-up asks” is earned by this family’s own record: 10 more approved as she drafted them.']);
+  eq('kids can’t see or grant standing authority', [(await avery.get('/api/hana/standing')).status, (await avery.post('/api/hana/standing/groceries_to_list/grant')).status], [403, 403]);
+
+  section('Hana Q10 · money is never a class — no tier overrides it');
+  for (const k of ['pay_bills', 'move_money', 'send_groceries', 'run_errand', 'checkout_cart']) {
+    const r = await ty.post(`/api/hana/standing/${k}/grant`);
+    eq(`“${k}” can’t be granted`, [r.status, /money is never standing authority|isn’t a class/.test(r.data.error ?? '')], [400, true]);
+  }
+  check('…and the rail says so', (await ty.get('/api/hana/capabilities')).data.rails.some((r) => /Moving or spending money is never one/.test(r)));
+
+  section('Hana Q10 · earning it: ten approved as drafted, no recent failures');
+  for (let i = 0; i < 10; i++) await hanaSay(i % 2 ? ty : kayla, `add q10 item ${i} to the grocery list`);
+  c = await cls();
+  eq('ten approved as she drafted them → earned', [c.groceries_to_list.record.approvedAsIs, c.groceries_to_list.record.eligible], [10, true]);
+  const [f] = await sql("INSERT INTO hana_actions (household_id, member_id, tool, input, summary, status, result) VALUES (1, $1, 'add_grocery_items', '{}', 'x', 'failed', 'x') RETURNING id", [hanaIds.Ty]);
+  eq('…one recent failure and it isn’t, until 30 days pass', [(await cls()).groceries_to_list.record.eligible, (await cls()).groceries_to_list.record.missing], [false, ['no failures for 30 days (there was 1)']]);
+  await sql('DELETE FROM hana_actions WHERE id = $1', [f.id]);
+  await ty.post('/api/hana/standing/groceries_to_list/grant');
+  c = await cls();
+  eq('Ty grants it', [c.groceries_to_list.granted?.by], ['Ty']);
+
+  section('Hana Q10 · exercising it: done at once, logged as T3, in the report — and revocable at once');
+  let r = await hanaSay(kayla, 'add q10 oat milk to the grocery list');
+  eq('a grown-up’s request runs under the standing OK — no Confirm, said plainly', [pending(r).length, r.actions?.[0]?.status, /Done under the family’s standing OK \(“Add groceries to the shared list when a grown-up asks”\)/.test(r.reply.text)], [0, 'done', true]);
+  check('…it’s on the list', (await sql("SELECT 1 FROM grocery_items WHERE household_id = 1 AND item = 'q10 oat milk'")).length === 1);
+  const log = (await kayla.get('/api/hana/log')).data.log.find((l) => /q10 oat milk/.test(l.summary));
+  eq('…in the parents’ log as T3, origin standing', [log?.tier, log?.origin, log?.status], ['T3', 'standing', 'done']);
+  eq('…counted as a use', (await cls()).groceries_to_list.used, 1);
+  await kayla.post('/api/hana/standing/groceries_to_list/revoke');
+  eq('Kayla revokes it: the next one waits for a tap again', pending(await kayla.post('/api/chat/companion', { message: 'add q10 bread to the grocery list', clientId: 'q10-bread' }).then((x) => x.data)).map((a) => a.tool), ['add_grocery_items']);
+
+  section('Hana Q10 · “Lock up at night”: earned from approved locks; she locks — never unlocks — and says so');
+  await ty.post('/api/house/connect', { url: `${REG}/ha`, token: HA_TOKEN });
+  for (let i = 0; i < 10; i++) {
+    haSet('lock.front_door', 'unlocked');
+    const a = pending(await hanaSay(ty, 'house lock front door'))[0];
+    await ty.post(`/api/hana/actions/${a.id}/confirm`);
+  }
+  c = await cls();
+  eq('ten approved locks → earned; Ty grants it', [c.lock_up_at_night.record.approvedAsIs, (await ty.post('/api/hana/standing/lock_up_at_night/grant')).status], [10, 200]);
+  haSet('lock.front_door', 'unlocked');
+  const before = haCalls.length;
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 20)}`); // 2 PM: not night
+  eq('in the day it doesn’t act (the class is “at night”)', [haGet('lock.front_door'), haCalls.length], ['unlocked', before]);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow('2026-11-03', 4)}`); // 10 PM
+  const told = (await sql("SELECT text FROM hana_items WHERE surface = 'watch' AND member_id = $1 AND item_key LIKE 'house:night:lock.front_door:%' ORDER BY id DESC LIMIT 1", [hanaIds.Ty]))[0]?.text;
+  eq('at night: locked, on Ty’s standing OK, and the parents are told what it reports', [haGet('lock.front_door'), told], ['locked', 'I locked the Front door at 10:00 PM under your standing OK (“Lock up at night”). It now reports: locked. Revoke it any time in Settings.']);
+  check('…logged as T3 under Ty (who granted it)', (await sql("SELECT 1 FROM hana_actions WHERE origin = 'standing' AND tool = 'house_control' AND member_id = $1 AND input->>'class' = 'lock_up_at_night' AND status = 'done'", [hanaIds.Ty])).length === 1);
+  const rep = (await ty.get('/api/hana/report?month=2026-11')).data;
+  check('both uses are in the parents’ monthly report', rep.standing.length === 2 && rep.standing.some((x) => x.class === 'lock_up_at_night') && rep.standing.some((x) => x.class === 'groceries_to_list'), JSON.stringify(rep.standing));
+  eq('another household has none of it, and can’t revoke ours', [Object.values(await cls(tess)).some((x) => x.granted), (await tess.post('/api/hana/standing/lock_up_at_night/revoke')).status, (await cls()).lock_up_at_night.granted?.by], [false, 200, 'Ty']);
+
+  await ty.post('/api/hana/standing/lock_up_at_night/revoke');
+  await ty.del('/api/house/connection');
+  await sql('DELETE FROM standing_grants');
+  await sql("DELETE FROM grocery_items WHERE household_id = 1 AND item LIKE 'q10 %'");
+  await sql("DELETE FROM hana_items WHERE category = 'house'");
 }
 
 async function hanaInitiativeChecks() {
@@ -8203,7 +8274,7 @@ async function hanaLadderChecks() {
   const caps = (await ty.get('/api/hana/capabilities')).data;
   eq('no tool moves money, signs, or deletes mail or events', caps.tools.filter((t) => /pay|transfer|money_move|move_money|wire|sign|delete_event|remove_event|delete_mail|delete_email|archive_mail/i.test(t.name) && !/^money_summary$/.test(t.name)).map((t) => t.name), []);
   eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'draft_message_reply', 'house_control', 'run_errand', 'send_groceries'], 'T0', 'T1']);
-  eq('…and the rails are stated', caps.rails.length, 7);
+  eq('…and the rails are stated', caps.rails.length, 8);
   eq('kids can’t see it', (await avery.get('/api/hana/capabilities')).status, 403);
   const kLog = (await kayla.get('/api/hana/log')).data.log;
   const row = kLog.find((l) => l.id === d.id);

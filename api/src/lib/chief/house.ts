@@ -242,11 +242,46 @@ export async function houseWatch(parents: HouseholdMember[], now: Date = new Dat
       });
     }
     if (d.kind === 'lock' && d.state === 'jammed') out.push({ ...base, key: `house:jam:${d.entityId}:${d.changedAt}`, sameDay: false, text: `The ${d.name} lock says it’s jammed (since ${clock(new Date(d.changedAt))}).` });
-    if (night && d.kind === 'garage' && d.open) out.push({ ...base, key: `house:night:${d.entityId}:${day}`, sameDay: false, text: `The ${d.name} is still open at ${clock(now)}. Want me to close it? I’ll only do it on your OK.` });
-    if (night && d.kind === 'lock' && d.state === 'unlocked') out.push({ ...base, key: `house:night:${d.entityId}:${day}`, sameDay: false, text: `The ${d.name} is unlocked at ${clock(now)}. Want me to lock it? I’ll only do it on your OK.` });
+    const atNight = night && ((d.kind === 'garage' && d.open) || (d.kind === 'lock' && d.state === 'unlocked'));
+    if (atNight) {
+      const action = d.kind === 'garage' ? 'close' : 'lock';
+      // Q10 (T3): with "Lock up at night" granted, she does it — on the granting parent's authority — and says so.
+      const done = await lockUp(d.name, action, now);
+      out.push({
+        ...base,
+        key: `house:night:${d.entityId}:${day}`,
+        sameDay: false,
+        text:
+          done ??
+          (d.kind === 'garage'
+            ? `The ${d.name} is still open at ${clock(now)}. Want me to close it? I’ll only do it on your OK.`
+            : `The ${d.name} is unlocked at ${clock(now)}. Want me to lock it? I’ll only do it on your OK.`),
+      });
+    }
   }
   if (s.stale && /can’t read/.test(s.stale)) out.push({ ...base, key: `house:down:${day}`, sameDay: false, text: s.stale });
   return out;
+}
+
+/** The "Lock up at night" class: run the one command, log it as T3, and return what to tell the parents (null = not granted). */
+async function lockUp(name: string, action: 'lock' | 'close', now: Date): Promise<string | null> {
+  const { activeGrant, covers, logExercise } = await import('./standing.js');
+  if (!(await covers('house_control', { action }, null))) return null;
+  const g = await activeGrant('lock_up_at_night');
+  const { rows } = await pool.query<{ id: number; name: string; kind: 'adult' | 'kid' }>("SELECT id, name, kind FROM household_members WHERE id = $1 AND kind = 'adult' AND archived_at IS NULL", [g?.granted_by ?? 0]);
+  const grantor = rows[0];
+  if (!grantor) return null;
+  const input = { device: name, action, value: null };
+  const summary = `House: ${action} ${name}`;
+  try {
+    const res = await runCommand({ id: grantor.id, name: grantor.name, kind: 'adult', key: '', age: null }, name, action, null);
+    await logExercise(grantor.id, 'house_control', input, 'lock_up_at_night', summary, 'done', res);
+    return `${action === 'lock' ? 'I locked' : 'I closed'} the ${name} at ${clock(now)} under your standing OK (“Lock up at night”). ${res.replace(/^Sent to the house: [^.]*\. /, '')} Revoke it any time in Settings.`;
+  } catch (e) {
+    const why = e instanceof HttpError ? e.message : 'the house didn’t answer';
+    await logExercise(grantor.id, 'house_control', input, 'lock_up_at_night', summary, 'failed', why);
+    return `I tried to ${action} the ${name} at ${clock(now)} under your standing OK, and it didn’t work (${why}). It’s still ${action === 'lock' ? 'unlocked' : 'open'}.`;
+  }
 }
 
 /* ---------- storm mode ---------- */

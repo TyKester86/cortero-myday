@@ -2199,9 +2199,9 @@ export interface HanaLogEntry {
   decidedBy: string | null;
   decidedAt: string | null;
   edited: boolean;
-  origin: 'chat' | 'watch' | 'coach' | 'voice';
-  /** C3: T1 = prepared for approval (a change to MyDay, or a draft); T2 = on approval, sent or filed outside MyDay. */
-  tier: 'T1' | 'T2';
+  origin: 'chat' | 'watch' | 'coach' | 'voice' | 'standing';
+  /** C3: T1 = prepared for approval (a change to MyDay, or a draft); T2 = on approval, sent or filed outside MyDay; T3 = done under a parent's standing grant. */
+  tier: 'T1' | 'T2' | 'T3';
   /** Who a send went (or would go) to — exactly what was approved. */
   recipients: string[];
 }
@@ -3450,6 +3450,8 @@ export interface HanaFamilyReport {
   tasteMisses: Array<{ date: DateStr; text: string }>;
   /** Q6: the money physical (null with no money set up). */
   money: MoneyPhysical | null;
+  /** Q10: every use of standing authority (T3) this month. */
+  standing: Array<{ class: string; summary: string; result: string; at: string }>;
   /** C4: the month's loop ledger. */
   loops: HanaLoopLedger;
 }
@@ -3911,4 +3913,29 @@ export interface InitiativeView {
   always: Array<'safety' | 'told'>;
   /** The last times she started a conversation, and why. */
   recent: Array<{ id: number; reason: InitiativeReason | 'safety' | 'told'; title: string; text: string; at: string }>;
+}
+
+/* ---------- Q10: Tier 3 — standing authority, earned per class ---------- */
+
+export type StandingClass = 'groceries_to_list' | 'lock_up_at_night';
+
+export interface StandingRecord {
+  /** Approved exactly as she drafted them, last 90 days. */
+  approvedAsIs: number;
+  edited: number;
+  discarded: number;
+  failedRecent: number;
+  eligible: boolean;
+  /** What this family's record still needs before the class can be granted. */
+  missing: string[];
+}
+
+export interface StandingClassView {
+  key: StandingClass;
+  label: string;
+  detail: string;
+  record: StandingRecord;
+  granted: { by: string | null; at: string } | null;
+  used: number;
+  lastUsed: string | null;
 }
