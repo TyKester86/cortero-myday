@@ -3403,7 +3403,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm' | 'message';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3483,7 +3483,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm' | 'location';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield' | 'house' | 'storm' | 'location' | 'messages';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3563,7 +3563,7 @@ export interface HanaLoop {
   mine: boolean;
   about: string | null;
   due: DateStr | null;
-  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document' | 'money' | 'health';
+  source: 'chat' | 'manual' | 'calendar' | 'email' | 'document' | 'money' | 'health' | 'message';
   sourceLabel: string;
   /** Opened from a grown-up's own chat: theirs until shared. */
   private: boolean;
@@ -3860,4 +3860,31 @@ export interface LocationSeen {
   lon: number | null;
   at: string | null;
   ago: string | null;
+}
+
+/* ---------- JP2: messaging — consent first ---------- */
+
+/** A connected message, as Hana keeps it: who, when, her line — never the full text. */
+export interface MessageItem {
+  id: number;
+  from: string;
+  fromUserId: number | null;
+  class: string;
+  summary: string;
+  /** From someone they don't follow yet (a message request). */
+  request: boolean;
+  /** The shield flagged it (see the warning). */
+  flagged: boolean;
+  at: string;
+}
+
+/** A kid's safety signals: to the parents only (never content), parent-set, disclosed, off by default. */
+export interface KidMessageSafety {
+  memberId: number;
+  member: string;
+  signalsOn: boolean;
+  setBy: string | null;
+  updatedAt: string | null;
+  /** Which kid messaging channel feeds it — none exists in MyDay yet. */
+  source: string | null;
 }

@@ -13,8 +13,9 @@ import { dossier, peopleView, requireParentPeople, ROLES, savePerson } from '../
 export const peopleRouter = Router();
 
 peopleRouter.get('/api/shield', async (req, res) => {
-  requireParentShield(self(req));
-  res.json({ alerts: await listAlerts(req.query.all === '1') });
+  const me = self(req);
+  requireParentShield(me);
+  res.json({ alerts: await listAlerts(me, req.query.all === '1') });
 });
 
 peopleRouter.post('/api/shield/:id/:verdict', async (req, res) => {

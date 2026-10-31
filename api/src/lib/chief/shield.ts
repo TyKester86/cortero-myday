@@ -144,9 +144,12 @@ export const requireParentShield = (me: HouseholdMember): void => {
   if (me.kind !== 'adult') throw new HttpError(403, 'The shield is for grown-ups');
 };
 
-export async function listAlerts(all = false): Promise<ShieldAlert[]> {
+/** A grown-up's warnings: the household's, and those about their own connected messages (JP2) — never another's. */
+export async function listAlerts(me: HouseholdMember, all = false): Promise<ShieldAlert[]> {
   const { rows } = await pool.query<{ id: number; kind: ShieldKind; email_id: number | null; about_member: number | null; text: string; signals: string[]; verdict: 'fine' | 'scam' | null; decided_by: number | null; created_at: Date }>(
-    `SELECT id, kind, email_id, about_member, text, signals, verdict, decided_by, created_at FROM shield_alerts ${all ? '' : 'WHERE verdict IS NULL'} ORDER BY created_at DESC, id DESC LIMIT 100`,
+    `SELECT id, kind, email_id, about_member, text, signals, verdict, decided_by, created_at FROM shield_alerts
+      WHERE (for_member IS NULL OR for_member = $1) ${all ? '' : 'AND verdict IS NULL'} ORDER BY created_at DESC, id DESC LIMIT 100`,
+    [me.id],
   );
   const names = new Map((await listMembers()).map((m) => [m.id, m.name]));
   return rows.map((r) => ({
@@ -164,20 +167,22 @@ export async function listAlerts(all = false): Promise<ShieldAlert[]> {
 
 export async function decideAlert(me: HouseholdMember, id: number, verdict: 'fine' | 'scam'): Promise<ShieldAlert> {
   requireParentShield(me);
-  const { rowCount } = await pool.query('UPDATE shield_alerts SET verdict = $2, decided_by = $3, decided_at = now() WHERE id = $1', [id, verdict, me.id]);
+  const { rowCount } = await pool.query('UPDATE shield_alerts SET verdict = $2, decided_by = $3, decided_at = now() WHERE id = $1 AND (for_member IS NULL OR for_member = $3)', [id, verdict, me.id]);
   if (!rowCount) throw new HttpError(404, 'Not found');
-  return (await listAlerts(true)).find((a) => a.id === id) as ShieldAlert;
+  return (await listAlerts(me, true)).find((a) => a.id === id) as ShieldAlert;
 }
 
 /** The watch: each open alert said once to the parents, the same day. */
-export async function shieldWatch(parents: HouseholdMember[]): Promise<Array<{ key: string; category: 'shield'; text: string; sameDay: boolean; subjectId: number | null; source: string; asOf: string; once: true }>> {
+export async function shieldWatch(parents: HouseholdMember[]): Promise<Array<{ key: string; category: 'shield'; text: string; to?: number[]; sameDay: boolean; subjectId: number | null; source: string; asOf: string; once: true }>> {
   if (!parents.length) return [];
   await bankScan();
-  const { rows } = await pool.query<{ id: number; text: string; kind: ShieldKind; about_member: number | null; created_at: Date }>(
-    'SELECT id, text, kind, about_member, created_at FROM shield_alerts WHERE verdict IS NULL AND created_at > $1 ORDER BY id',
+  const { rows } = await pool.query<{ id: number; text: string; kind: ShieldKind; about_member: number | null; created_at: Date; for_member: number | null }>(
+    'SELECT id, text, kind, about_member, created_at, for_member FROM shield_alerts WHERE verdict IS NULL AND created_at > $1 ORDER BY id',
     [new Date(Date.now() - 3 * 86_400_000)],
   );
   return rows.map((r) => ({
+    // A warning about one grown-up's own messages goes to them only.
+    ...(r.for_member !== null ? { to: [r.for_member] } : {}),
     key: `shield:${r.id}`,
     category: 'shield' as const,
     text: r.kind === 'money' || r.kind === 'account_security' ? r.text : `${r.text} ${NOTHING_BLOCKED}`,

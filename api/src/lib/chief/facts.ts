@@ -26,6 +26,7 @@ export const SOURCE = {
   house: 'Your Home Assistant',
   storm: 'National Weather Service alert for your area + MyDay calendar',
   location: 'Shared location (only what each person shares with you)',
+  messages: 'Your connected Messages (outside content)',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 

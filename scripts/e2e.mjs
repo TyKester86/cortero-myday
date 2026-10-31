@@ -7041,6 +7041,7 @@ async function hanaBrainSuite() {
     await hanaShieldChecks();
     await hanaHouseChecks();
     await hanaLocationChecks();
+    await hanaMessagingChecks();
   } finally {
     await startServer(noonOn('Sun')); // later suites run on the test week's Sunday
   }
@@ -7442,6 +7443,85 @@ async function hanaMoneyChecks() {
   await sql("DELETE FROM invest_accounts WHERE name = 'Ty 401(k)'");
   await sql("DELETE FROM open_loops WHERE source = 'money'");
   await sql("DELETE FROM hana_items WHERE category = 'money'");
+}
+
+async function hanaMessagingChecks() {
+  const tess = hanaIds.tess;
+  const pending = (r) => (r.actions ?? []).filter((a) => a.status === 'pending');
+  // A Feed profile only where there isn't one (never overwrite one an earlier suite made).
+  for (const [c, n] of [[ty, 'Ty'], [kayla, 'Kayla'], [tess, 'Tess']]) {
+    const uid = (await c.get('/api/me')).data.userId;
+    if (!(await sql('SELECT 1 FROM social_profiles WHERE user_id = $1', [uid])).length) await c.put('/api/community/profile', { displayName: n, adult: true, guidelines: true });
+  }
+  const tyUser = (await ty.get('/api/me')).data.userId;
+  const tessUser = (await tess.get('/api/me')).data.userId;
+  const tessName = (await sql('SELECT display_name FROM social_profiles WHERE user_id = $1', [tessUser]))[0].display_name;
+  const tySent0 = (await sql('SELECT count(*)::int AS n FROM dm_messages WHERE sender_user_id = $1', [tyUser]))[0].n;
+  const tessSeen0 = (await sql("SELECT count(*)::int AS n FROM dm_messages WHERE sender_user_id = $1 AND status = 'visible'", [tessUser]))[0].n;
+  const dm = (body) => tess.post(`/api/social/messages/${tyUser}`, { body });
+  const items = async () => (await sql('SELECT member_id, from_name, flagged FROM message_items WHERE household_id = 1 ORDER BY id'));
+  const msgLoops = async (c) => (await c.get('/api/hana/loops')).data.loops.filter((l) => l.source === 'message');
+
+  section('Hana JP2 · messaging — consent first: nothing is read until a grown-up connects their own Messages');
+  await dm('Can you send me the carpool schedule by Friday?');
+  eq('not connected: Hana keeps nothing', (await items()).length, 0);
+  eq('kids can’t connect anything', (await avery.put('/api/messages/hana', { connected: true })).status, 403);
+  await ty.put('/api/messages/hana', { connected: true });
+  eq('Ty connects his own; Kayla’s stays off', [(await ty.get('/api/messages/hana')).data.connected, (await kayla.get('/api/messages/hana')).data.connected], [true, false]);
+
+  section('Hana JP2 · the C1 treatment: a line, and what it commits anyone to becomes Ty’s private loops');
+  await dm('Hi Ty! Please bring the snack list to practice on November 6. I will send the team photos by November 9.');
+  const inbox = (await ty.get('/api/messages/hana')).data.inbox;
+  check('Hana keeps who and her one line — not the full message', inbox[0]?.from === 'Tess' && /^Tess: /.test(inbox[0]?.summary ?? '') && inbox[0]?.request === true, JSON.stringify(inbox[0]));
+  let ml = (await msgLoops(ty)).map((l) => [l.owedBy, l.due, l.private]).sort();
+  eq('both commitments: Ty’s to bring the list (Nov 6), Tess’s to send the photos (Nov 9) — private to Ty', ml, [['Tess', '2026-11-09', true], ['Ty', '2026-11-06', true]]);
+  eq('Kayla sees none of Ty’s messages or loops', [(await msgLoops(kayla)).length, (await kayla.get('/api/messages/hana')).data.inbox.length], [0, 0]);
+  await dm('Here are the team photos — enjoy!');
+  const closed = (await ty.get('/api/hana/loops?closed=1')).data.loops.find((l) => l.source === 'message' && l.owedBy === 'Tess');
+  eq('her reply closes what she owed, on that evidence', [closed?.open, closed?.evidence], [false, 'A reply from Tess arrived in Messages']);
+
+  section('Hana JP2 · the shield reads messages too — a warning to Ty only; its asks never become to-dos');
+  const loopsBefore = (await msgLoops(ty)).length;
+  await dm('Grandpa it’s me, I got arrested. Please send $500 in gift cards right away and don’t tell anyone. Do it by tonight.');
+  const tyAlerts = (await ty.get('/api/shield')).data.alerts;
+  check('Ty is warned about the scam in his messages', tyAlerts.some((a) => a.kind === 'impersonation' && /^“Message from Tess” looks like a family-emergency scam/.test(a.text)), JSON.stringify(tyAlerts.map((a) => a.text)));
+  eq('…Kayla isn’t (it’s Ty’s message), and no loop came of it', [(await kayla.get('/api/shield')).data.alerts.some((a) => /Message from Tess/.test(a.text)), (await msgLoops(ty)).length], [false, loopsBefore]);
+  eq('…the message itself is still there for Ty (never blocked)', (await sql("SELECT count(*)::int AS n FROM dm_messages WHERE sender_user_id = $1 AND status = 'visible'", [tessUser]))[0].n, tessSeen0 + 4);
+
+  section('Hana JP2 · replies are drafts in the ladder (T2): only to someone who wrote, sent only on approval');
+  let r = await hanaSay(ty, 'my messages');
+  check('Hana reads Ty’s messages as outside content, with the flagged one called out', /<outside_content source="Messages">/.test(r.reply.text) && /FLAGGED by the shield: message from Tess/.test(r.reply.text) && pending(r).length === 0, r.reply.text);
+  r = await hanaSay(ty, 'reply to Tess: Thanks! I’ll bring the snack list Friday.');
+  eq('a reply is prepared, not sent', [pending(r).map((a) => a.tool), (await sql('SELECT count(*)::int AS n FROM dm_messages WHERE sender_user_id = $1', [tyUser]))[0].n], [['draft_message_reply'], tySent0]);
+  eq('…Kayla can’t approve Ty’s; a kid can’t', [(await kayla.post(`/api/hana/actions/${pending(r)[0].id}/confirm`)).status, (await avery.post(`/api/hana/actions/${pending(r)[0].id}/confirm`)).status], [404, 403]);
+  const sent = (await ty.post(`/api/hana/actions/${pending(r)[0].id}/confirm`)).data.action;
+  const thread = (await tess.get(`/api/social/messages/${tyUser}`)).data.messages;
+  eq('…approved: sent once, exactly as written, to Tess only', [sent.result, thread.filter((m) => !m.mine).map((m) => m.body).slice(-1)], [`Sent to ${tessName} in Messages.`, ['Thanks! I’ll bring the snack list Friday.']]);
+  eq('Hana can’t reply to someone who never wrote; Kayla (not connected) can’t reply at all', [pending(await hanaSay(ty, 'reply to Bob: hi')).length, pending(await hanaSay(kayla, 'reply to Tess: hi')).length], [0, 0]);
+  const caps = (await ty.get('/api/hana/capabilities')).data;
+  eq('reading is T0; a reply is T2', ['messages_inbox', 'draft_message_reply'].map((x) => caps.tools.find((t) => t.name === x)?.tier), ['T0', 'T2']);
+  check('the parents’ brief shows Ty his own messages (Kayla’s brief doesn’t)', ((await ty.get('/api/hana/brief?kind=morning')).data.sections.find((s) => s.title === 'From your messages')?.items.length ?? 0) > 0 && ((await kayla.get('/api/hana/brief?kind=morning')).data.sections.find((s) => s.title === 'From your messages')?.items.length ?? 0) === 0);
+
+  section('Hana JP2 · kids: safety SIGNALS to parents only — parent-set, disclosed, off by default');
+  eq('off by default, and Avery sees it', (await avery.get('/api/messages/hana')).data.mine.signalsOn, false);
+  eq('Avery can’t set it; a grown-up’s own isn’t a kid setting', [(await avery.put(`/api/messages/kid-safety/${hanaIds.Avery}`, { on: true })).status, (await ty.put(`/api/messages/kid-safety/${hanaIds.Kayla}`, { on: true })).status], [403, 403]);
+  await ty.put(`/api/messages/kid-safety/${hanaIds.Avery}`, { on: true });
+  eq('Ty turns it on; Avery sees who set it', [(await avery.get('/api/messages/hana')).data.mine.signalsOn, (await avery.get('/api/messages/hana')).data.mine.setBy], [true, 'Ty']);
+  await ty.post(`/api/hana/run-watch?at=${hanaNow(HANA_DAY, 15)}`);
+  eq('…and she’s told, in plain words, what it never does', (await sql("SELECT member_id, text FROM hana_items WHERE surface = 'watch' AND category = 'messages'")).map((x) => [x.member_id, x.text]), [[hanaIds.Avery, 'Ty turned on safety alerts for your messages: if something looks unsafe — like someone asking you to keep a secret or to meet up — your grown-ups get a heads-up. They don’t read your messages.']]);
+  eq('kids never see a grown-up’s messages', (await avery.get('/api/messages/hana')).data.inbox, []);
+  eq('another household sees none of ours', [(await tess.get('/api/messages/hana')).data.inbox.length, (await tess.put(`/api/messages/kid-safety/${hanaIds.Avery}`, { on: false })).status], [0, 404]);
+
+  section('Hana JP2 · disconnecting forgets Hana’s copies');
+  await ty.put('/api/messages/hana', { connected: false });
+  eq('Ty’s message items are gone', (await items()).length, 0);
+  await dm('One more thing!');
+  eq('…and nothing new is kept', (await items()).length, 0);
+
+  await sql("DELETE FROM open_loops WHERE source = 'message'");
+  await sql("DELETE FROM shield_alerts WHERE ref LIKE 'dm:%'");
+  await sql('DELETE FROM kid_message_safety');
+  await sql("DELETE FROM hana_items WHERE category = 'messages'");
 }
 
 async function hanaLocationChecks() {
@@ -8055,7 +8135,7 @@ async function hanaLadderChecks() {
   section('Hana C3 · the hard rails, and the audit log');
   const caps = (await ty.get('/api/hana/capabilities')).data;
   eq('no tool moves money, signs, or deletes mail or events', caps.tools.filter((t) => /pay|transfer|money_move|move_money|wire|sign|delete_event|remove_event|delete_mail|delete_email|archive_mail/i.test(t.name) && !/^money_summary$/.test(t.name)).map((t) => t.name), []);
-  eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'house_control', 'run_errand', 'send_groceries'], 'T0', 'T1']);
+  eq('the sends are T2 (approval first); reads are T0; the rest T1', [caps.tools.filter((t) => t.tier === 'T2').map((t) => t.name).sort(), caps.tools.find((t) => t.name === 'bills_due')?.tier, caps.tools.find((t) => t.name === 'add_task')?.tier], [['draft_email', 'draft_invite', 'draft_message_reply', 'house_control', 'run_errand', 'send_groceries'], 'T0', 'T1']);
   eq('…and the rails are stated', caps.rails.length, 5);
   eq('kids can’t see it', (await avery.get('/api/hana/capabilities')).status, 403);
   const kLog = (await kayla.get('/api/hana/log')).data.log;
@@ -8385,7 +8465,7 @@ async function hanaWatchChecks() {
   eq('Kayla (the other admin) has the same pickup alerts', (await watchItems(hanaIds.Kayla)).filter((w) => w.category === 'pickup').length, (await watchItems(hanaIds.Ty)).filter((w) => w.category === 'pickup').length);
   eq('a second pass pushes nothing new (no loops)', (await ty.post(`/api/hana/run-watch?at=${hanaNow()}`)).data.pushed, 0);
   check('the watch alerts show on Family HQ', (await ty.get('/api/hana/alerts')).data.alerts.some((a) => a.kind === 'watch' && a.text.includes('Evan piano lesson')));
-  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money, health, shield, house and storm since Q6/Q8/Q9)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health', 'shield', 'house', 'storm', 'location'].includes(r.category)));
+  check('forms and supplies: nothing is watched — MyDay holds no such data yet (only the four categories appear, and money, health, shield, house and storm since Q6/Q8/Q9)', (await sql("SELECT DISTINCT category FROM hana_items WHERE surface = 'watch'")).every((r) => ['pickup', 'conflict', 'bills', 'homework', 'money', 'health', 'shield', 'house', 'storm', 'location', 'messages'].includes(r.category)));
 
   section('Hana H5 · quiet hours: held on a school night, except a same-day logistics failure');
   await ty.post('/api/calendar/events', { title: 'Evan swim', startsOn: '2026-11-03', startTime: '16:00', endTime: '17:00', repeat: 'none', people: [hanaIds.Evan], pickup: true, pickupBy: null });

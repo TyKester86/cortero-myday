@@ -26,6 +26,7 @@ import { expiryLine, listVault } from './papers.js';
 import { moneyBrief } from './money.js';
 import { packLine, prepPacks } from './healthops.js';
 import { stormLines, stormPlan } from './house.js';
+import { inboxFor } from './messaging.js';
 import type { Viewer } from './scope.js';
 
 export type BriefKind = HanaBriefKind;
@@ -284,6 +285,16 @@ export async function briefFor(v: Viewer, kind: BriefKind): Promise<Brief> {
     }
     if (v.parent) sections.push({ title: 'Bills due this week', drafts: await billDrafts(v) });
     if (v.parent) sections.push({ title: 'From the inbox', drafts: await mailDrafts() });
+    // JP2: their own connected Messages from the last day — theirs alone, never the other parent's.
+    if (v.parent) {
+      sections.push({
+        title: 'From your messages',
+        drafts: (await inboxFor(v.me))
+          .filter((m) => Date.now() - Date.parse(m.at) < 86_400_000)
+          .slice(0, 5)
+          .map((m) => ({ key: `msg:${m.id}`, category: 'message' as const, text: m.flagged ? `Careful — a message from ${m.from} was flagged (see the warning).` : m.summary, subjectId: null, source: SOURCE.messages, asOf: m.at, check: null, headsUp: m.flagged })),
+      });
+    }
     if (v.parent) {
       sections.push({
         title: 'Expiring soon',

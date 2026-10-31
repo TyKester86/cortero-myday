@@ -32,13 +32,14 @@ import { healthWatch } from './healthops.js';
 import { shieldWatch } from './shield.js';
 import { houseWatch, stormWatch } from './house.js';
 import { disclosures } from './location.js';
+import { kidSafetyDisclosures } from './messaging.js';
 import { refreshEscalations } from './coach.js';
 import { asOfLabel, SOURCE } from './facts.js';
 import { crisisIn, escalateCrisis } from './guard.js';
 import { requireParent, viewerOf, type Viewer } from './scope.js';
 import { balances, billsDue, scheduleFor, type ScheduleItem } from './tools.js';
 
-export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry', 'money', 'health', 'shield', 'house', 'storm', 'location'];
+export const WATCH_CATEGORIES: HanaWatchCategory[] = ['pickup', 'conflict', 'bills', 'homework', 'loops', 'expiry', 'money', 'health', 'shield', 'house', 'storm', 'location', 'messages'];
 
 const DEFAULTS: HanaSettings = {
   quietStart: '21:00',
@@ -285,6 +286,8 @@ export async function runWatch(at: Date = new Date()): Promise<WatchRun> {
 
   // JP4: a kid is told — once — whenever their location sharing changes, and who can see them now.
   for (const d of await disclosures()) findings.push({ key: d.key, category: 'location', text: d.text, sameDay: false, to: [d.to], subjectId: null, source: SOURCE.location, asOf: at.toISOString(), once: true });
+  // JP2: and when their message safety alerts change.
+  for (const d of await kidSafetyDisclosures()) findings.push({ key: d.key, category: 'messages', text: d.text, sameDay: false, to: [d.to], subjectId: null, source: SOURCE.messages, asOf: at.toISOString(), once: true });
 
   // Crisis signals in the content she reads (calendar and homework text): never alone, never silently.
   await crisisScan(members, sched.data);

@@ -13,6 +13,7 @@ import { notify, notifyMentions } from '../lib/feednotify.js';
 import { HttpError, idParam, str } from '../lib/http.js';
 import { screenText } from '../lib/screen.js';
 import { currentKeyId, openBytes, openText, sealBytes, sealText } from '../lib/seal.js';
+import { messageArrived } from '../lib/chief/messaging.js';
 import { adult, AUTHOR_COLS, AUTHOR_JOIN, author, sponsorHook, block, decide, guarded, imageUrl, member, NOT_BLOCKED, poster, profileRow, rankOutcome, SEEN, staff, type AuthorCols } from './community.js';
 
 export const socialRouter = Router();
@@ -496,10 +497,18 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
   const m = await poster(req, false);
   const other = idParam(req.params.userId);
   await messageable(m.userId, other);
+  const body = str((req.body as Record<string, unknown>).body, 'body', 2000, true);
+  const r = await sendDm(m.userId, other, body);
+  res.status(201).json({ thread: await threadView(m.userId, other), review: r.note });
+});
+
+/** One message as userId — the route above, and a parent's approved Hana reply (JP2). */
+export async function sendDm(userId: number, other: number, body: string): Promise<{ status: string; note: ReviewNote }> {
+  const m = { userId };
+  await messageable(m.userId, other);
   if (await block(m.userId, other)) throw new HttpError(403, 'You can’t message this person', 'blocked_user');
   const { rows: n } = await pool.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM dm_messages WHERE sender_user_id = $1 AND created_at > now() - interval '1 hour'", [m.userId]);
   if ((n[0]?.n ?? 0) >= MESSAGES_PER_HOUR) throw new HttpError(429, 'That’s a lot of messages this hour — take a breather.', 'message_limit');
-  const body = str((req.body as Record<string, unknown>).body, 'body', 2000, true);
   // Screened like every post: blocked never sends; held waits for a moderator (the other person doesn't see it);
   // crisis goes to the top of the queue and the writer sees 988.
   const d = await guarded(await decide(await screenText(body), 'message'), m.userId, body, 'message');
@@ -507,7 +516,7 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
   const { rowCount: saidBefore } = await pool.query('SELECT 1 FROM dm_messages WHERE thread_id = $1 AND sender_user_id = $2 LIMIT 1', [id, m.userId]);
   const keyId = currentKeyId();
   if (!saidBefore) await rankOutcome(m.userId, null, other, 'dm');
-  await pool.query('INSERT INTO dm_messages (thread_id, sender_user_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
+  const { rows: ins } = await pool.query<{ id: number }>('INSERT INTO dm_messages (thread_id, sender_user_id, body_enc, key_id, status, priority, flags) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id', [
     id, m.userId, sealText(body, keyId), keyId, d.status, d.priority, d.flags,
   ]);
   if (d.status === 'visible') {
@@ -518,10 +527,13 @@ socialRouter.post('/api/social/messages/:userId', async (req, res) => {
     const theirs = id === null ? null : await requestState(other, m.userId, id);
     if (theirs === 'request') await notify({ to: other, kind: 'request', actor: m.userId, group: `dmreq:${id}`, url: '/messages?requests=1' });
     else if (theirs === null && !mu[0]?.muted) await notify({ to: other, kind: 'dm', actor: m.userId, group: `dm:${id}`, url: `/messages/${m.userId}` });
+    // JP2: if they connected their messages to Hana, she reads it for them (in their household only).
+    // A request from a stranger is read too (that's where scams arrive); a declined one never is.
+    if (theirs !== 'declined') await messageArrived(other, m.userId, ins[0]?.id ?? 0, body, theirs === 'request');
   }
   await logEvent('social_message', { held: d.status !== 'visible' }, null, null);
-  res.status(201).json({ thread: await threadView(m.userId, other), review: d.note });
-});
+  return { status: d.status, note: d.note };
+}
 
 /** A message request: accept (it moves to your inbox) or decline (hidden; they aren't told). Block is on profiles. */
 for (const [action, state] of [['accept', 'accepted'], ['decline', 'declined']] as const) {
