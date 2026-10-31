@@ -21,6 +21,8 @@ export const SOURCE = {
   papers: 'Papers & the vault',
   money: 'Linked bank + your bills, debts and funds',
   care: 'Your medications, care schedule & calendar',
+  shield: 'Hana’s scam & safety watch (forwarded mail, linked bank)',
+  people: 'Your people, mail, loops, calendar & family memory',
 } as const;
 export type SourceName = (typeof SOURCE)[keyof typeof SOURCE];
 

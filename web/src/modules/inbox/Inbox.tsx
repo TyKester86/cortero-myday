@@ -18,6 +18,8 @@ interface InboxEmail {
   items: InboxItem[];
   class: 'school' | 'medical' | 'money' | 'logistics' | 'people' | 'noise' | null;
   summary: string | null;
+  /** JP6: Hana's warning — the message is shown as always, never hidden. */
+  shield: { id: number; kind: string; text: string; verdict: 'fine' | 'scam' | null } | null;
 }
 interface InboxResponse {
   address: string | null;
@@ -89,6 +91,11 @@ export default function Inbox() {
             )}
             <small className="muted">{when(m.at)}</small>
           </div>
+          {m.shield && m.shield.verdict !== 'fine' && (
+            <p className={`small shield-banner ${m.shield.kind}`} role="note" data-testid="inbox-shield">
+              <b>{m.shield.kind === 'account_security' ? 'Security alert:' : m.shield.verdict === 'scam' ? 'Marked a scam:' : 'Careful:'}</b> {m.shield.text}
+            </p>
+          )}
           {m.summary && (
             <p className="small" data-testid="inbox-summary">
               <b>Hana:</b> {m.summary}

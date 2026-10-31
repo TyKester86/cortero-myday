@@ -236,14 +236,18 @@ async function loopDrafts(v: Viewer, within: Array<'past' | 'today' | 'tomorrow'
 
 /** C1: the last day's mail, triaged — school, medical, money and logistics first; never the noise. Parents only. */
 async function mailDrafts(): Promise<Draft[]> {
-  const { rows } = await pool.query<{ id: number; class: string; summary_enc: Buffer; key_id: string; received_at: Date }>(
-    "SELECT id, class, summary_enc, key_id, received_at FROM inbox_emails WHERE summary_enc IS NOT NULL AND class <> 'noise' AND received_at > $1 ORDER BY array_position(ARRAY['school','medical','money','logistics','people'], class), received_at DESC LIMIT 6",
+  const { rows } = await pool.query<{ id: number; class: string; summary_enc: Buffer; key_id: string; received_at: Date; shield: string | null }>(
+    `SELECT e.id, e.class, e.summary_enc, e.key_id, e.received_at, s.text AS shield FROM inbox_emails e
+       LEFT JOIN shield_alerts s ON s.email_id = e.id AND s.kind <> 'account_security' AND COALESCE(s.verdict, 'scam') = 'scam'
+      WHERE e.summary_enc IS NOT NULL AND e.class <> 'noise' AND e.received_at > $1
+      ORDER BY s.id IS NULL, array_position(ARRAY['school','medical','money','logistics','people'], e.class), e.received_at DESC LIMIT 6`,
     [new Date(Date.now() - 86_400_000)],
   );
   return rows.map((r) => ({
     key: `mail:${r.id}`,
     category: 'mail' as const,
-    text: `${r.class.charAt(0).toUpperCase()}${r.class.slice(1)} — ${openText(r.summary_enc, r.key_id)}`,
+    // JP6: a flagged message is said as the warning, never as an errand.
+    text: r.shield ? `Careful — ${r.shield}` : `${r.class.charAt(0).toUpperCase()}${r.class.slice(1)} — ${openText(r.summary_enc, r.key_id)}`,
     subjectId: null,
     source: SOURCE.inbox,
     asOf: r.received_at.toISOString(),

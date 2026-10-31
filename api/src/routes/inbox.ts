@@ -23,6 +23,7 @@ import { currentKeyId, openText, sealText } from '../lib/seal.js';
 import { triageEmail, type MailClass } from '../lib/extract.js';
 import { closeOnReply, openLoop } from '../lib/chief/loops.js';
 import { addDoc } from '../lib/chief/papers.js';
+import { NOTHING_BLOCKED, recordMail, screenMail } from '../lib/chief/shield.js';
 
 export const inboxRouter = Router();
 /** The inbound-email webhook: public (the shared secret is in the URL), outside /api. */
@@ -49,6 +50,8 @@ export interface InboxEmail {
   /** C1 triage: the household class and Hana's one-line summary (null for mail from before triage). */
   class: MailClass | null;
   summary: string | null;
+  /** JP6: the shield's warning about this message, if any (the message is never hidden). */
+  shield: { id: number; kind: string; text: string; verdict: 'fine' | 'scam' | null } | null;
 }
 export interface InboxResponse {
   address: string | null;
@@ -72,6 +75,10 @@ async function inbox(): Promise<InboxResponse> {
     'SELECT id, email_id, kind, summary, status FROM inbox_items WHERE email_id = ANY($1) ORDER BY id',
     [ids],
   );
+  const { rows: shields } = await pool.query<{ id: number; email_id: number; kind: string; text: string; verdict: 'fine' | 'scam' | null }>(
+    'SELECT id, email_id, kind, text, verdict FROM shield_alerts WHERE email_id = ANY($1)',
+    [ids],
+  );
   return {
     address: await currentAddress(),
     receiving: !!process.env.INBOUND_SECRET,
@@ -84,6 +91,7 @@ async function inbox(): Promise<InboxResponse> {
       items: items.filter((i) => i.email_id === r.id).map(({ id, kind, summary, status }) => ({ id, kind, summary, status })),
       class: r.class,
       summary: r.summary_enc ? openText(r.summary_enc, r.key_id) : null,
+      shield: ((s) => (s ? { id: s.id, kind: s.kind, text: s.text, verdict: s.verdict } : null))(shields.find((s) => s.email_id === r.id)),
     })),
   };
 }
@@ -189,6 +197,11 @@ inboundRouter.post('/inbound/email', express.json({ limit: '2mb' }), async (req,
     // C1: triage (mail is data, never instructions), then what it commits us to becomes open loops (C4).
     const tri = await triageEmail(mail, today());
     await pool.query('UPDATE inbox_emails SET class = $2, summary_enc = $3 WHERE id = $1', [emailId, tri.class, sealText(tri.summary, keyId)]);
+    // JP6: the shield reads it first. A scam stays in the inbox, flagged — but its demands never
+    // become the family's to-dos, and it can't close a loop as someone's "reply".
+    const shield = screenMail(mail, (await listMembers()).filter((m) => m.kind === 'kid').map((m) => ({ id: m.id, name: m.name })));
+    if (shield) await recordMail(emailId, shield);
+    if (shield?.scam) return 0;
     // A reply from someone who owed us something is the evidence that closes it (before this mail's own promises open).
     await closeOnReply(mail.from, new Date());
     const domain = mail.from.match(/@([\w.-]+)/)?.[1]?.toLowerCase() ?? 'unknown';
@@ -197,7 +210,7 @@ inboundRouter.post('/inbound/email', express.json({ limit: '2mb' }), async (req,
       await openLoop(null, { what: c.what, owedBy: c.owedBy === 'us' ? 'the family' : sender, due: c.due, source: 'email', sourceRef: `mail:${domain}:${c.owedBy}:${emailId}:${k}` });
     }
     // C5: a form or slip by mail lands in Papers (its deadline is already a loop if the mail asked for it).
-    if (tri.class !== 'noise' && /permission slip|form|registration|waiver|sign (?:and|&) return/i.test(`${mail.subject}
+    if (tri.class !== 'noise' && /permission slip|\bform\b|registration|waiver|sign (?:and|&) return/i.test(`${mail.subject}
 ${mail.text}`)) {
       await addDoc(null, { source: 'email', sourceRef: `mail:${emailId}`, title: mail.subject, text: mail.text, noLoop: tri.commitments.some((c) => c.owedBy === 'us') });
     }

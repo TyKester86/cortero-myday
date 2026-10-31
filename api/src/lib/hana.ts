@@ -34,6 +34,8 @@ import { loopLine, loopsFor, openLoop } from './chief/loops.js';
 import { expiryLine, fillFrom, getDoc, listDocs, listVault, saveCompletion } from './chief/papers.js';
 import { amortize, debtPlan, growth, mindLines, moneyMind, monthsToPay, requireParentMember, usd } from './money/mind.js';
 import { holdWant } from '../routes/mind.js';
+import { listAlerts, NOTHING_BLOCKED, requireParentShield, SHIELD_SOURCE } from './chief/shield.js';
+import { dossier, PEOPLE_SOURCE, personByName, requireParentPeople } from './chief/people.js';
 import { addQuestion, CLINICIAN_LINE, logRefill, medByName, nextVisitFor, prepPacks, requireParentHealth } from './chief/healthops.js';
 import { aboutByName, addFamilyMemory, checkFact, correctMemory, editable, forgetMemory, MEMORY_KINDS, requireParent } from './chief/memory.js';
 
@@ -759,6 +761,49 @@ export const HANA_TOOLS = [
     },
   }),
 
+  // ---------- JP6 the shield and JP5 people dossiers (grown-ups) ----------
+  def({
+    name: 'shield_alerts',
+    description:
+      'READ-ONLY. The scam & safety warnings still open: family-emergency scams, phishing, lures aimed at the kids, account-security alerts, first-time large charges. ' +
+      'Say them plainly with the safe next step; you warn, you never block or delete anything.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({}),
+    json: { type: 'object', properties: {}, additionalProperties: false },
+    summary: () => 'Read the scam & safety warnings',
+    run: async (me) => {
+      requireParentShield(me);
+      const a = await listAlerts();
+      const src = provenance({ source: SHIELD_SOURCE, asOf: new Date().toISOString(), stale: null });
+      return a.length ? `${a.map((x) => `• ${x.text}`).join('\n')}\n${NOTHING_BLOCKED}\n${src}` : `No open warnings.\n${src}`;
+    },
+  }),
+  def({
+    name: 'person_dossier',
+    description:
+      'READ-ONLY. Someone in the family’s life (a teacher, doctor, coach, relative, sitter) by name: who they are, last contact, open loops with them, what’s coming up, ' +
+      'and what their role needs to know about the kids in their care. Share only that role card; to send it, draft it (draft_email) for the parent to approve.',
+    destructive: false,
+    readOnly: true,
+    schema: z.object({ name: z.string().min(2).max(120) }),
+    json: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false },
+    summary: (i) => `Read the dossier for ${i.name}`,
+    run: async (me, i) => {
+      requireParentPeople(me);
+      const d = await dossier(me, await personByName(i.name));
+      const p = d.person;
+      return [
+        `${p.name} — ${p.role}${p.org ? `, ${p.org}` : ''}${p.forNames.length ? ` (for ${p.forNames.join(', ')})` : ''}${p.email ? ` · ${p.email}` : ''}${p.phone ? ` · ${p.phone}` : ''}`,
+        d.lastContact ? `Last contact: ${d.lastContact.date} by ${d.lastContact.how} — ${d.lastContact.what}` : 'Last contact: nothing on record',
+        d.openLoops.length ? `Open with them: ${d.openLoops.map((l) => `${l.what} (${l.owedBy}${l.due ? `, due ${l.due}` : ''})`).join(' | ')}` : 'Open with them: nothing',
+        ...(d.upcoming.length ? [`Coming up: ${d.upcoming.map((u) => `${u.title} on ${u.date}${u.time ? ` ${u.time.slice(0, 5)}` : ''}`).join(' | ')}`] : []),
+        d.shareCard ? `What they need to know (their role only):\n${d.shareCard}` : 'What they need to know: nothing on file for their role yet',
+        provenance({ source: PEOPLE_SOURCE, asOf: d.asOf, stale: null }),
+      ].join('\n');
+    },
+  }),
+
   // ---------- C7: health logistics — organization only, never interpretation ----------
   def({
     name: 'health_prep',
@@ -1273,6 +1318,8 @@ export function stubPlan(message: string): Array<{ name: string; input: unknown 
     return [{ name: 'remember_family', input: { fact: x[3], kind: (x[2] ?? 'note').toLowerCase(), about: x[1] ?? null } }];
   }
   if ((x = m.match(/^correct family memory #h(\d+): (.+)$/i))) return [{ name: 'correct_family_memory', input: { memory_id: Number(x[1]), fact: x[2] } }];
+  if (/^(?:any )?scam warnings\??$/i.test(m)) return [{ name: 'shield_alerts', input: {} }];
+  if ((x = m.match(/^dossier (?:for )?(.+)$/i))) return [{ name: 'person_dossier', input: { name: x[1] } }];
   if ((x = m.match(/^prep pack(?: for (\d{4}-\d{2}-\d{2}))?$/i))) return [{ name: 'health_prep', input: { date: x[1] ?? null } }];
   if ((x = m.match(/^ask the doctor for (\w+): (.+)$/i))) return [{ name: 'add_visit_question', input: { person: x[1], question: x[2] } }];
   if ((x = m.match(/^log refill (.+?) (\d+)$/i))) return [{ name: 'log_refill', input: { medication: x[1], amount: Number(x[2]) } }];

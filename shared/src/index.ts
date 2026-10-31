@@ -3403,7 +3403,7 @@ export type HanaItemOutcome = 'acted' | 'dismissed' | 'wrong';
 export interface HanaBriefItem {
   id: number;
   key: string;
-  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health';
+  category: 'schedule' | 'pickup' | 'conflict' | 'homework' | 'bills' | 'chores' | 'change' | 'loop' | 'mail' | 'expiry' | 'money' | 'health' | 'shield';
   text: string;
   subjectId: number | null;
   source: string;
@@ -3483,7 +3483,7 @@ export interface HanaCoach {
 }
 
 /** What the logistics watch looks for (each can be muted by a parent). */
-export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health';
+export type HanaWatchCategory = 'pickup' | 'conflict' | 'bills' | 'homework' | 'loops' | 'expiry' | 'money' | 'health' | 'shield';
 
 /** Hana's household settings: either parent can change them or quiet her. */
 export interface HanaSettings {
@@ -3732,4 +3732,57 @@ export interface HealthLogistics {
   medications: Medication[];
   care: CareItem[];
   visits: PrepPack[];
+}
+
+/* ---------- JP6: the shield (warns; never blocks) ---------- */
+
+export type ShieldKind = 'impersonation' | 'phishing' | 'kid_target' | 'account_security' | 'money';
+
+export interface ShieldAlert {
+  id: number;
+  kind: ShieldKind;
+  emailId: number | null;
+  about: string | null;
+  text: string;
+  signals: string[];
+  verdict: 'fine' | 'scam' | null;
+  decidedBy: string | null;
+  at: string;
+}
+
+/* ---------- JP5: people dossiers (parents only; never leaves the household) ---------- */
+
+export type PersonRole = 'teacher' | 'doctor' | 'coach' | 'kin' | 'sitter' | 'other';
+
+export interface Person {
+  id: number;
+  name: string;
+  role: PersonRole;
+  email: string;
+  phone: string;
+  org: string;
+  notes: string;
+  /** The household members they're for (the kids they teach, coach, treat or sit). */
+  forIds: number[];
+  forNames: string[];
+}
+
+export interface PersonDossier {
+  person: Person;
+  lastContact: { date: DateStr; how: string; what: string } | null;
+  openLoops: Array<{ id: number; what: string; owedBy: string; due: DateStr | null }>;
+  upcoming: Array<{ date: DateStr; time: string | null; title: string }>;
+  /** Family-memory facts that mention them. */
+  known: string[];
+  /** What their role needs to know about the people in their care — never everything. */
+  matters: Array<{ about: string; what: string; from: string }>;
+  /** The same, as a note a parent can share (nothing is sent by Hana). */
+  shareCard: string | null;
+  source: string;
+  asOf: string;
+}
+
+export interface PeopleView {
+  people: Person[];
+  suggestions: Array<{ name: string; email: string; role: PersonRole; why: string }>;
 }
